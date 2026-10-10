@@ -1,0 +1,27 @@
+{
+  "entities": {
+    "AppState": {
+      "title": "AppState",
+      "description": "Stores persistent Auto-Pilot configuration, Bot Token, formatting templates, and published global forex signals.",
+      "type": "object",
+      "properties": {
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of last state save"
+        },
+        "payload": {
+          "type": "string",
+          "maxLength": 500000,
+          "description": "Serialized application state including autopilot credentials, template settings, and signals list"
+        }
+      },
+      "required": ["updatedAt", "payload"]
+    }
+  },
+  "firestore": {
+    "/system_state/{docId}": {
+      "schema": "AppState",
+      "description": "Singleton state storage for the 24/7 background signal worker"
+    }
+  }
+}
