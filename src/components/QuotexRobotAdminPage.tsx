@@ -64,6 +64,7 @@ export default function QuotexRobotAdminPage({
 
   // Floating Widget Live Simulator State
   const [widgetMinimized, setWidgetMinimized] = useState(false);
+  const [showWidgetInfo, setShowWidgetInfo] = useState(false);
   const [widgetMode, setWidgetMode] = useState<'AUTO' | 'MANUAL'>(robotSettings.defaultMode || 'AUTO');
   const [widgetStakeUsd, setWidgetStakeUsd] = useState<number>(robotSettings.defaultStakeUsd || 5);
   const [widgetSoundOn, setWidgetSoundOn] = useState<boolean>(robotSettings.soundAlertsEnabled ?? true);
@@ -253,6 +254,7 @@ export default function QuotexRobotAdminPage({
   const handleUpdateSubscriberRobot = async (
     subId: string,
     payload: {
+      status?: 'ACTIVE' | 'PENDING' | 'BANNED';
       robotEnabled?: boolean;
       robotExpiryDate?: string;
       robotDefaultMode?: 'AUTO' | 'MANUAL';
@@ -275,6 +277,19 @@ export default function QuotexRobotAdminPage({
     }
   };
 
+  const handleApproveSubscriber = async (subId: string) => {
+    const target = subscribers.find(s => s.id === subId);
+    const expDate =
+      target?.robotExpiryDate ||
+      target?.expiryDate ||
+      new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    await handleUpdateSubscriberRobot(subId, {
+      status: 'ACTIVE',
+      robotEnabled: true,
+      robotExpiryDate: expDate
+    });
+  };
+
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
@@ -288,59 +303,100 @@ export default function QuotexRobotAdminPage({
     ? rawOrigin.replace('https://ais-dev-', 'https://ais-pre-')
     : 'https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app';
 
-  // Ready-to-inject Tampermonkey / Console Floating Quotex Script for any selected API Key
+  // Ready-to-inject Tampermonkey / Console Floating Universal Broker Robot Script for any selected API Key / Broker Account ID
   const generatedQuotexUserscript = useMemo(() => {
     const activeKey = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
     return `// ==UserScript==
-// @name         نَبض التداول - روبوت كيوتكس الآلي العائم (Quotex Auto Robot)
+// @name         نَبض التداول - الروبوت العائم الشامل لجميع منصات البروكر (Universal Broker Robot)
 // @namespace    ${appOrigin}
-// @version      1.0
-// @description  روبوت عائم صغير على منصة كيوتكس مربوط بـ API الموقع - تداول آلي أو يدوي بدون مضاعفات نهائياً
+// @version      2.0
+// @description  روبوت عائم مصغر يعمل على جميع منصات البروكر (كيوتكس، بوكيت أوبشن، أوليمب تريد، آي كيو أوبشن...) - تداول آلي ويدوي بدون مضاعفات نهائياً
 // @match        *://*.qxbroker.com/*
 // @match        *://*.quotex.io/*
 // @match        *://*.broker-qx.pro/*
+// @match        *://*.pocketoption.com/*
+// @match        *://*.po.market/*
+// @match        *://*.olymptrade.com/*
+// @match        *://*.iqoption.com/*
+// @match        *://*.binomo.com/*
 // @grant        none
 // ==/UserScript==
 
 (function() {
   'use strict';
   const API_BASE = "${appOrigin}";
-  let MEMBER_API_KEY = localStorage.getItem("zad_qx_api_key") || "${activeKey}";
+  let MEMBER_IDENTIFIER = localStorage.getItem("zad_broker_key") || "${activeKey}";
   let ROBOT_MODE = "AUTO"; // "AUTO" | "MANUAL"
   let LAST_EXECUTED_SIG_ID = "";
 
-  // إنشاء نافذة الروبوت العائمة والصغيرة أعلى صفحة كيوتكس
+  // الكشف التلقائي عن اسم منصة البروكر المفتوحة
+  const currentHost = window.location.hostname.toLowerCase();
+  const brokerName = currentHost.includes("pocketoption") || currentHost.includes("po.market") ? "Pocket Option"
+    : currentHost.includes("olymptrade") ? "Olymp Trade"
+    : currentHost.includes("iqoption") ? "IQ Option"
+    : currentHost.includes("binomo") ? "Binomo"
+    : "Quotex";
+
+  // إنشاء نافذة الروبوت العائمة والصغيرة الشاملة لجميع المنصات
   const widget = document.createElement("div");
-  widget.id = "zad-quotex-floating-robot";
+  widget.id = "zad-universal-floating-robot";
   widget.dir = "rtl";
-  widget.style.cssText = "position:fixed;top:70px;right:20px;z-index:999999;width:270px;background:#0B0F17;border:1.5px solid #10b981;border-radius:14px;color:#f8fafc;font-family:sans-serif;box-shadow:0 15px 35px rgba(0,0,0,0.75);padding:12px;user-select:none;";
+  widget.style.cssText = "position:fixed;top:70px;right:20px;z-index:9999999;width:280px;background:#0B0F17;border:1.5px solid #10b981;border-radius:14px;color:#f8fafc;font-family:system-ui,-apple-system,sans-serif;box-shadow:0 15px 35px rgba(0,0,0,0.85);padding:12px;user-select:none;font-size:12px;";
   widget.innerHTML = \`
-    <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #1e293b;padding-bottom:8px;margin-bottom:8px;cursor:move;" id="zad-qx-header">
+    <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #1e293b;padding-bottom:8px;margin-bottom:8px;cursor:move;" id="zad-robot-header">
       <div style="display:flex;align-items:center;gap:6px;">
         <span style="width:9px;height:9px;border-radius:50%;background:#10b981;display:inline-block;"></span>
-        <strong style="font-size:12px;color:#fff;">روبوت نَبض كيوتكس الآلي</strong>
+        <strong style="font-size:12px;color:#fff;">روبوت نَبض التداول</strong>
+        <span style="font-size:10px;color:#38bdf8;background:#0c4a6e;padding:1px 5px;border-radius:4px;">\${brokerName}</span>
       </div>
-      <span style="font-size:10px;background:#064e3b;color:#6ee7b7;padding:2px 6px;border-radius:6px;font-weight:bold;">0 مضاعفات</span>
+      <div style="display:flex;align-items:center;gap:4px;">
+        <button id="zad-info-btn" style="background:#1e293b;color:#38bdf8;border:1px solid #334155;border-radius:6px;padding:1px 6px;font-size:11px;font-weight:bold;cursor:pointer;" title="معلومات وتطوير">ℹ️ info</button>
+        <span style="font-size:10px;background:#064e3b;color:#6ee7b7;padding:2px 5px;border-radius:6px;font-weight:bold;">0 مضاعفات</span>
+      </div>
     </div>
+
+    <!-- نافذة معلومات المبرمج والموقع وقناة التليجرام -->
+    <div id="zad-info-panel" style="display:none;background:#0F172A;border:1px solid #38bdf8;border-radius:10px;padding:8px;margin-bottom:8px;font-size:11px;line-height:1.6;color:#e2e8f0;">
+      <div style="font-weight:bold;color:#38bdf8;margin-bottom:4px;display:flex;justify-content:space-between;">
+        <span>ℹ️ معلومات الروبوت</span>
+        <span id="zad-close-info" style="cursor:pointer;color:#94a3b8;">✕</span>
+      </div>
+      <div>🌐 الموقع: <a href="https://fx.zadtoo.com" target="_blank" style="color:#10b981;text-decoration:none;font-weight:bold;">fx.zadtoo.com</a></div>
+      <div>📢 التليجرام: <a href="https://t.me/ZadNBFX" target="_blank" style="color:#38bdf8;text-decoration:none;font-weight:bold;">قناة نَبض التداول @ZadNBFX</a></div>
+      <div style="color:#fbbf24;font-size:10.5px;margin-top:2px;border-top:1px dashed #334155;padding-top:2px;">👨‍💻 إعداد وبرمجة: <b>Nabil Barakat</b></div>
+    </div>
+
     <div style="font-size:11px;margin-bottom:8px;display:flex;justify-content:space-between;color:#cbd5e1;">
-      <span>العضو: <b id="zad-qx-member" style="color:#fbbf24;">جاري التحقق...</b></span>
-      <span>الصلاحية: <b id="zad-qx-days" style="color:#34d399;">--</b></span>
+      <span>العضو: <b id="zad-robot-member" style="color:#fbbf24;">جاري التحقق...</b></span>
+      <span>الصلاحية: <b id="zad-robot-days" style="color:#34d399;">--</b></span>
     </div>
+
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:8px;">
       <button id="zad-mode-auto" style="padding:5px;font-size:11px;font-weight:bold;border-radius:7px;border:1px solid #10b981;background:#10b981;color:#020617;cursor:pointer;">🤖 تداول آلي</button>
       <button id="zad-mode-manual" style="padding:5px;font-size:11px;font-weight:bold;border-radius:7px;border:1px solid #334155;background:#1e293b;color:#cbd5e1;cursor:pointer;">🖐️ تداول يدوي</button>
     </div>
+
     <div style="background:#111827;border:1px solid #1e293b;border-radius:9px;padding:8px;margin-bottom:8px;font-size:11px;">
-      <div id="zad-qx-signal" style="color:#38bdf8;font-weight:bold;margin-bottom:4px;">📡 بانتظار الإشارة القادمة...</div>
-      <div id="zad-qx-action" style="color:#94a3b8;font-size:10px;">اختيار الزوج والصلاحية تلقائياً عند الموعد</div>
+      <div id="zad-robot-signal" style="color:#38bdf8;font-weight:bold;margin-bottom:4px;">📡 بانتظار الإشارة القادمة...</div>
+      <div id="zad-robot-action" style="color:#94a3b8;font-size:10px;">اختيار الزوج والصلاحية M1 تلقائياً عند الموعد</div>
     </div>
+
     <div style="display:flex;justify-content:space-between;background:#0f172a;padding:6px 10px;border-radius:8px;font-size:11px;font-weight:bold;">
-      <span style="color:#34d399;">✅ ربح: <b id="zad-qx-wins">0</b></span>
-      <span style="color:#f87171;">❌ خسارة: <b id="zad-qx-losses">0</b></span>
-      <span style="color:#fbbf24;">🎯 النسبة: <b id="zad-qx-rate">100%</b></span>
+      <span style="color:#34d399;">✅ ربح: <b id="zad-robot-wins">0</b></span>
+      <span style="color:#f87171;">❌ خسارة: <b id="zad-robot-losses">0</b></span>
+      <span style="color:#fbbf24;">🎯 النسبة: <b id="zad-robot-rate">100%</b></span>
     </div>
   \`;
   document.body.appendChild(widget);
+
+  // تبديل ظهور نافذة الـ Info
+  const infoBtn = document.getElementById("zad-info-btn");
+  const infoPanel = document.getElementById("zad-info-panel");
+  const closeInfo = document.getElementById("zad-close-info");
+  if (infoBtn && infoPanel) {
+    infoBtn.onclick = () => { infoPanel.style.display = infoPanel.style.display === "none" ? "block" : "none"; };
+    if (closeInfo) closeInfo.onclick = () => { infoPanel.style.display = "none"; };
+  }
 
   // تبديل وضع التداول (آلي / يدوي)
   document.getElementById("zad-mode-auto").onclick = () => {
@@ -358,34 +414,65 @@ export default function QuotexRobotAdminPage({
     document.getElementById("zad-mode-auto").style.color = "#cbd5e1";
   };
 
-  // فحص الـ API كل ثانيتين لجلب الإشارة والنتيجة والاشتراك
+  // وظيفة النقر التلقائي الذكية الشاملة لجميع منصات البروكر
+  function triggerBrokerTrade(direction) {
+    try {
+      const isCall = direction === "CALL";
+      let btn = null;
+
+      // 1. منصة كيوتكس Quotex
+      btn = isCall ? document.querySelector(".call-btn, .section-deal__success button") : document.querySelector(".put-btn, .section-deal__danger button");
+
+      // 2. منصة بوكيت أوبشن Pocket Option
+      if (!btn) {
+        btn = isCall ? document.querySelector(".btn-call, .btn-call__wrap, a[href*='call']") : document.querySelector(".btn-put, .btn-put__wrap, a[href*='put']");
+      }
+
+      // 3. منصة أوليمب تريد Olymp Trade
+      if (!btn) {
+        btn = isCall ? document.querySelector("button[data-test='deal-button-up']") : document.querySelector("button[data-test='deal-button-down']");
+      }
+
+      // 4. منصة آي كيو أوبشن IQ Option
+      if (!btn) {
+        btn = isCall ? document.querySelector(".SidebarCallButton, .call-btn") : document.querySelector(".SidebarPutButton, .put-btn");
+      }
+
+      if (btn) {
+        btn.click();
+        return true;
+      }
+    } catch(e) {}
+    return false;
+  }
+
+  // فحص الـ API كل ثانيتين لجلب الإشارة والنتيجة واشتراك العضو المربوط برقم البروكر
   setInterval(async () => {
     try {
-      const res = await fetch(\`\${API_BASE}/api/quotex-robot/feed?apiKey=\${encodeURIComponent(MEMBER_API_KEY)}\`);
+      const res = await fetch(\`\${API_BASE}/api/quotex-robot/feed?apiKey=\${encodeURIComponent(MEMBER_IDENTIFIER)}\`);
       const data = await res.json();
       if (!data.ok || !data.authorized) {
-        document.getElementById("zad-qx-member").innerText = "غير مفعل";
-        document.getElementById("zad-qx-signal").innerText = data.error || "تأكد من مفتاح API";
+        document.getElementById("zad-robot-member").innerText = "غير مفعل";
+        document.getElementById("zad-robot-signal").innerText = data.error || "تأكد من رقم حساب البروكر الخاص بك";
         return;
       }
-      document.getElementById("zad-qx-member").innerText = data.member.name;
-      document.getElementById("zad-qx-days").innerText = data.member.daysLeft + " يوم";
-      document.getElementById("zad-qx-wins").innerText = data.statsNoMartingale.wins;
-      document.getElementById("zad-qx-losses").innerText = data.statsNoMartingale.losses;
-      document.getElementById("zad-qx-rate").innerText = data.statsNoMartingale.winRate + "%";
+      document.getElementById("zad-robot-member").innerText = data.member.name;
+      document.getElementById("zad-robot-days").innerText = data.member.daysLeft + " يوم";
+      document.getElementById("zad-robot-wins").innerText = data.statsNoMartingale.wins;
+      document.getElementById("zad-robot-losses").innerText = data.statsNoMartingale.losses;
+      document.getElementById("zad-robot-rate").innerText = data.statsNoMartingale.winRate + "%";
 
       const sig = data.activeSignal;
       if (sig) {
-        document.getElementById("zad-qx-signal").innerText = \`\${sig.asset} | \${sig.directionArabic} | وقت \${sig.entryTime}\`;
+        document.getElementById("zad-robot-signal").innerText = \`\${sig.asset} | \${sig.directionArabic} | وقت \${sig.entryTime}\`;
         if (sig.status === "PENDING" && sig.id !== LAST_EXECUTED_SIG_ID) {
-          document.getElementById("zad-qx-action").innerText = \`🔔 تم تحديد الزوج (\${sig.asset}) والصلاحية M1 — بانتظار ثانية الدخول\`;
+          document.getElementById("zad-robot-action").innerText = \`🔔 تم تحديد الزوج (\${sig.asset}) والصلاحية M1 — موعد الدخول \${sig.entryTime}\`;
           if (ROBOT_MODE === "AUTO" && sig.secondsUntilEntry <= 1 && sig.secondsUntilEntry >= -15) {
             LAST_EXECUTED_SIG_ID = sig.id;
-            document.getElementById("zad-qx-action").innerText = \`🚀 تم فتح صفقة \${sig.direction} تلقائياً بدون مضاعفات!\`;
-            // تنفيذ النقر التلقائي على أزرار صعود/هبوط في صفحة كيوتكس
-            const btnSelector = sig.direction === "CALL" ? ".call-btn, .section-deal__success button" : ".put-btn, .section-deal__danger button";
-            const tradeBtn = document.querySelector(btnSelector);
-            if (tradeBtn) tradeBtn.click();
+            const clicked = triggerBrokerTrade(sig.direction);
+            document.getElementById("zad-robot-action").innerText = clicked
+              ? \`🚀 تم فتح صفقة \${sig.direction} تلقائياً على \${brokerName} بدون مضاعفات!\`
+              : \`⚠️ حان موعد صفقة \${sig.direction}، اضغط زر التنفيذ يدوياً على المنصة\`;
           }
         }
       }
@@ -672,10 +759,22 @@ export default function QuotexRobotAdminPage({
                         <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
                       </span>
                       <span className="text-xs font-extrabold text-white">
-                        روبوت نَبض كيوتكس
+                        روبوت نَبض التداول
                       </span>
                     </div>
                     <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setShowWidgetInfo(!showWidgetInfo)}
+                        className={`px-1.5 py-0.5 text-[10px] font-bold rounded border transition-colors cursor-pointer ${
+                          showWidgetInfo
+                            ? 'bg-sky-500 text-slate-950 border-sky-400'
+                            : 'bg-slate-800 hover:bg-slate-700 text-sky-300 border-slate-700'
+                        }`}
+                        title="معلومات الروبوت والبرمجة"
+                      >
+                        ℹ️ info
+                      </button>
                       <span className="px-2 py-0.5 text-[10px] font-extrabold rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
                         0 مضاعفات
                       </span>
@@ -689,6 +788,52 @@ export default function QuotexRobotAdminPage({
                       </button>
                     </div>
                   </div>
+
+                  {/* Info Modal / Drawer inside Widget */}
+                  {showWidgetInfo && !widgetMinimized && (
+                    <div className="m-3 p-3 bg-gradient-to-br from-[#0F172A] to-slate-900 border border-sky-500/50 rounded-xl space-y-2 text-[11px] shadow-lg animate-in fade-in duration-200">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+                        <strong className="text-sky-300 flex items-center gap-1">
+                          <span>ℹ️ معلومات الروبوت العائم</span>
+                        </strong>
+                        <button
+                          type="button"
+                          onClick={() => setShowWidgetInfo(false)}
+                          className="text-slate-400 hover:text-white cursor-pointer text-xs"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                      <div className="space-y-1.5 leading-relaxed text-slate-300">
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-400">🌐 الموقع الرسمي:</span>
+                          <a
+                            href="https://fx.zadtoo.com"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-bold text-emerald-400 hover:underline font-mono-num"
+                          >
+                            fx.zadtoo.com
+                          </a>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-slate-400">📢 قناة التليجرام:</span>
+                          <a
+                            href="https://t.me/ZadNBFX"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-bold text-sky-400 hover:underline flex items-center gap-1"
+                          >
+                            <span>@ZadNBFX</span>
+                          </a>
+                        </div>
+                        <div className="pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-[10.5px]">
+                          <span className="text-slate-400">👨‍💻 إعداد وبرمجة:</span>
+                          <strong className="text-amber-300 font-bold">Nabil Barakat</strong>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {!widgetMinimized ? (
                     <div className="p-3.5 space-y-3 text-xs">
@@ -1303,25 +1448,48 @@ export default function QuotexRobotAdminPage({
                       </td>
 
                       <td className="py-3 px-3">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleUpdateSubscriberRobot(sub.id, {
-                              robotEnabled: !isRobotOn
-                            })
-                          }
-                          className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold cursor-pointer ${
-                            isRobotOn
-                              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                              : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
-                          }`}
-                        >
-                          {isRobotOn ? '🟢 مفعل' : '🔴 متوقف'}
-                        </button>
+                        <div className="flex flex-col gap-1 items-start">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleUpdateSubscriberRobot(sub.id, {
+                                robotEnabled: !isRobotOn
+                              })
+                            }
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold cursor-pointer ${
+                              isRobotOn
+                                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                            }`}
+                          >
+                            {isRobotOn ? '🟢 مفعل' : '🔴 متوقف'}
+                          </button>
+
+                          {sub.status === 'PENDING' ? (
+                            <span className="text-[10px] text-amber-300 font-bold">
+                              ⏳ بانتظار مصادقة الخطة
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-emerald-400 font-bold">
+                              ✓ مصادق عليه
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       <td className="py-3 px-3">
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {sub.status === 'PENDING' && (
+                            <button
+                              type="button"
+                              onClick={() => handleApproveSubscriber(sub.id)}
+                              className="px-2.5 py-1 bg-emerald-400 hover:bg-emerald-300 text-slate-950 rounded-lg text-[11px] font-extrabold cursor-pointer whitespace-nowrap shadow-sm"
+                              title="المصادقة على خطة العضو وتفعيل الروبوت له فوراً"
+                            >
+                              ✅ مصادقة وتفعيل
+                            </button>
+                          )}
+
                           <button
                             type="button"
                             onClick={() => setSelectedTestApiKey(keyStr)}

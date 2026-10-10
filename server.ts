@@ -2663,23 +2663,38 @@ async function startServer() {
       });
     }
 
-    // Check Master Admin Preview Key or Member API Key
-    const isAdminMasterTest = apiKey === 'QX-ADMIN-MASTER-TEST';
+    // Check Master Admin Preview Key, Member Robot API Key, OR Member Broker Account ID (Must be explicitly approved and active)
+    const isAdminMasterTest = apiKey.toUpperCase() === 'QX-ADMIN-MASTER-TEST';
+    const cleanKeyUpper = apiKey.toUpperCase();
     const member = subscribersStore.find(
-      s => (s.robotApiKey || '').trim().toUpperCase() === apiKey.toUpperCase()
+      s =>
+        (s.robotApiKey || '').trim().toUpperCase() === cleanKeyUpper ||
+        (s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === cleanKeyUpper) ||
+        (s.phone && s.phone.trim().toUpperCase() === cleanKeyUpper)
     );
 
     if (!member && !isAdminMasterTest) {
       return res.status(403).json({
         ok: false,
         authorized: false,
-        error: 'مفتاح API غير صالح أو غير مسجل في النظام.'
+        error: 'رقم حساب البروكر غير مسجل لدى الإدارة. يجب مصادقة المشرف على حسابك وتفعيل خطتك أولاً.'
       });
     }
 
     const todayStr = getCurrentEgyptDateString(new Date());
 
     if (member) {
+      // 1. Strict Admin Approval Check: Member status must be ACTIVE
+      if (member.status === 'PENDING') {
+        return res.status(403).json({
+          ok: false,
+          authorized: false,
+          memberName: member.name,
+          error: 'حسابك قيد المراجعة وبانتظار مصادقة المشرف وتحديد خطتك وصلاحيتها.'
+        });
+      }
+
+      // 2. Admin disabled robot or banned member
       if (member.status === 'BANNED' || member.robotEnabled === false) {
         return res.status(403).json({
           ok: false,
@@ -2689,15 +2704,25 @@ async function startServer() {
         });
       }
 
+      // 3. Expiry Date Check: Plan validity must be set by admin and not expired
       const expDate = (member.robotExpiryDate || member.expiryDate || '').trim();
-      if (expDate && /^\d{4}-\d{2}-\d{2}$/.test(expDate) && expDate < todayStr) {
+      if (!expDate || !/^\d{4}-\d{2}-\d{2}$/.test(expDate)) {
+        return res.status(403).json({
+          ok: false,
+          authorized: false,
+          memberName: member.name,
+          error: 'لم يحدد المشرف مدة صلاحية الخطة لهذا الحساب بعد. يرجى مراجعة الإدارة لتفعيل الخطة.'
+        });
+      }
+
+      if (expDate < todayStr) {
         return res.status(403).json({
           ok: false,
           authorized: false,
           memberName: member.name,
           expiryDate: expDate,
           daysLeft: 0,
-          error: `انتهت مدة صلاحية اشتراك الروبوت بتاريخ (${expDate}). يرجى التجديد من المشرف.`
+          error: `انتهت مدة صلاحية خطتك بتاريخ (${expDate}). يرجى مراجعة المشرف لتجديد الاشتراك.`
         });
       }
     }

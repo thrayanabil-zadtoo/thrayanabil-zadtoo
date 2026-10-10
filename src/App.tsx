@@ -54,6 +54,7 @@ import {
 } from './utils/signalParser';
 import { loadCloudSystemState, saveCloudSystemState } from './firebase';
 import QuotexRobotAdminPage, { QuotexRobotSettings } from './components/QuotexRobotAdminPage';
+import FloatingRobotVisitorBanner from './components/FloatingRobotVisitorBanner';
 
 export interface SubscriberMessage {
   id: string;
@@ -6195,6 +6196,17 @@ export default function App() {
                 </div>
               </div>
             </div>
+
+            {/* FLOATING ROBOT EXPLANATION BANNER FOR VISITORS (الروبوت العائم التلقائي + اشتراك VIP تليجرام + صورة الروبوت) */}
+            <FloatingRobotVisitorBanner
+              onOpenRegisterModal={() => {
+                setRegSuccess(false);
+                setRegError('');
+                setShowRegisterModal(true);
+              }}
+              quotexReferralLink={autoPilot.quotexReferralLink || 'https://broker-qx.pro/?lid=2303934'}
+              telegramVipChannelName={formatterOptions.channelTitle || '@ZadNBFX'}
+            />
 
             {/* NEW VISITOR INFO SECTION: Signal Accuracy + Zero Risk + No Martingale + VIP 24/7 Benefits */}
             <section className="grid grid-cols-1 lg:grid-cols-12 gap-5">
