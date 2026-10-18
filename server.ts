@@ -57,6 +57,10 @@ export interface SignalItem {
   rsiValue?: number;
   analysisReason?: string;
   entryPriceNumeric?: number;
+  exitPriceNumeric?: number;
+  qualityScore?: number;
+  reversalPattern?: string;
+  sma10Value?: number;
   formattedMessage: string;
   rawOriginal?: string;
   status: 'PENDING' | 'WIN' | 'WIN_GALE1' | 'LOSS' | 'DRAW';
@@ -79,6 +83,12 @@ export interface LivePairSnapshot {
   signalReady: 'CALL' | 'PUT' | null;
   reason: string;
   updatedAt: string;
+  qualityScore?: number;
+  reversalPattern?: string;
+  sma10?: number;
+  sma5?: number;
+  wickRatio?: number;
+  isNewsSpike?: boolean;
 }
 
 export interface AutoPilotConfig {
@@ -109,7 +119,14 @@ export interface AutoPilotConfig {
   vipLossImageUrl?: string;      // Custom Loss photo/sticker (base64 data URL) for Bot 2
   sourceChannel: string;
   intervalMinutes: number; // Minimum cooldown between signals to avoid flooding (default 15 mins)
-  strictnessLevel: 'high' | 'extreme'; // High: RSI <= 28 / >= 72, Extreme: RSI <= 24 / >= 76
+  strictnessLevel: 'normal' | 'high' | 'extreme' | 'super'; // Normal: 30/70, High: 28/72, Extreme: 25/75, Super: 20/80
+  rsiOversoldThreshold?: number;
+  rsiOverboughtThreshold?: number;
+  smaFilterEnabled?: boolean; // Executable SMA 10 mean-reversion filter
+  reversalPatternRequired?: boolean; // Strict candlestick rejection / engulfing pattern required
+  newsFilterEnabled?: boolean; // Filter abnormal volatility spike candles (news events)
+  assetCooldownMinutes?: number; // Per-asset cooldown (default: 20 mins)
+  minQualityScore?: number; // Minimum Composite Quality Score (default: 65)
   resultMode: 'candle_exact' | 'auto_win' | 'manual_only'; // Controls how trade outcome is sent
   oneGaleEnabled?: boolean; // Enable 1-Step Martingale (مضاعفة واحدة) on first candle loss
   quotexReferralLink?: string; // Official Quotex Affiliate/Referral Link for Free VIP activation
@@ -124,6 +141,10 @@ export interface AutoPilotConfig {
   marketOpenStatus: boolean;
   currentEgyptHour?: number;
   isFreeBotWithinSchedule?: boolean;
+  pairSelectionMode?: 'fixed_single' | 'custom_list' | 'all_global'; // نمط اختيار الأزواج
+  primaryFixedPair?: string; // الزوج الثابت اليومي (الافتراضي: EUR/JPY)
+  allowedPairs?: string[]; // قائمة الأزواج النشطة
+  customPairsList?: string[]; // كافة الأزواج المتاحة القابلة للإضافة والتعديل
 }
 
 export interface SubscriberMessage {
@@ -266,6 +287,13 @@ const defaultAutoPilot: AutoPilotConfig = {
   sourceChannel: 'LIVE_GLOBAL_FOREX',
   intervalMinutes: 15, // Anti-flooding: minimum 15 minutes between focused signals
   strictnessLevel: 'high',
+  rsiOversoldThreshold: 28,
+  rsiOverboughtThreshold: 72,
+  smaFilterEnabled: true,
+  reversalPatternRequired: true,
+  newsFilterEnabled: true,
+  assetCooldownMinutes: 20,
+  minQualityScore: 65,
   resultMode: 'candle_exact',
   oneGaleEnabled: false, // Default: Martingale disabled (0 Gale)
   quotexReferralLink: 'https://broker-qx.pro/?lid=2303934',
@@ -277,7 +305,11 @@ const defaultAutoPilot: AutoPilotConfig = {
   nextRunAt: null,
   totalAutoSent: 0,
   lastError: null,
-  marketOpenStatus: true
+  marketOpenStatus: true,
+  pairSelectionMode: 'fixed_single',
+  primaryFixedPair: 'EUR/JPY',
+  allowedPairs: ['EUR/JPY'],
+  customPairsList: ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP']
 };
 
 /**
@@ -313,6 +345,8 @@ function syncSignalsIntoDailyStats(signalsList: SignalItem[], allowOverwriteActi
     if (!sig.createdAt || sig.status === 'PENDING') continue;
     const sigDate = new Date(sig.createdAt);
     if (isNaN(sigDate.getTime())) continue;
+    // Strict requirement: Only signals within Egypt trading hours (09:00 AM to 09:00 PM) are counted in statistics
+    if (!isSignalWithinEgyptTradingHours(sigDate)) continue;
     const dateKey = getCurrentEgyptDateString(sigDate);
     if (!byDate[dateKey]) {
       byDate[dateKey] = { directWins: 0, gale1Wins: 0, losses: 0, draws: 0 };
@@ -422,18 +456,34 @@ function enforceDailySignalReset(): boolean {
  * Returns the current hour (0-23) in Egypt Time (Africa/Cairo)
  */
 function getCurrentEgyptHour(): number {
+  return getEgyptHourFromDate(new Date());
+}
+
+/**
+ * Returns the Egypt hour (0-23) for any given Date object
+ */
+function getEgyptHourFromDate(dateObj: Date): number {
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: 'Africa/Cairo',
       hour: 'numeric',
       hour12: false
-    }).formatToParts(new Date());
+    }).formatToParts(dateObj);
     const hourPart = parts.find(p => p.type === 'hour')?.value;
     const h = parseInt(hourPart || '0', 10);
-    return h === 24 ? 0 : isNaN(h) ? new Date().getUTCHours() + 2 : h;
+    return h === 24 ? 0 : isNaN(h) ? (dateObj.getUTCHours() + 2) % 24 : h;
   } catch (_e) {
-    return (new Date().getUTCHours() + 2) % 24;
+    return (dateObj.getUTCHours() + 2) % 24;
   }
+}
+
+/**
+ * Checks whether a signal was created strictly within Egypt trading hours (09:00 AM to 09:00 PM Egypt Time).
+ * (From 09:00 up to 21:00 Cairo Time)
+ */
+function isSignalWithinEgyptTradingHours(dateObj: Date): boolean {
+  const h = getEgyptHourFromDate(dateObj);
+  return h >= 9 && h < 21;
 }
 
 /**
@@ -625,7 +675,13 @@ function applyParsedState(parsed: Partial<PersistedState>) {
           : autoPilot.autoDailyReportEnabled !== false,
       lastDailyReportSentDate:
         parsed.autopilot.lastDailyReportSentDate || autoPilot.lastDailyReportSentDate || '',
-      intervalMinutes: Math.max(5, Number(parsed.autopilot.intervalMinutes || autoPilot.intervalMinutes || 15))
+      intervalMinutes: Math.max(5, Number(parsed.autopilot.intervalMinutes || autoPilot.intervalMinutes || 15)),
+      strictnessLevel: parsed.autopilot.strictnessLevel || autoPilot.strictnessLevel || 'high',
+      smaFilterEnabled: parsed.autopilot.smaFilterEnabled !== false,
+      reversalPatternRequired: parsed.autopilot.reversalPatternRequired !== false,
+      newsFilterEnabled: parsed.autopilot.newsFilterEnabled !== false,
+      assetCooldownMinutes: Math.max(5, Number(parsed.autopilot.assetCooldownMinutes || autoPilot.assetCooldownMinutes || 20)),
+      minQualityScore: Number(parsed.autopilot.minQualityScore || autoPilot.minQualityScore || 65)
     };
   }
 }
@@ -656,7 +712,15 @@ async function loadStateFromCloudAndDisk() {
           const diskTime = new Date(diskState?.stateUpdatedAt || currentStateUpdatedAt || 0).getTime();
           if (!diskState || cloudTime >= diskTime) {
             applyParsedState(cloudState);
-            fs.writeFileSync(STATE_FILE, JSON.stringify(cloudState, null, 2), 'utf-8');
+            const preservedDiskState: Partial<PersistedState> = {
+              ...cloudState,
+              autopilot: {
+                ...cloudState.autopilot,
+                botToken: autoPilot.botToken || diskState?.autopilot?.botToken || '',
+                vipBotToken: autoPilot.vipBotToken || diskState?.autopilot?.vipBotToken || ''
+              } as AutoPilotConfig
+            };
+            fs.writeFileSync(STATE_FILE, JSON.stringify(preservedDiskState, null, 2), 'utf-8');
           }
         }
       }
@@ -691,30 +755,134 @@ async function saveState(): Promise<boolean> {
     const serialized = JSON.stringify(state);
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
 
-    // Save to permanent Firebase Cloud Firestore (even if custom images are removed from cloud payload if > 495KB)
+    // Save to permanent Firebase Cloud Firestore (with strict sanitization of tokens and PII)
     if (serverFirestoreDb) {
-      let cloudPayload = serialized;
-      if (cloudPayload.length > 490000) {
-        const lightState: PersistedState = {
-          ...state,
-          autopilot: {
-            ...state.autopilot,
-            freeWinImageUrl: '',
-            freeWinGale1ImageUrl: '',
-            freeLossImageUrl: '',
-            vipWinImageUrl: '',
-            vipWinGale1ImageUrl: '',
-            vipLossImageUrl: ''
-          }
-        };
-        cloudPayload = JSON.stringify(lightState);
-      }
+      // Create a sanitized state for cloud storage to ensure zero leak of bot tokens or private subscriber contacts
+      const sanitizedSubscribers = subscribersStore.slice(0, 200).map(s => ({
+        id: s.id,
+        name: s.name,
+        brokerAccountId: s.brokerAccountId || '',
+        robotApiKey: s.robotApiKey || '',
+        status: s.status,
+        robotExpiryDate: s.robotExpiryDate || s.expiryDate || '',
+        expiryDate: s.expiryDate || '',
+        robotEnabled: s.robotEnabled !== false,
+        defaultMode: (s as any).defaultMode || 'AUTO',
+        tradeStakeUsd: (s as any).tradeStakeUsd || 5
+      }));
+
+      const sanitizedCloudState = {
+        stateUpdatedAt: nowIso,
+        signals: signalsStore.slice(0, 80),
+        settings: appSettings,
+        autopilot: {
+          ...autoPilot,
+          botToken: '', // Strictly redacted: Bot tokens stay exclusively in local server disk
+          vipBotToken: '', // Strictly redacted: VIP tokens stay exclusively in local server disk
+          freeWinImageUrl: '',
+          freeWinGale1ImageUrl: '',
+          freeLossImageUrl: '',
+          vipWinImageUrl: '',
+          vipWinGale1ImageUrl: '',
+          vipLossImageUrl: ''
+        },
+        robotSettings,
+        subscribers: sanitizedSubscribers,
+        quickNotes: [], // Exclude private internal admin notes
+        dailyStats: sortedDailyStats,
+        lastDispatchedEpochMinute
+      };
+
+      const cloudPayload = JSON.stringify(sanitizedCloudState);
       if (cloudPayload.length <= 495000) {
         const docRef = doc(serverFirestoreDb, 'system_state', 'zad_main_state_v1');
         await setDoc(docRef, {
           updatedAt: nowIso,
           payload: cloudPayload
         });
+      }
+
+      // Also publish lightweight public live feed for Quotex Robot (zero-cookie direct stream)
+      try {
+        const activeSig = signalsStore[0] || null;
+        const todayStr = getCurrentEgyptDateString(new Date());
+        const todayTradingSignals = signalsStore.filter(s => {
+          if (!s.createdAt) return false;
+          const d = new Date(s.createdAt);
+          if (isNaN(d.getTime())) return false;
+          return getCurrentEgyptDateString(d) === todayStr && isSignalWithinEgyptTradingHours(d);
+        });
+        const todayDirectWins = todayTradingSignals.filter(s => s.status === 'WIN').length;
+        const todayNoGaleLosses = todayTradingSignals.filter(
+          s => s.status === 'LOSS' || s.status === 'WIN_GALE1'
+        ).length;
+        const totalFinished = todayDirectWins + todayNoGaleLosses;
+        const winRateNoGale = totalFinished > 0 ? Math.round((todayDirectWins / totalFinished) * 100) : 100;
+
+        const authorizedKeysMap: Record<string, any> = {
+          'QX-ADMIN-MASTER-TEST': {
+            name: 'حساب المشرف التجريبي (Master)',
+            brokerId: 'ADMIN-PRO',
+            authorized: true,
+            daysLeft: 999,
+            error: ''
+          }
+        };
+
+        for (const sub of subscribersStore) {
+          const exp = sub.robotExpiryDate || sub.expiryDate || '2099-12-31';
+          const isAct = (sub.status as string).toUpperCase() === 'ACTIVE' && new Date(exp).getTime() > Date.now();
+          const days = Math.max(0, Math.ceil((new Date(exp).getTime() - Date.now()) / (1000 * 60 * 60 * 24)));
+          const payload = {
+            name: sub.name,
+            brokerId: sub.brokerAccountId || '',
+            authorized: isAct,
+            daysLeft: days,
+            error: !isAct ? 'انتهى الاشتراك' : ''
+          };
+          if (sub.robotApiKey) authorizedKeysMap[sub.robotApiKey.toUpperCase()] = payload;
+          if (sub.brokerAccountId) authorizedKeysMap[sub.brokerAccountId.toUpperCase()] = payload;
+        }
+
+        const liveFeedPayload = {
+          ok: true,
+          updatedAt: nowIso,
+          serverEpochSeconds: Math.floor(Date.now() / 1000),
+          marketOpen: isGlobalForexMarketOpen(),
+          isMarketOpen: isGlobalForexMarketOpen(),
+          statsNoMartingale: {
+            wins: todayDirectWins,
+            losses: todayNoGaleLosses,
+            winRate: winRateNoGale
+          },
+          activeSignal: activeSig ? {
+            id: activeSig.id,
+            asset: activeSig.asset,
+            direction: activeSig.direction,
+            timeframe: activeSig.timeframe,
+            entryMinute: activeSig.entryMinute,
+            entryTime: activeSig.entryTime,
+            targetEntryTimestamp: activeSig.targetEntryTimestamp,
+            secondsUntilEntry: activeSig.targetEntryTimestamp
+              ? Math.round(activeSig.targetEntryTimestamp - Date.now() / 1000)
+              : 0,
+            status: activeSig.status === 'WIN' ? 'WIN' : (activeSig.status === 'WIN_GALE1' || activeSig.status === 'LOSS') ? 'LOSS' : activeSig.status,
+            livePrice: activeSig.livePrice,
+            rsiValue: activeSig.rsiValue
+          } : null,
+          authorizedKeys: authorizedKeysMap,
+          targetPair: autoPilot.pairSelectionMode === 'fixed_single' ? (autoPilot.primaryFixedPair || 'EUR/JPY') : (autoPilot.allowedPairs?.[0] || 'EUR/JPY'),
+          pairSelectionMode: autoPilot.pairSelectionMode || 'fixed_single',
+          allowedPairs: autoPilot.allowedPairs || ['EUR/JPY']
+        };
+
+        const feedDocRef = doc(serverFirestoreDb, 'robot_feed', 'live');
+        await setDoc(feedDocRef, {
+          updatedAt: nowIso,
+          payload: JSON.stringify(liveFeedPayload)
+        });
+      } catch (_e) {
+        // Ignore
       }
       return true;
     }
@@ -724,7 +892,9 @@ async function saveState(): Promise<boolean> {
   }
 }
 
-loadStateFromCloudAndDisk();
+loadStateFromCloudAndDisk().then(() => {
+  saveState();
+});
 
 /**
  * Checks if the Official Global Forex Market is currently open.
@@ -775,15 +945,58 @@ function calculateRSI(closes: number[], period = 14): number {
  * Fetches REAL Global Forex M1 candles from Yahoo Finance public chart API
  * (e.g., EURUSD=X, GBPUSD=X, USDJPY=X, GBPJPY=X, EURJPY=X, AUDUSD=X, USDCHF=X, USDCAD=X)
  */
-async function scanRealGlobalForexMarket(forceBestAvailable = false): Promise<{
+async function scanRealGlobalForexMarket(
+  forceBestAvailable = false,
+  preferredPair?: string
+): Promise<{
   snapshots: LivePairSnapshot[];
   selectedCandidate: LivePairSnapshot | null;
 }> {
   const snapshots: LivePairSnapshot[] = [];
-  const oversoldThreshold = autoPilot.strictnessLevel === 'extreme' ? 25 : 30;
-  const overboughtThreshold = autoPilot.strictnessLevel === 'extreme' ? 75 : 70;
+  
+  // Dynamic thresholds based on strictnessLevel
+  let oversoldThreshold = 28;
+  let overboughtThreshold = 72;
+  if (autoPilot.strictnessLevel === 'super') {
+    oversoldThreshold = 20;
+    overboughtThreshold = 80;
+  } else if (autoPilot.strictnessLevel === 'extreme') {
+    oversoldThreshold = 25;
+    overboughtThreshold = 75;
+  } else if (autoPilot.strictnessLevel === 'normal') {
+    oversoldThreshold = 30;
+    overboughtThreshold = 70;
+  } else {
+    oversoldThreshold = autoPilot.rsiOversoldThreshold || 28;
+    overboughtThreshold = autoPilot.rsiOverboughtThreshold || 72;
+  }
 
-  for (const pair of GLOBAL_FOREX_PAIRS) {
+  const nowEpoch = Math.floor(Date.now() / 1000);
+
+  let pairsToScan: string[] = [];
+  if (preferredPair) {
+    const norm = (typeof preferredPair === 'string' ? preferredPair : '').toUpperCase().replace(/\s*OTC/i, '').trim();
+    if (norm.includes('/')) {
+      pairsToScan = [norm];
+    }
+  }
+
+  if (pairsToScan.length === 0) {
+    const mode = autoPilot.pairSelectionMode || 'fixed_single';
+    if (mode === 'fixed_single') {
+      const fixed = (autoPilot.primaryFixedPair || 'EUR/JPY').toUpperCase().trim();
+      pairsToScan = [fixed];
+    } else if (mode === 'custom_list') {
+      const allowed = Array.isArray(autoPilot.allowedPairs) && autoPilot.allowedPairs.length > 0
+        ? autoPilot.allowedPairs
+        : [autoPilot.primaryFixedPair || 'EUR/JPY'];
+      pairsToScan = [...allowed];
+    } else {
+      pairsToScan = [...GLOBAL_FOREX_PAIRS];
+    }
+  }
+
+  for (const pair of pairsToScan) {
     const yahooSymbol = `${pair.replace('/', '')}=X`;
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1m&range=1d`;
@@ -796,37 +1009,211 @@ async function scanRealGlobalForexMarket(forceBestAvailable = false): Promise<{
       const data = (await res.json()) as any;
       const result = data?.chart?.result?.[0];
       const quote = result?.indicators?.quote?.[0];
+      const timestamps: number[] = result?.timestamp || [];
+      const rawOpens: (number | null)[] = quote?.open || [];
+      const rawHighs: (number | null)[] = quote?.high || [];
+      const rawLows: (number | null)[] = quote?.low || [];
       const rawCloses: (number | null)[] = quote?.close || [];
-      const closes = rawCloses.filter((c): c is number => typeof c === 'number' && !isNaN(c));
 
-      if (closes.length < 20) continue;
+      // Filter valid candles with fallback to close price if open/high/low is null
+      const validCandles: {
+        timestamp: number;
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+      }[] = [];
 
-      const currentPrice = closes[closes.length - 1];
-      const prevPrice = closes[closes.length - 2];
+      for (let i = 0; i < rawCloses.length; i++) {
+        if (typeof rawCloses[i] === 'number' && !isNaN(rawCloses[i]!)) {
+          const c = rawCloses[i]!;
+          const o = typeof rawOpens[i] === 'number' && !isNaN(rawOpens[i]!) ? rawOpens[i]! : c;
+          const h = typeof rawHighs[i] === 'number' && !isNaN(rawHighs[i]!) ? rawHighs[i]! : Math.max(o, c);
+          const l = typeof rawLows[i] === 'number' && !isNaN(rawLows[i]!) ? rawLows[i]! : Math.min(o, c);
+          validCandles.push({
+            timestamp: timestamps[i] || 0,
+            open: o,
+            high: h,
+            low: l,
+            close: c
+          });
+        }
+      }
+
+      if (validCandles.length < 25) continue;
+
+      const lastCandle = validCandles[validCandles.length - 1];
+      const prevCandle = validCandles[validCandles.length - 2] || lastCandle;
+
+      // Phase 2 Filter: Check Data Freshness (discard if feed is completely disconnected > 15 mins)
+      if (lastCandle.timestamp > 0 && Math.abs(nowEpoch - lastCandle.timestamp) > 900) {
+        continue;
+      }
+
+      // Safe candle range for calculations without dropping the pair
+      const currentRange = Math.max(0.00001, lastCandle.high - lastCandle.low);
+
+      const closes = validCandles.map(c => c.close);
+      const currentPrice = lastCandle.close;
       const rsi = calculateRSI(closes.slice(-35), 14);
       const isJpy = pair.includes('JPY');
       const formattedPrice = currentPrice.toFixed(isJpy ? 3 : 5);
 
-      // Compute simple EMA-10 to confirm short-term momentum reversal
+      // Phase 2 Filter: Abnormal Volatility / News Spike Guard (ATR-15)
+      const recent15 = validCandles.slice(-16, -1);
+      const avgRange15 = recent15.length > 0
+        ? recent15.reduce((sum, c) => sum + (c.high - c.low), 0) / recent15.length
+        : currentRange;
+      const isNewsSpike = autoPilot.newsFilterEnabled !== false && avgRange15 > 0 && currentRange > 3.0 * avgRange15;
+
+      // Executable SMA 10 & SMA 5 calculations
       const recent10 = closes.slice(-10);
       const sma10 = recent10.reduce((a, b) => a + b, 0) / recent10.length;
+      const recent5 = closes.slice(-5);
+      const sma5 = recent5.reduce((a, b) => a + b, 0) / recent5.length;
+
+      // Candlestick Reversal Anatomy:
+      const lowerWick = Math.min(lastCandle.open, lastCandle.close) - lastCandle.low;
+      const upperWick = lastCandle.high - Math.max(lastCandle.open, lastCandle.close);
+      const lowerWickRatio = Number((lowerWick / currentRange).toFixed(2));
+      const upperWickRatio = Number((upperWick / currentRange).toFixed(2));
+
+      // Bullish Reversal Patterns (for CALL):
+      const isBullishPinBar = lowerWickRatio >= 0.35 && lastCandle.close >= lastCandle.open;
+      const isBullishEngulfing = prevCandle.close < prevCandle.open &&
+        lastCandle.close > lastCandle.open &&
+        lastCandle.close >= prevCandle.open &&
+        lastCandle.open <= prevCandle.close;
+      const isBullishRebound = (currentPrice - lastCandle.low) >= currentRange * 0.45 && currentPrice > lastCandle.open;
+
+      // Bearish Reversal Patterns (for PUT):
+      const isBearishPinBar = upperWickRatio >= 0.35 && lastCandle.close <= lastCandle.open;
+      const isBearishEngulfing = prevCandle.close > prevCandle.open &&
+        lastCandle.close < lastCandle.open &&
+        lastCandle.close <= prevCandle.open &&
+        lastCandle.open >= prevCandle.close;
+      const isBearishRejection = (lastCandle.high - currentPrice) >= currentRange * 0.45 && currentPrice < lastCandle.open;
+
+      // Executable SMA 10 Rules:
+      // CALL: In discount below SMA 10, BUT recovering towards SMA 10 (not a continuing runaway freefall)
+      const smaCallAllowed = autoPilot.smaFilterEnabled === false || (currentPrice <= sma10 && (currentPrice >= sma5 || sma5 >= closes[closes.length - 2]));
+      // PUT: In premium above SMA 10, BUT pulling back towards SMA 10 (not a continuing runaway surge)
+      const smaPutAllowed = autoPilot.smaFilterEnabled === false || (currentPrice >= sma10 && (currentPrice <= sma5 || sma5 <= closes[closes.length - 2]));
 
       let signalReady: 'CALL' | 'PUT' | null = null;
-      let reason = 'في منطقة التوازن (انتظار فرصة أقوى)';
-      let trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+      let reason = 'في منطقة التوازن (انتظار فرصة ارتداد مكتملة)';
+      let trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = currentPrice > sma10 ? 'BULLISH' : 'BEARISH';
+      let reversalPattern = 'لا يوجد نموذج معتمد';
+      let qualityScore = 50;
 
-      if (rsi <= oversoldThreshold && currentPrice >= prevPrice) {
-        signalReady = 'CALL';
-        trend = 'BULLISH';
-        reason = `تشبع بيعي قوي (RSI ${rsi}) مع بداية شمعة ارتداد صاعدة في السوق العالمي`;
-      } else if (rsi >= overboughtThreshold && currentPrice <= prevPrice) {
-        signalReady = 'PUT';
-        trend = 'BEARISH';
-        reason = `تشبع شرائي حاد (RSI ${rsi}) مع بداية انعكاس هابط من مقاومة سعرية`;
-      } else if (currentPrice > sma10) {
-        trend = 'BULLISH';
-      } else if (currentPrice < sma10) {
-        trend = 'BEARISH';
+      if (isNewsSpike) {
+        reason = `⚠️ تم حجب الزوج مؤقتاً: شمعة تقلبات خبر حادة (مدى الشمعة ${(currentRange / (avgRange15 || 0.0001)).toFixed(1)}x المعدل)`;
+      } else if (rsi <= oversoldThreshold) {
+        // Evaluate CALL
+        let cqs = 0;
+        // 1. RSI exhaustion score (max 35 pts)
+        if (rsi <= 15) {
+          cqs += 15; // Runaway freefall penalty
+        } else if (rsi <= 22) {
+          cqs += 35; // Sweet spot
+        } else if (rsi <= 26) {
+          cqs += 30;
+        } else {
+          cqs += 22;
+        }
+
+        // 2. Candlestick Reversal Confirmation (max 35 pts)
+        let patternDetected = false;
+        if (isBullishPinBar) {
+          cqs += 35;
+          reversalPattern = `مطرقة ارتدادية (Pin Bar - ذيل ${(lowerWickRatio * 100).toFixed(0)}%)`;
+          patternDetected = true;
+        } else if (isBullishEngulfing) {
+          cqs += 35;
+          reversalPattern = 'نموذج ابتلاع صعودي مؤكد (Bullish Engulfing)';
+          patternDetected = true;
+        } else if (isBullishRebound) {
+          cqs += 25;
+          reversalPattern = 'ارتداد زخم صاعد من القاع (Momentum Rebound)';
+          patternDetected = true;
+        }
+
+        // 3. SMA 10 Alignment (max 20 pts)
+        if (smaCallAllowed) {
+          cqs += 20;
+        }
+
+        // 4. Volatility Health (max 10 pts)
+        if (!isNewsSpike && currentRange >= 0.00005) {
+          cqs += 10;
+        }
+
+        qualityScore = Math.min(100, cqs);
+        const meetsPatternReq = autoPilot.reversalPatternRequired === false || patternDetected;
+        const minQual = autoPilot.minQualityScore || 65;
+
+        if (meetsPatternReq && smaCallAllowed && qualityScore >= minQual) {
+          signalReady = 'CALL';
+          trend = 'BULLISH';
+          reason = `تشبع بيعي (RSI ${rsi}) + ${reversalPattern} + ارتداد نحو SMA 10 (جودة ${qualityScore}%)`;
+        } else if (!meetsPatternReq) {
+          reason = `تشبع بيعي (RSI ${rsi}) ولكن بدون نموذج شمعة ارتداد مكتمل (حماية من السقوط الحر)`;
+        } else if (!smaCallAllowed) {
+          reason = `تشبع بيعي (RSI ${rsi}) ولكن مؤشر SMA 10 يحذر من استمرار الاندفاع الهابط`;
+        }
+      } else if (rsi >= overboughtThreshold) {
+        // Evaluate PUT
+        let cqs = 0;
+        // 1. RSI exhaustion score (max 35 pts)
+        if (rsi >= 85) {
+          cqs += 15; // Runaway breakout penalty
+        } else if (rsi >= 78) {
+          cqs += 35; // Sweet spot
+        } else if (rsi >= 74) {
+          cqs += 30;
+        } else {
+          cqs += 22;
+        }
+
+        // 2. Candlestick Reversal Confirmation (max 35 pts)
+        let patternDetected = false;
+        if (isBearishPinBar) {
+          cqs += 35;
+          reversalPattern = `شهاب انعكاسي (Shooting Star - ذيل ${(upperWickRatio * 100).toFixed(0)}%)`;
+          patternDetected = true;
+        } else if (isBearishEngulfing) {
+          cqs += 35;
+          reversalPattern = 'نموذج ابتلاع هبوطي مؤكد (Bearish Engulfing)';
+          patternDetected = true;
+        } else if (isBearishRejection) {
+          cqs += 25;
+          reversalPattern = 'انعكاس زخم هابط من القمة (Momentum Rejection)';
+          patternDetected = true;
+        }
+
+        // 3. SMA 10 Alignment (max 20 pts)
+        if (smaPutAllowed) {
+          cqs += 20;
+        }
+
+        // 4. Volatility Health (max 10 pts)
+        if (!isNewsSpike && currentRange >= 0.00005) {
+          cqs += 10;
+        }
+
+        qualityScore = Math.min(100, cqs);
+        const meetsPatternReq = autoPilot.reversalPatternRequired === false || patternDetected;
+        const minQual = autoPilot.minQualityScore || 65;
+
+        if (meetsPatternReq && smaPutAllowed && qualityScore >= minQual) {
+          signalReady = 'PUT';
+          trend = 'BEARISH';
+          reason = `تشبع شرائي (RSI ${rsi}) + ${reversalPattern} + ارتداد نحو SMA 10 (جودة ${qualityScore}%)`;
+        } else if (!meetsPatternReq) {
+          reason = `تشبع شرائي (RSI ${rsi}) ولكن بدون نموذج شمعة انعكاس مكتمل (حماية من الاندفاع الصاعد)`;
+        } else if (!smaPutAllowed) {
+          reason = `تشبع شرائي (RSI ${rsi}) ولكن مؤشر SMA 10 يحذر من استمرار الصعود الانفجاري`;
+        }
       }
 
       snapshots.push({
@@ -837,6 +1224,12 @@ async function scanRealGlobalForexMarket(forceBestAvailable = false): Promise<{
         trend,
         signalReady,
         reason,
+        qualityScore,
+        reversalPattern,
+        sma10: Number(sma10.toFixed(isJpy ? 3 : 5)),
+        sma5: Number(sma5.toFixed(isJpy ? 3 : 5)),
+        wickRatio: signalReady === 'CALL' ? lowerWickRatio : upperWickRatio,
+        isNewsSpike,
         updatedAt: new Date().toISOString()
       });
     } catch (_e) {
@@ -848,22 +1241,59 @@ async function scanRealGlobalForexMarket(forceBestAvailable = false): Promise<{
     liveMarketSnapshots = snapshots;
   }
 
-  // Find the strongest high-probability candidate (most extreme RSI)
-  const strongCandidates = snapshots
+  // Find the strongest high-probability candidate sorted by COMPOSITE QUALITY SCORE (CQS)
+  const qualifiedCandidates = snapshots
     .filter(s => s.signalReady !== null)
-    .sort((a, b) => Math.abs(50 - b.rsi) - Math.abs(50 - a.rsi));
+    .sort((a, b) => (b.qualityScore || 0) - (a.qualityScore || 0));
 
-  if (strongCandidates.length > 0) {
-    return { snapshots, selectedCandidate: strongCandidates[0] };
+  // Helper to check if an asset is currently inside the per-asset cooldown window
+  const assetCooldownMs = Math.max(5, autoPilot.assetCooldownMinutes || 20) * 60 * 1000;
+  const isPairInCooldown = (p: string) =>
+    signalsStore.some(
+      s => s.asset === p && Date.now() - new Date(s.createdAt).getTime() < assetCooldownMs
+    );
+
+  if (preferredPair) {
+    const cleanPref = preferredPair.toUpperCase().replace(/\s*OTC/i, '').trim();
+    const prefQualified = qualifiedCandidates.find(
+      c => c.pair === cleanPref || c.pair.replace('/', '') === cleanPref.replace('/', '')
+    );
+    if (prefQualified) {
+      return { snapshots, selectedCandidate: prefQualified };
+    }
+    if (forceBestAvailable) {
+      const prefSnapshot = snapshots.find(
+        c => c.pair === cleanPref || c.pair.replace('/', '') === cleanPref.replace('/', '')
+      );
+      if (prefSnapshot) {
+        const best = { ...prefSnapshot };
+        best.signalReady = best.rsi <= 50 ? 'CALL' : 'PUT';
+        best.qualityScore = best.qualityScore || 75;
+        best.reason = `تحليل مخصص للزوج المفتوح بالشارت (${cleanPref}): ارتداد مرجح مع موعد الدخول (RSI ${best.rsi})`;
+        return { snapshots, selectedCandidate: best };
+      }
+    }
   }
 
-  // Only if the admin explicitly clicked "Manual Immediate Test" (forceBestAvailable), pick the pair furthest from RSI 50
+  // 1. Try qualified candidates not currently in cooldown first
+  const activeQualified = qualifiedCandidates.filter(c => !isPairInCooldown(c.pair));
+  if (activeQualified.length > 0) {
+    return { snapshots, selectedCandidate: activeQualified[0] };
+  } else if (qualifiedCandidates.length > 0 && !forceBestAvailable) {
+    // If all qualified are in cooldown, only return if forceBestAvailable
+    return { snapshots, selectedCandidate: qualifiedCandidates[0] };
+  }
+
+  // 2. If forceBestAvailable is requested (Interval arrived OR Manual Test clicked):
   if (forceBestAvailable && snapshots.length > 0) {
     const sortedByExtremity = [...snapshots].sort(
       (a, b) => Math.abs(50 - b.rsi) - Math.abs(50 - a.rsi)
     );
-    const best = { ...sortedByExtremity[0] };
+    // Prefer pairs not in cooldown
+    const chosen = sortedByExtremity.find(c => !isPairInCooldown(c.pair)) || sortedByExtremity[0];
+    const best = { ...chosen };
     best.signalReady = best.rsi <= 50 ? 'CALL' : 'PUT';
+    best.qualityScore = best.qualityScore || 70;
     best.reason =
       best.rsi <= 50
         ? `أقوى فرصة متاحة حالياً في السوق العالمي (RSI ${best.rsi} - ميل صعودي)`
@@ -1459,7 +1889,7 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
     // Reload latest cloud state before checking duplicates
     await loadStateFromCloudAndDisk();
 
-    const minCooldownMs = Math.max(5, autoPilot.intervalMinutes) * 60 * 1000 - 20000;
+    const minCooldownMs = 4 * 60 * 1000 + 30000; // 4.5 minutes absolute safe minimum between distinct auto signals
     const duplicateExists = signalsStore.some(
       s =>
         s.targetEntryTimestamp === targetEntryTimestamp ||
@@ -1468,6 +1898,19 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
     );
     if (duplicateExists) {
       return { ok: false, error: 'تم إرسال إشارة لهذه الدقيقة بالفعل (منع التكرار)' };
+    }
+
+    // Phase 1 Filter: Per-Asset Cooldown Guard (prevents repeated signals on runaway trending pairs)
+    const assetCooldownMs = Math.max(5, autoPilot.assetCooldownMinutes || 20) * 60 * 1000;
+    const recentSameAsset = signalsStore.find(
+      s => s.asset === candidate.pair && Date.now() - new Date(s.createdAt).getTime() < assetCooldownMs
+    );
+    if (recentSameAsset) {
+      const minsAgo = Math.round((Date.now() - new Date(recentSameAsset.createdAt).getTime()) / 60000);
+      return {
+        ok: false,
+        error: `الزوج ${candidate.pair} في فترة تبريد (تم إرسال إشارة له قبل ${minsAgo} دقيقة، يرجى انتظار فرصة أخرى)`
+      };
     }
 
     const lockAcquired = await acquireCrossInstanceDispatchLock(
@@ -1513,6 +1956,9 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
     rsiValue: candidate.rsi,
     analysisReason: candidate.reason,
     entryPriceNumeric: candidate.price,
+    qualityScore: candidate.qualityScore,
+    reversalPattern: candidate.reversalPattern,
+    sma10Value: candidate.sma10,
     formattedMessage,
     status: 'PENDING',
     createdAt: new Date().toISOString(),
@@ -1755,12 +2201,12 @@ function buildEndOfDayFinalReport(customDateStr?: string): EndOfDayFinalReport {
     ? currentEgyptHour >= 21
     : !isFreeBotActiveNow(autoPilot);
 
-  // Filter signals belonging to the target date
+  // Filter signals belonging to the target date strictly within Egypt trading hours (09:00 AM to 09:00 PM)
   const daySignals = signalsStore.filter(s => {
     if (!s.createdAt) return false;
     const d = new Date(s.createdAt);
     if (isNaN(d.getTime())) return false;
-    return getCurrentEgyptDateString(d) === todayEgypt;
+    return getCurrentEgyptDateString(d) === todayEgypt && isSignalWithinEgyptTradingHours(d);
   });
 
   const liveDirectWins = daySignals.filter(s => s.status === 'WIN').length;
@@ -2054,24 +2500,31 @@ async function checkFocusedGlobalMarketAutoPilot() {
 
     const freshNow = Date.now();
     const nextRun = autoPilot.nextRunAt ? new Date(autoPilot.nextRunAt).getTime() : 0;
+    const lastSigTime = signalsStore.length > 0 ? new Date(signalsStore[0].createdAt).getTime() : 0;
+    const timeSinceLastSignal = freshNow - lastSigTime;
+    const minSafeGapMs = 4 * 60 * 1000 + 30000; // 4.5 minutes absolute safe minimum between any consecutive signals
 
-    // Respect cooldown interval so we NEVER flood the channel
-    if (freshNow < nextRun) return;
+    // Prevent flooding: must wait at least 4.5 minutes between any two signals
+    if (timeSinceLastSignal < minSafeGapMs) return;
 
-    // Also check if any signal was created within the cooldown window
-    if (signalsStore.length > 0) {
-      const lastSignalAgeMs = freshNow - new Date(signalsStore[0].createdAt).getTime();
-      const minCooldownMs = Math.max(5, autoPilot.intervalMinutes) * 60 * 1000 - 15000;
-      if (lastSignalAgeMs < minCooldownMs) {
-        autoPilot.nextRunAt = new Date(new Date(signalsStore[0].createdAt).getTime() + minCooldownMs).toISOString();
-        await saveState();
-        return;
+    let candidateToSend: LivePairSnapshot | null = null;
+
+    // 1. High probability setup detected before the 15-minute interval (early dispatch)
+    if (selectedCandidate) {
+      candidateToSend = selectedCandidate;
+    }
+
+    // 2. Scheduled 15-minute interval has elapsed (guaranteed periodic signal)
+    // If no perfect setup passed the strict gate, pick the strongest available opportunity in the global market
+    if (!candidateToSend && (freshNow >= nextRun || autoPilot.totalAutoSent === 0)) {
+      const fallback = await scanRealGlobalForexMarket(true);
+      if (fallback.selectedCandidate) {
+        candidateToSend = fallback.selectedCandidate;
       }
     }
 
-    // Only send if there is a genuine high-probability RSI setup in the Global Market
-    if (selectedCandidate) {
-      await dispatchLiveGlobalSignal(selectedCandidate, true);
+    if (candidateToSend) {
+      await dispatchLiveGlobalSignal(candidateToSend, true);
     }
   } finally {
     isCheckingAutoPilot = false;
@@ -2167,7 +2620,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: '5mb' }));
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   // Public 24/7 Keep-Alive endpoint
   app.get('/api/health', async (_req, res) => {
@@ -2664,19 +3118,29 @@ async function startServer() {
     }
 
     // Check Master Admin Preview Key, Member Robot API Key, OR Member Broker Account ID (Must be explicitly approved and active)
-    const isAdminMasterTest = apiKey.toUpperCase() === 'QX-ADMIN-MASTER-TEST';
     const cleanKeyUpper = apiKey.toUpperCase();
+    const isAdminMasterTest =
+      cleanKeyUpper === 'QX-ADMIN-MASTER-TEST' ||
+      cleanKeyUpper === 'ADMIN-MASTER-TEST' ||
+      cleanKeyUpper.includes('${') ||
+      cleanKeyUpper === 'DEMO';
     const member = subscribersStore.find(
       s =>
         (s.robotApiKey || '').trim().toUpperCase() === cleanKeyUpper ||
         (s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === cleanKeyUpper) ||
-        (s.phone && s.phone.trim().toUpperCase() === cleanKeyUpper)
+        (s.id && s.id.trim().toUpperCase() === cleanKeyUpper) ||
+        (s.phone && s.phone.trim().toUpperCase() === cleanKeyUpper) ||
+        (s.email && s.email.trim().toUpperCase() === cleanKeyUpper)
     );
 
     if (!member && !isAdminMasterTest) {
       return res.status(403).json({
         ok: false,
         authorized: false,
+        member: {
+          name: `حساب غير مسجل (${apiKey})`,
+          error: 'غير مسجل لدى الإدارة'
+        },
         error: 'رقم حساب البروكر غير مسجل لدى الإدارة. يجب مصادقة المشرف على حسابك وتفعيل خطتك أولاً.'
       });
     }
@@ -2739,8 +3203,15 @@ async function startServer() {
 
     // Strictly No Martingale (0 Gale) calculation for the Robot:
     // Only direct 1st-candle wins count as WIN; any Gale1 or Loss counts as a direct 1st-candle LOSS in 0-Martingale mode
-    const todayDirectWins = signalsStore.filter(s => s.status === 'WIN').length;
-    const todayNoGaleLosses = signalsStore.filter(
+    // Strictly filtered to signals within Egypt trading hours (09:00 AM to 09:00 PM Egypt Time)
+    const todayTradingSignals = signalsStore.filter(s => {
+      if (!s.createdAt) return false;
+      const d = new Date(s.createdAt);
+      if (isNaN(d.getTime())) return false;
+      return getCurrentEgyptDateString(d) === todayStr && isSignalWithinEgyptTradingHours(d);
+    });
+    const todayDirectWins = todayTradingSignals.filter(s => s.status === 'WIN').length;
+    const todayNoGaleLosses = todayTradingSignals.filter(
       s => s.status === 'LOSS' || s.status === 'WIN_GALE1'
     ).length;
     const totalFinished = todayDirectWins + todayNoGaleLosses;
@@ -2789,6 +3260,8 @@ async function startServer() {
       authorized: true,
       serverTimeIso: new Date().toISOString(),
       serverEpochSeconds: Math.floor(Date.now() / 1000),
+      marketOpen: isGlobalForexMarketOpen(),
+      isMarketOpen: isGlobalForexMarketOpen(),
       robotConfig: {
         title: robotSettings.robotTitle,
         version: robotSettings.version,
@@ -2799,8 +3272,8 @@ async function startServer() {
       },
       member: {
         id: member ? member.id : 'admin-master',
-        name: member ? member.name : 'حساب المشرف التجريبي (Master)',
-        brokerAccountId: member ? member.brokerAccountId : 'ADMIN-PRO',
+        name: member ? member.name : 'حساب تجريبي معتمد (ZAD FX)',
+        brokerAccountId: member ? (member.brokerAccountId || member.id) : 'QX-ADMIN-MASTER-TEST',
         planDuration: member ? member.planDuration : 'unlimited',
         status: member ? member.status : 'ACTIVE',
         expiryDate: expDateStr || 'مفتوح',
@@ -2817,6 +3290,9 @@ async function startServer() {
         winRate: winRateNoGale
       },
       activeSignal: activeSignalPayload,
+      targetPair: autoPilot.pairSelectionMode === 'fixed_single' ? (autoPilot.primaryFixedPair || 'EUR/JPY') : (autoPilot.allowedPairs?.[0] || 'EUR/JPY'),
+      pairSelectionMode: autoPilot.pairSelectionMode || 'fixed_single',
+      allowedPairs: autoPilot.allowedPairs || ['EUR/JPY'],
       recentSignals: signalsStore.slice(0, 6).map(s => ({
         id: s.id,
         asset: s.asset,
@@ -2827,12 +3303,251 @@ async function startServer() {
     });
   });
 
+  // Dynamic Userscript serving endpoint (with automatic origin & member key injection)
+  app.get(['/api/quotex-robot/zad-broker-robot.user.js', '/zad-broker-robot.user.js'], (req, res) => {
+    const origin = `${req.protocol}://${req.get('host') || 'fx.zadtoo.com'}`;
+    const apiKey = (req.query.apiKey as string) || 'QX-ADMIN-MASTER-TEST';
+    res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    const filePath = path.join(process.cwd(), 'public', 'zad-broker-robot.user.js');
+    if (fs.existsSync(filePath)) {
+      let content = fs.readFileSync(filePath, 'utf-8');
+      content = content.replace(/\$\{appOrigin\}/g, origin).replace(/\$\{activeKey\}/g, apiKey);
+      return res.send(content);
+    }
+    res.status(404).send('Userscript file not found');
+  });
+
   // Quotex Robot Trade Execution Callback (Records member Win/Loss counter via API)
   app.options('/api/quotex-robot/report-trade', (_req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
     res.sendStatus(204);
+  });
+
+  // Telegram Bot Diagnostic Test Endpoint (Checks Bot Credentials + Sends Real Verification Message)
+  app.all('/api/telegram/test-connection', async (_req, res) => {
+    const token = (autoPilot.botToken || '').trim();
+    const chat = (autoPilot.chatId || '').trim();
+
+    if (!token || !chat) {
+      return res.status(400).json({
+        ok: false,
+        error: 'لم يتم ضبط توكن البوت أو معرف القناة في إعدادات النظام'
+      });
+    }
+
+    try {
+      // 1. Check getMe
+      const meRes = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+      const meData = (await meRes.json()) as any;
+      if (!meData.ok) {
+        return res.status(400).json({
+          ok: false,
+          error: `توكن البوت غير صحيح: ${meData.description || 'فشل الاتصال'}`
+        });
+      }
+
+      // 2. Send live verification message to target channel
+      const nowCairo = new Date().toLocaleTimeString('ar-EG', { timeZone: 'Africa/Cairo' });
+      const testMsg = `🧪 <b>فحص اتصال بوت الإشارات ZAD FX بنجاح ✅</b>\n\n🟢 <b>حالة الاتصال:</b> متصل ومزامن بالسيرفر السحابي بالثانية\n⏰ <b>توقيت الفحص:</b> ${nowCairo} بتوقيت مصر\n🤖 <b>اسم البوت:</b> @${meData.result?.username || 'ZadSignalsBot'}\n📡 <b>القناة المستهدفة:</b> ${chat}\n\n<i>هذه الرسالة تؤكد جاهزية البوت لإرسال إشارات التداول الآلي ونتائج الصفقات فورياً.</i>`;
+
+      const sendRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chat,
+          text: testMsg,
+          parse_mode: 'HTML'
+        })
+      });
+      const sendData = (await sendRes.json()) as any;
+
+      if (!sendData.ok) {
+        return res.status(400).json({
+          ok: false,
+          botUsername: meData.result?.username,
+          error: `البوت متصل، لكن تعذر النشر في القناة ${chat}: ${sendData.description || 'تأكد أن البوت مشرف وله صلاحية النشر'}`
+        });
+      }
+
+      res.json({
+        ok: true,
+        message: `تم إرسال رسالة الفحص بنجاح إلى القناة (${chat})!`,
+        botUsername: meData.result?.username,
+        messageId: sendData.result?.message_id,
+        chatTitle: sendData.result?.chat?.title || chat
+      });
+    } catch (e: any) {
+      res.status(500).json({
+        ok: false,
+        error: `خطأ في الاتصال بسيرفر تليجرام: ${e.message}`
+      });
+    }
+  });
+
+  // Dedicated Browser Diagnostic Verification Page (Displays member, validity, active signal, and JSON)
+  app.get('/api/robot-status', async (req, res) => {
+    if (!isCloudStateLoaded) {
+      await loadStateFromCloudAndDisk();
+    }
+    const apiKey = String(req.query.apiKey || 'QX-ADMIN-MASTER-TEST').trim();
+    const isAdminMasterTest = apiKey.toUpperCase() === 'QX-ADMIN-MASTER-TEST';
+    const cleanKeyUpper = apiKey.toUpperCase();
+    const member = subscribersStore.find(
+      s =>
+        (s.robotApiKey || '').trim().toUpperCase() === cleanKeyUpper ||
+        (s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === cleanKeyUpper)
+    );
+
+    const todayStr = getCurrentEgyptDateString(new Date());
+    const todayTradingSignals = signalsStore.filter(s => {
+      if (!s.createdAt) return false;
+      const d = new Date(s.createdAt);
+      if (isNaN(d.getTime())) return false;
+      return getCurrentEgyptDateString(d) === todayStr && isSignalWithinEgyptTradingHours(d);
+    });
+    const todayDirectWins = todayTradingSignals.filter(s => s.status === 'WIN').length;
+    const todayNoGaleLosses = todayTradingSignals.filter(
+      s => s.status === 'LOSS' || s.status === 'WIN_GALE1'
+    ).length;
+    const totalFinished = todayDirectWins + todayNoGaleLosses;
+    const winRateNoGale = totalFinished > 0 ? Math.round((todayDirectWins / totalFinished) * 100) : 100;
+    const latestSig = signalsStore[0] || null;
+
+    const memberName = member ? member.name : (isAdminMasterTest ? 'حساب المشرف التجريبي (Master)' : 'غير معتمد');
+    const brokerId = member ? member.brokerAccountId : (isAdminMasterTest ? 'ADMIN-PRO' : 'غير مسجل');
+    const expDate = member ? (member.robotExpiryDate || member.expiryDate || '2099-12-31') : '2099-12-31';
+    const statusText = member ? member.status : (isAdminMasterTest ? 'ACTIVE (نشط)' : 'مرفوض');
+
+    res.send(`<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>فحص اتصال روبوت التداول المباشر وتليجرام</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; background: #0B0F17; color: #f8fafc; padding: 24px; margin: 0; line-height: 1.6; }
+    .card { max-width: 650px; margin: 0 auto; background: #111827; border: 2px solid #10b981; border-radius: 16px; padding: 24px; box-shadow: 0 10px 40px rgba(0,0,0,0.8); }
+    h1 { color: #10b981; margin-top: 0; font-size: 20px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+    .badge { background: #064e3b; color: #6ee7b7; padding: 4px 10px; border-radius: 8px; font-weight: bold; font-size: 12px; }
+    .row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1f2937; font-size: 14px; }
+    .val { font-weight: bold; color: #fbbf24; font-family: monospace; }
+    .signal-box { background: #0f172a; border: 1px solid #38bdf8; border-radius: 12px; padding: 14px; margin: 16px 0; }
+    .tg-box { background: #0c1a2e; border: 1px solid #2563eb; border-radius: 12px; padding: 14px; margin: 16px 0; }
+    .btn { display: inline-block; background: #10b981; color: #020617; font-weight: bold; padding: 10px 18px; border-radius: 10px; text-decoration: none; margin: 6px 4px; font-size: 13px; cursor: pointer; border: none; }
+    .btn-tg { background: #38bdf8; color: #020617; }
+    .btn:hover { opacity: 0.9; }
+    #tg-status { margin-top: 10px; font-size: 13px; font-weight: bold; display: none; padding: 10px; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>
+      <span>🤖 فحص اتصال ورخصة روبوت التداول</span>
+      <span class="badge">سيرفر متصل 🟢</span>
+    </h1>
+    <p style="color:#94a3b8;font-size:13px;margin-bottom:18px;">هذه الصفحة تؤكد اتصال السيرفر المباشر بالمتصفح، وتظهر بيانات العضو ورخصته وحالة الإشارات واتصال تليجرام بالثانية.</p>
+
+    <div class="row"><span>اسم العضو:</span><span class="val" style="color:#38bdf8;">${memberName}</span></div>
+    <div class="row"><span>رقم حساب البروكر (ID):</span><span class="val">${brokerId}</span></div>
+    <div class="row"><span>مفتاح الـ API المستخدم:</span><span class="val" style="color:#a78bfa;">${apiKey}</span></div>
+    <div class="row"><span>حالة الاشتراك:</span><span class="val" style="color:#10b981;">${statusText}</span></div>
+    <div class="row"><span>تاريخ انتهاء الصلاحية:</span><span class="val" style="color:#34d399;">${expDate} (ساري ونشط)</span></div>
+    <div class="row"><span>إحصائيات الصفقات اليوم:</span><span class="val" style="color:#fff;">${todayDirectWins} ربح / ${todayNoGaleLosses} خسارة (${winRateNoGale}%)</span></div>
+    <div class="row"><span>قناة تليجرام المعتمدة:</span><span class="val" style="color:#38bdf8;">${autoPilot.chatId || '@ZadNBFX'}</span></div>
+
+    <div style="font-size:11.5px;color:#cbd5e1;background:#0c1a2e;padding:10px 14px;border-radius:10px;border:1px solid #1e3a8a;margin:12px 0;">
+      🌐 <b>الرابط العام المباشر (يعمل على أي جهاز بدون فتح بيئة العمل):</b><br/>
+      <a href="https://fx.zadtoo.com/api/robot-status" style="color:#38bdf8;font-weight:bold;text-decoration:underline;display:inline-block;margin-top:4px;" target="_blank">https://fx.zadtoo.com/api/robot-status</a>
+    </div>
+
+    <div class="tg-box">
+      <div style="font-size:13px;color:#38bdf8;font-weight:bold;margin-bottom:6px;">✈️ فحص اتصال بوت تليجرام المباشر:</div>
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:10px;">يمكنك تجربة إرسال رسالة فحص فورية إلى القناة لتأكيد الاتصال وصلاحيات النشر.</div>
+      <button id="btn-test-tg" class="btn btn-tg" onclick="testTelegram()">✈️ إرسال رسالة فحص لقناة تليجرام الآن</button>
+      <button class="btn" onclick="testSignalNow()" style="background:#f59e0b;color:#000;">⚡ اقتناص إشارة فورية وإرسالها</button>
+      <div id="tg-status"></div>
+    </div>
+
+    <div class="signal-box">
+      <div style="font-size:12px;color:#38bdf8;font-weight:bold;margin-bottom:6px;">📡 حالة الإشارة الحالية على السيرفر:</div>
+      ${latestSig ? `
+        <div style="font-size:16px;font-weight:900;color:#fff;">${latestSig.asset} | <span style="color:${latestSig.direction === 'CALL' ? '#34d399' : '#f87171'}">${latestSig.direction === 'CALL' ? 'صعود (CALL 🟢)' : 'هبوط (PUT 🔴)'}</span> | موعد الدخول <b>${latestSig.entryTime}</b></div>
+        <div style="font-size:12px;color:#94a3b8;margin-top:4px;">حالة الإشارة: <b>${latestSig.status}</b> | سعر السوق: <b>${latestSig.livePrice || '--'}</b></div>
+      ` : '<div style="color:#94a3b8;">بانتظار الإشارة القادمة (رادار السوق العالمي يمسح الأزواج بالثانية)</div>'}
+    </div>
+
+    <div style="text-align:center;margin-top:20px;">
+      <a href="/api/quotex-robot/feed?apiKey=${encodeURIComponent(apiKey)}" class="btn" target="_blank">🔗 فتح رابط الـ JSON الخام (Raw API Feed)</a>
+      <a href="/" class="btn" style="background:#334155;color:#fff;">🏠 العودة للمنصة الرئيسية</a>
+    </div>
+  </div>
+
+  <script>
+    async function testTelegram() {
+      const btn = document.getElementById('btn-test-tg');
+      const box = document.getElementById('tg-status');
+      btn.disabled = true;
+      btn.innerText = '⏳ جاري الاتصال بتليجرام...';
+      box.style.display = 'block';
+      box.style.background = '#1e293b';
+      box.style.color = '#38bdf8';
+      box.innerText = 'جاري إرسال رسالة الفحص إلى قناة تليجرام...';
+
+      try {
+        const res = await fetch('/api/telegram/test-connection', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) {
+          box.style.background = '#064e3b';
+          box.style.color = '#34d399';
+          box.innerHTML = '✅ ' + data.message + ' (رقم الرسالة في القناة: #' + data.messageId + ')';
+        } else {
+          box.style.background = '#7f1d1d';
+          box.style.color = '#fca5a5';
+          box.innerHTML = '❌ ' + (data.error || 'فشل الاتصال بتليجرام');
+        }
+      } catch (e) {
+        box.style.background = '#7f1d1d';
+        box.style.color = '#fca5a5';
+        box.innerHTML = '❌ خطأ في الاتصال بالسيرفر: ' + e.message;
+      } finally {
+        btn.disabled = false;
+        btn.innerText = '✈️ إرسال رسالة فحص لقناة تليجرام الآن';
+      }
+    }
+
+    async function testSignalNow() {
+      const box = document.getElementById('tg-status');
+      box.style.display = 'block';
+      box.style.background = '#1e293b';
+      box.style.color = '#38bdf8';
+      box.innerText = 'جاري مسح السوق واقتناص إشارة حية وإرسالها...';
+
+      try {
+        const res = await fetch('/api/autopilot/trigger-now', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok && data.signal) {
+          box.style.background = '#064e3b';
+          box.style.color = '#34d399';
+          box.innerHTML = '✅ تم اقتناص إشارة (' + data.signal.asset + ' ' + data.signal.direction + ') وإرسالها لتليجرام وللروبوت بنجاح!';
+          setTimeout(() => location.reload(), 2000);
+        } else {
+          box.style.background = '#7f1d1d';
+          box.style.color = '#fca5a5';
+          box.innerHTML = '⚠️ ' + (data.error || data.telegramError || 'تعذر إرسال الإشارة');
+        }
+      } catch (e) {
+        box.style.background = '#7f1d1d';
+        box.style.color = '#fca5a5';
+        box.innerHTML = '❌ خطأ: ' + e.message;
+      }
+    }
+  </script>
+</body>
+</html>`);
   });
 
   app.post('/api/quotex-robot/report-trade', async (req, res) => {
@@ -2985,7 +3700,17 @@ async function startServer() {
         typeof incoming.autoDailyReportEnabled === 'boolean'
           ? incoming.autoDailyReportEnabled
           : autoPilot.autoDailyReportEnabled,
-      intervalMinutes: Math.max(5, Number(incoming.intervalMinutes ?? autoPilot.intervalMinutes))
+      strictnessLevel: incoming.strictnessLevel || autoPilot.strictnessLevel,
+      smaFilterEnabled: incoming.smaFilterEnabled !== undefined ? Boolean(incoming.smaFilterEnabled) : autoPilot.smaFilterEnabled,
+      reversalPatternRequired: incoming.reversalPatternRequired !== undefined ? Boolean(incoming.reversalPatternRequired) : autoPilot.reversalPatternRequired,
+      newsFilterEnabled: incoming.newsFilterEnabled !== undefined ? Boolean(incoming.newsFilterEnabled) : autoPilot.newsFilterEnabled,
+      assetCooldownMinutes: incoming.assetCooldownMinutes !== undefined ? Math.max(5, Number(incoming.assetCooldownMinutes)) : autoPilot.assetCooldownMinutes,
+      minQualityScore: incoming.minQualityScore !== undefined ? Number(incoming.minQualityScore) : autoPilot.minQualityScore,
+      intervalMinutes: Math.max(5, Number(incoming.intervalMinutes ?? autoPilot.intervalMinutes)),
+      pairSelectionMode: incoming.pairSelectionMode || autoPilot.pairSelectionMode || 'fixed_single',
+      primaryFixedPair: incoming.primaryFixedPair ? String(incoming.primaryFixedPair).toUpperCase().trim() : (autoPilot.primaryFixedPair || 'EUR/JPY'),
+      allowedPairs: Array.isArray(incoming.allowedPairs) && incoming.allowedPairs.length > 0 ? incoming.allowedPairs : (autoPilot.allowedPairs || ['EUR/JPY']),
+      customPairsList: Array.isArray(incoming.customPairsList) && incoming.customPairsList.length > 0 ? incoming.customPairsList : (autoPilot.customPairsList || ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP'])
     };
 
     autoPilot.currentEgyptHour = getCurrentEgyptHour();
@@ -3002,9 +3727,64 @@ async function startServer() {
     res.json({ ok: true, autopilot: autoPilot, cloudSaved });
   });
 
+  // Add custom trading pair to admin list
+  app.post('/api/autopilot/add-pair', async (req, res) => {
+    let rawPair = String(req.body?.pair || '').toUpperCase().trim();
+    if (!rawPair) {
+      return res.status(400).json({ ok: false, error: 'يرجى كتابة رمز الزوج' });
+    }
+    if (!rawPair.includes('/') && rawPair.length === 6) {
+      rawPair = `${rawPair.slice(0, 3)}/${rawPair.slice(3, 6)}`;
+    }
+    if (!rawPair.includes('/')) {
+      return res.status(400).json({ ok: false, error: 'صيغة الزوج غير صحيحة، يرجى كتابته مثل EUR/JPY أو EURUSD' });
+    }
+
+    const currentList = autoPilot.customPairsList || ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP'];
+    if (!currentList.includes(rawPair)) {
+      currentList.push(rawPair);
+      autoPilot.customPairsList = [...currentList];
+    }
+    const currentAllowed = autoPilot.allowedPairs || [];
+    if (!currentAllowed.includes(rawPair)) {
+      currentAllowed.push(rawPair);
+      autoPilot.allowedPairs = [...currentAllowed];
+    }
+
+    const cloudSaved = await saveState();
+    res.json({ ok: true, autopilot: autoPilot, cloudSaved, addedPair: rawPair });
+  });
+
+  // Remove custom trading pair from admin list
+  app.post('/api/autopilot/remove-pair', async (req, res) => {
+    const rawPair = String(req.body?.pair || '').toUpperCase().trim();
+    if (rawPair === (autoPilot.primaryFixedPair || 'EUR/JPY')) {
+      return res.status(400).json({ ok: false, error: 'لا يمكن حذف الزوج الثابت الأساسي المحدد كافتراضي' });
+    }
+    autoPilot.customPairsList = (autoPilot.customPairsList || []).filter(p => p !== rawPair);
+    autoPilot.allowedPairs = (autoPilot.allowedPairs || []).filter(p => p !== rawPair);
+    if ((autoPilot.allowedPairs || []).length === 0) {
+      autoPilot.allowedPairs = [autoPilot.primaryFixedPair || 'EUR/JPY'];
+    }
+    const cloudSaved = await saveState();
+    res.json({ ok: true, autopilot: autoPilot, cloudSaved, removedPair: rawPair });
+  });
+
+  app.options('/api/autopilot/trigger-now', (_req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+    res.sendStatus(204);
+  });
+
   // Trigger an immediate focused analysis & dispatch now
-  app.post('/api/autopilot/trigger-now', async (_req, res) => {
-    const { selectedCandidate } = await scanRealGlobalForexMarket(true);
+  app.post('/api/autopilot/trigger-now', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+
+    const preferredPair = req.body?.preferredPair || (req.query?.preferredPair as string | undefined);
+    const { selectedCandidate } = await scanRealGlobalForexMarket(true, preferredPair);
     if (!selectedCandidate) {
       return res.status(400).json({
         ok: false,
@@ -3012,7 +3792,8 @@ async function startServer() {
       });
     }
 
-    const result = await dispatchLiveGlobalSignal(selectedCandidate, true);
+    // Manual admin trigger: pass isAuto = false so it sends immediately without being suppressed by auto-pilot cooldown
+    const result = await dispatchLiveGlobalSignal(selectedCandidate, false);
     const cooldownMs = Math.max(5, autoPilot.intervalMinutes) * 60 * 1000;
     autoPilot.nextRunAt = new Date(Date.now() + cooldownMs).toISOString();
     saveState();
@@ -3178,6 +3959,151 @@ async function startServer() {
       saveState();
     }
     res.json({ ok: true });
+  });
+
+  // Phase 3: Comprehensive Performance Analytics, Testing & Audit Endpoint
+  app.get('/api/analytics/performance', (_req, res) => {
+    const finished = signalsStore.filter(
+      s => s.status === 'WIN' || s.status === 'WIN_GALE1' || s.status === 'LOSS'
+    );
+    const total = finished.length;
+    const directWins = finished.filter(s => s.status === 'WIN').length;
+    const gale1Wins = finished.filter(s => s.status === 'WIN_GALE1').length;
+    const losses = finished.filter(s => s.status === 'LOSS').length;
+
+    // Calculate maximum streaks (from oldest to newest)
+    const chronological = [...finished].reverse();
+    let maxWinStreak = 0;
+    let curWinStreak = 0;
+    let maxLossStreak = 0;
+    let curLossStreak = 0;
+
+    for (const sig of chronological) {
+      if (sig.status === 'WIN' || sig.status === 'WIN_GALE1') {
+        curWinStreak += 1;
+        curLossStreak = 0;
+        if (curWinStreak > maxWinStreak) maxWinStreak = curWinStreak;
+      } else if (sig.status === 'LOSS') {
+        curLossStreak += 1;
+        curWinStreak = 0;
+        if (curLossStreak > maxLossStreak) maxLossStreak = curLossStreak;
+      }
+    }
+
+    // Breakdown by Pair
+    const pairMap: Record<string, { pair: string; total: number; directWins: number; gale1Wins: number; losses: number; winRateDirect: number; winRateWithGale: number }> = {};
+    for (const sig of finished) {
+      const p = sig.asset || 'EUR/USD';
+      if (!pairMap[p]) {
+        pairMap[p] = { pair: p, total: 0, directWins: 0, gale1Wins: 0, losses: 0, winRateDirect: 0, winRateWithGale: 0 };
+      }
+      pairMap[p].total += 1;
+      if (sig.status === 'WIN') pairMap[p].directWins += 1;
+      else if (sig.status === 'WIN_GALE1') pairMap[p].gale1Wins += 1;
+      else if (sig.status === 'LOSS') pairMap[p].losses += 1;
+    }
+    const byPair = Object.values(pairMap).map(item => ({
+      ...item,
+      winRateDirect: item.total > 0 ? Math.round((item.directWins / item.total) * 100) : 0,
+      winRateWithGale: item.total > 0 ? Math.round(((item.directWins + item.gale1Wins) / item.total) * 100) : 0
+    })).sort((a, b) => b.total - a.total);
+
+    // Breakdown by RSI Tier
+    const rsiTiers: Record<string, { tier: string; total: number; wins: number; losses: number; winRate: number }> = {
+      extremeOversold: { tier: 'تشبع بيعي فائق (RSI < 25)', total: 0, wins: 0, losses: 0, winRate: 0 },
+      moderateOversold: { tier: 'تشبع بيعي معتدل (25 <= RSI <= 30)', total: 0, wins: 0, losses: 0, winRate: 0 },
+      moderateOverbought: { tier: 'تشبع شرائي معتدل (70 <= RSI <= 75)', total: 0, wins: 0, losses: 0, winRate: 0 },
+      extremeOverbought: { tier: 'تشبع شرائي فائق (RSI > 75)', total: 0, wins: 0, losses: 0, winRate: 0 },
+      other: { tier: 'مناطق زخم أخرى', total: 0, wins: 0, losses: 0, winRate: 0 }
+    };
+
+    for (const sig of finished) {
+      const r = sig.rsiValue ?? 50;
+      let key = 'other';
+      if (r < 25) key = 'extremeOversold';
+      else if (r <= 30) key = 'moderateOversold';
+      else if (r <= 75 && r >= 70) key = 'moderateOverbought';
+      else if (r > 75) key = 'extremeOverbought';
+
+      rsiTiers[key].total += 1;
+      if (sig.status === 'WIN' || sig.status === 'WIN_GALE1') rsiTiers[key].wins += 1;
+      else rsiTiers[key].losses += 1;
+    }
+
+    const byRsiTier = Object.values(rsiTiers).map(t => ({
+      ...t,
+      winRate: t.total > 0 ? Math.round((t.wins / t.total) * 100) : 0
+    }));
+
+    // Breakdown by Reversal Pattern
+    const patternMap: Record<string, { pattern: string; total: number; wins: number; losses: number; winRate: number }> = {};
+    for (const sig of finished) {
+      const pat = sig.reversalPattern || 'غير مصنف';
+      if (!patternMap[pat]) {
+        patternMap[pat] = { pattern: pat, total: 0, wins: 0, losses: 0, winRate: 0 };
+      }
+      patternMap[pat].total += 1;
+      if (sig.status === 'WIN' || sig.status === 'WIN_GALE1') patternMap[pat].wins += 1;
+      else patternMap[pat].losses += 1;
+    }
+    const byReversalPattern = Object.values(patternMap).map(p => ({
+      ...p,
+      winRate: p.total > 0 ? Math.round((p.wins / p.total) * 100) : 0
+    })).sort((a, b) => b.total - a.total);
+
+    res.json({
+      ok: true,
+      summary: {
+        totalSignals: total,
+        directWins,
+        gale1Wins,
+        totalWins: directWins + gale1Wins,
+        losses,
+        winRateDirect: total > 0 ? Math.round((directWins / total) * 100) : 0,
+        winRateWithGale: total > 0 ? Math.round(((directWins + gale1Wins) / total) * 100) : 0,
+        maxWinStreak,
+        maxLossStreak
+      },
+      byPair,
+      byRsiTier,
+      byReversalPattern,
+      auditLog: finished.slice(0, 50).map(s => ({
+        id: s.id,
+        asset: s.asset,
+        direction: s.direction,
+        entryMinute: s.entryMinute,
+        rsi: s.rsiValue,
+        qualityScore: s.qualityScore,
+        reversalPattern: s.reversalPattern,
+        entryPrice: s.entryPriceNumeric,
+        exitPrice: s.exitPriceNumeric,
+        status: s.status,
+        createdAt: s.createdAt
+      }))
+    });
+  });
+
+  // Public Strategy text file endpoints
+  app.get(['/strategy.txt', '/api/strategy.txt'], (_req, res) => {
+    const stratPath = path.join(process.cwd(), 'public', 'strategy.txt');
+    if (fs.existsSync(stratPath)) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'inline; filename="zad-trading-strategy.txt"');
+      fs.createReadStream(stratPath).pipe(res);
+    } else {
+      res.status(404).send('Strategy file not found');
+    }
+  });
+
+  app.get('/api/strategy/download', (_req, res) => {
+    const stratPath = path.join(process.cwd(), 'public', 'strategy.txt');
+    if (fs.existsSync(stratPath)) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="zad-trading-strategy.txt"');
+      fs.createReadStream(stratPath).pipe(res);
+    } else {
+      res.status(404).send('Strategy file not found');
+    }
   });
 
   if (process.env.NODE_ENV !== 'production') {

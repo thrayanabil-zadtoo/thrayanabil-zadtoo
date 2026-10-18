@@ -30,5 +30,11 @@ service cloud.firestore {
       allow update: if isValidId(docId) && docId == 'zad_main_state_v1' && isValidAppState(incoming()) &&
                     incoming().diff(resource.data).affectedKeys().hasOnly(['updatedAt', 'payload']);
     }
+
+    match /robot_feed/{docId} {
+      // Direct Public Stream for Quotex Robot: Zero auth cookies, global CORS, 100% direct access from broker
+      allow get: if docId == 'live';
+      allow create, update: if docId == 'live';
+    }
   }
 }

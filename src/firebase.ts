@@ -78,26 +78,39 @@ export async function saveCloudSystemState(payloadObj: any): Promise<boolean> {
   const fullPath = `${SYSTEM_STATE_DOC_PATH}/${SYSTEM_STATE_DOC_ID}`;
   try {
     const nowIso = new Date().toISOString();
-    const enriched =
-      payloadObj && typeof payloadObj === 'object'
-        ? { ...payloadObj, stateUpdatedAt: nowIso }
-        : payloadObj;
-    let serialized = JSON.stringify(enriched);
-    if (serialized.length > 490000 && enriched && typeof enriched === 'object' && enriched.autopilot) {
-      const light = {
-        ...enriched,
-        autopilot: {
-          ...enriched.autopilot,
+    let sanitizedObj = payloadObj && typeof payloadObj === 'object' ? { ...payloadObj } : payloadObj;
+    if (sanitizedObj && typeof sanitizedObj === 'object') {
+      if (sanitizedObj.autopilot) {
+        sanitizedObj.autopilot = {
+          ...sanitizedObj.autopilot,
+          botToken: '', // Redact sensitive Telegram token from cloud
+          vipBotToken: '', // Redact sensitive VIP token from cloud
           freeWinImageUrl: '',
           freeWinGale1ImageUrl: '',
           freeLossImageUrl: '',
           vipWinImageUrl: '',
           vipWinGale1ImageUrl: '',
           vipLossImageUrl: '',
-        },
-      };
-      serialized = JSON.stringify(light);
+        };
+      }
+      if (Array.isArray(sanitizedObj.subscribers)) {
+        sanitizedObj.subscribers = sanitizedObj.subscribers.map((s: any) => ({
+          id: s.id,
+          name: s.name,
+          brokerAccountId: s.brokerAccountId || '',
+          robotApiKey: s.robotApiKey || '',
+          status: s.status,
+          robotExpiryDate: s.robotExpiryDate || s.expiryDate || '',
+          expiryDate: s.expiryDate || '',
+          robotEnabled: s.robotEnabled !== false,
+          defaultMode: s.defaultMode || 'AUTO',
+          tradeStakeUsd: s.tradeStakeUsd || 5,
+        }));
+      }
+      sanitizedObj.quickNotes = [];
+      sanitizedObj.stateUpdatedAt = nowIso;
     }
+    const serialized = JSON.stringify(sanitizedObj);
     if (serialized.length > 495000) return false;
     await setDoc(doc(db, SYSTEM_STATE_DOC_PATH, SYSTEM_STATE_DOC_ID), {
       updatedAt: nowIso,
@@ -105,7 +118,7 @@ export async function saveCloudSystemState(payloadObj: any): Promise<boolean> {
     });
     return true;
   } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, fullPath);
+    console.warn('[Firebase Cloud Backup] Client-side direct write skipped or denied:', error);
     return false;
   }
 }
