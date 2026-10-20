@@ -40,7 +40,10 @@ try {
   // Fallback to local disk persistence if cloud init is unavailable
 }
 
-const ADMIN_EMAIL = 'thrayanabil2026@gmail.com';
+const ADMIN_EMAILS = [
+  'thrayanabil2026@gmail.com',
+  'thrayanabil@gmail.com'
+];
 const ADMIN_PASS = 'Tr@7177';
 
 export interface SignalItem {
@@ -2992,10 +2995,11 @@ async function startServer() {
   // Admin Login Verification
   app.post('/api/admin/login', (req, res) => {
     const { email, password } = req.body;
-    if (
-      String(email || '').trim().toLowerCase() === ADMIN_EMAIL.toLowerCase() &&
-      String(password || '') === ADMIN_PASS
-    ) {
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const cleanPass = String(password || '').trim();
+    const isEmailValid = ADMIN_EMAILS.some(e => e.toLowerCase() === cleanEmail);
+
+    if (isEmailValid && cleanPass === ADMIN_PASS) {
       res.json({ ok: true });
     } else {
       res.status(401).json({ ok: false, error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' });

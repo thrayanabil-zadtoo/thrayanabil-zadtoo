@@ -323,7 +323,7 @@ export default function App() {
     defaultStakeUsd: 5
   });
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
-  const [loginEmail, setLoginEmail] = useState<string>('');
+  const [loginEmail, setLoginEmail] = useState<string>('thrayanabil2026@gmail.com');
   const [loginPassword, setLoginPassword] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
@@ -714,22 +714,33 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: loginEmail,
-          password: loginPassword
+          email: (loginEmail || '').trim(),
+          password: (loginPassword || '').trim()
         })
       });
-      const data = await res.json();
-      if (data.ok) {
+      let data: any = null;
+      try {
+        data = await res.json();
+      } catch (_jsonErr) {
+        // Response was not JSON
+      }
+
+      if (res.ok && data && data.ok) {
         sessionStorage.setItem('zad_admin_auth', 'true');
         setIsAdminAuthenticated(true);
         setShowLoginModal(false);
         setActiveView('admin');
         setLoginPassword('');
+      } else if (data && data.error) {
+        setLoginError(data.error);
+      } else if (res.status === 401) {
+        setLoginError('البريد الإلكتروني أو كلمة المرور غير صحيحة');
       } else {
-        setLoginError(data.error || 'بيانات الدخول غير صحيحة');
+        setLoginError(`تعذر التحقق من الخادم (رمز الحالة: ${res.status}). يرجى إعادة المحاولة.`);
       }
-    } catch (_e) {
-      setLoginError('تعذر الاتصال بالخادم');
+    } catch (err: any) {
+      console.error('Admin login error:', err);
+      setLoginError('تعذر الاتصال بالخادم، يرجى التأكد من اتصال الإنترنت ثم إعادة المحاولة');
     } finally {
       setIsLoggingIn(false);
     }
@@ -9155,7 +9166,8 @@ export default function App() {
                   value={loginEmail}
                   onChange={(e) => setLoginEmail(e.target.value)}
                   dir="ltr"
-                  placeholder="name@example.com"
+                  placeholder="thrayanabil2026@gmail.com"
+                  autoComplete="email"
                   className="w-full px-3.5 py-2.5 text-sm bg-[#0B0F17] border border-slate-800 rounded-lg text-slate-100 focus:outline-none focus:border-emerald-500 font-mono-num"
                 />
               </div>

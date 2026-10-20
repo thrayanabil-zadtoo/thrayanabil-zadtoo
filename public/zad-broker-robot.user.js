@@ -65,6 +65,43 @@
 
 (function() {
   'use strict';
+
+  // =========================================================================
+  // حارس منع التكرار والتعارض الجذري (Global Singleton & Conflict Guard)
+  // يمنع تكرار تشغيل الروبوت مرتين أو تعارض النسخ القديمة عند تحديث الصفحة أو التامبرمونكي
+  // =========================================================================
+  if (window.__ZAD_ROBOT_ACTIVE_INSTANCE__) {
+    console.log("%c[روبوت ZAD FX] تنظيف النسخة السابقة وتحديث الروبوت لمنع أي تعارض أو تكرار ⚡", "color:#f59e0b;font-weight:bold;");
+    try {
+      if (typeof window.__ZAD_ROBOT_DESTROY__ === "function") {
+        window.__ZAD_ROBOT_DESTROY__();
+      }
+      const prevWidget = document.getElementById("zad-universal-floating-robot");
+      if (prevWidget) prevWidget.remove();
+      const prevLauncher = document.getElementById("zad-robot-launcher");
+      if (prevLauncher) prevLauncher.remove();
+      const prevOverlay = document.getElementById("zad-calibrate-overlay");
+      if (prevOverlay) prevOverlay.remove();
+    } catch(e) {}
+  }
+  window.__ZAD_ROBOT_ACTIVE_INSTANCE__ = true;
+
+  const activeIntervals = [];
+  function addTrackedInterval(fn, ms) {
+    const id = setInterval(fn, ms);
+    activeIntervals.push(id);
+    return id;
+  }
+  let globalDomWatcher = null;
+  window.__ZAD_ROBOT_DESTROY__ = function() {
+    activeIntervals.forEach(id => clearInterval(id));
+    activeIntervals.length = 0;
+    if (globalDomWatcher) {
+      try { globalDomWatcher.disconnect(); } catch(e) {}
+      globalDomWatcher = null;
+    }
+  };
+
   // تصفية الإطارات الفرعية غير المرئية أو إعلانات التتبع
   try {
     if (window.self !== window.top) {
@@ -120,7 +157,8 @@
       try { localStorage.setItem("zad_broker_key", autoId); } catch(e) {}
     }
   }
-  let MEMBER_IDENTIFIER = savedKey || "QX-ADMIN-MASTER-TEST";
+  const INJECTED_KEY = "${activeKey}";
+  let MEMBER_IDENTIFIER = savedKey || (!INJECTED_KEY.includes("${") && INJECTED_KEY ? INJECTED_KEY : "") || "QX-ADMIN-MASTER-TEST";
 
   // بمجرد تثبيت البرنامج العائم يكون على وضع التداول اليدوي وليس الآلي افتراضياً
   let ROBOT_MODE = localStorage.getItem("zad_robot_mode") || "MANUAL"; // "MANUAL" | "AUTO"
@@ -205,12 +243,16 @@
   let savedPosTop = localStorage.getItem("zad_robot_pos_top");
   let posCss = isWebPlatformHub
     ? "bottom:24px;left:24px;"
-    : "top:70px;right:20px;";
+    : "top:75px;left:75px;";
   if (savedPosLeft && savedPosTop && !isWebPlatformHub) {
     const l = parseInt(savedPosLeft, 10);
     const t = parseInt(savedPosTop, 10);
-    if (!isNaN(l) && !isNaN(t) && l > 0 && l < window.innerWidth - 60 && t > 0 && t < window.innerHeight - 60) {
+    const winW = window.innerWidth || document.documentElement.clientWidth || 1200;
+    const winH = window.innerHeight || document.documentElement.clientHeight || 800;
+    if (!isNaN(l) && !isNaN(t) && l >= 10 && l <= (winW - 310) && t >= 10 && t <= (winH - 180)) {
       posCss = "top:" + t + "px;left:" + l + "px;right:auto;bottom:auto;";
+    } else {
+      posCss = "top:75px;left:75px;right:auto;bottom:auto;";
     }
   }
   widget.style.cssText = "position:fixed !important;" + posCss + "z-index:2147483647 !important;width:295px;background:#0B0F17 !important;border:1.5px solid #10b981 !important;border-radius:14px !important;color:#f8fafc !important;font-family:system-ui,-apple-system,sans-serif !important;box-shadow:0 15px 35px rgba(0,0,0,0.85) !important;padding:12px !important;user-select:none !important;font-size:12px !important;transition:border-color 0.3s, box-shadow 0.3s;display:block !important;visibility:visible !important;opacity:1 !important;pointer-events:auto !important;";
@@ -308,6 +350,31 @@
         <b id="zad-robot-rate" style="font-size:14px;color:#fbbf24;font-family:monospace;margin-top:2px;">100%</b>
       </div>
     </div>
+    <!-- قسم اختبار وتثبيت أزرار المنصة (شراء / بيع / معايرة وتثبيت يدوي) -->
+    <div style="background:#090d16;border:1px solid #1e293b;border-radius:10px;padding:8px 7px;margin-top:6px;font-size:10.5px;" id="zad-test-panel">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+        <span style="font-weight:bold;color:#38bdf8;font-size:11px;display:flex;align-items:center;gap:4px;">
+          <span>🛠️</span>
+          <span>اختبار وتثبيت أزرار المنصة:</span>
+        </span>
+        <button id="zad-calibrate-btn" style="background:#1e293b;color:#fde047;border:1px solid #ca8a04;border-radius:6px;padding:3px 8px;font-size:10px;font-weight:extrabold;cursor:pointer;transition:all 0.2s;" title="تحديد زر المنصة يدوياً بالنقر المباشر عليه">📌 تثبيت يدوي</button>
+      </div>
+
+      <div id="zad-test-status" style="font-size:9.5px;color:#94a3b8;margin-bottom:6px;display:flex;justify-content:space-between;background:rgba(15,23,42,0.6);padding:3px 6px;border-radius:5px;border:1px solid #1e293b;">
+        <span>🟢 شراء: <b id="zad-status-call-txt" style="color:#34d399">مكتشف باليمين ✓</b></span>
+        <span>🔴 بيع: <b id="zad-status-put-txt" style="color:#f87171">مكتشف باليمين ✓</b></span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+        <button id="zad-test-call-btn" style="background:#064e3b;color:#a7f3d0;border:1.5px solid #10b981;border-radius:8px;padding:7px 4px;font-size:11.5px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;box-shadow:0 2px 8px rgba(16,185,129,0.25);" title="تجربة النقر الفعلي على زر الشراء الأخضر في لوحة صفقات كيوتكس">
+          <span>🟢 تجربة الشراء (CALL)</span>
+        </button>
+        <button id="zad-test-put-btn" style="background:#7f1d1d;color:#fecdd3;border:1.5px solid #ef4444;border-radius:8px;padding:7px 4px;font-size:11.5px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;box-shadow:0 2px 8px rgba(239,68,68,0.25);" title="تجربة النقر الفعلي على زر البيع الأحمر في لوحة صفقات كيوتكس">
+          <span>🔴 تجربة البيع (PUT)</span>
+        </button>
+      </div>
+      <div id="zad-test-feedback" style="display:none;margin-top:6px;font-size:10px;text-align:center;padding:5px 8px;border-radius:6px;font-weight:bold;line-height:1.4;"></div>
+    </div>
   `;
 
   // زر إظهار الروبوت في حال التصغير (Launcher)
@@ -339,11 +406,21 @@
         setTimeout(mountRobotSafely, 100);
         return;
       }
+
+      // إزالة أي كائن يتيم أو نسخة سابقة لمنع التكرار والتعارض نهائياً
       const existing = document.getElementById("zad-universal-floating-robot");
-      if (!existing || !mountTarget.contains(existing)) {
+      if (existing && existing !== widget) {
+        try { existing.remove(); } catch(e) {}
+      }
+      if (!mountTarget.contains(widget)) {
         mountTarget.appendChild(widget);
       }
-      if (launcher && !document.getElementById("zad-robot-launcher")) {
+
+      const existingLauncher = document.getElementById("zad-robot-launcher");
+      if (existingLauncher && existingLauncher !== launcher) {
+        try { existingLauncher.remove(); } catch(e) {}
+      }
+      if (launcher && !mountTarget.contains(launcher)) {
         mountTarget.appendChild(launcher);
       }
 
@@ -368,7 +445,7 @@
       // ربط أزرار ووظائف الروبوت تلقائياً ومستقلاً
       try { bindWidgetEvents(); } catch(e) {}
 
-      // التحقق التلقائي لضمان وجود الروبوت داخل مجال الرؤية للشاشة وعدم اختفائه
+      // التحقق التلقائي لضمان وجود الروبوت داخل مجال الرؤية للشاشة وعدم اختفائه خارج حدود الشاشة
       try {
         const rect = widget.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) {
@@ -376,11 +453,10 @@
           const winH = window.innerHeight || document.documentElement.clientHeight || 800;
           if (rect.right < 50 || rect.bottom < 50 || rect.left > winW - 30 || rect.top > winH - 30) {
             widget.style.removeProperty("bottom");
-            widget.style.removeProperty("left");
-            widget.style.top = isWebPlatformHub ? "auto" : "70px";
-            widget.style.right = isWebPlatformHub ? "auto" : "20px";
+            widget.style.removeProperty("right");
+            widget.style.top = isWebPlatformHub ? "auto" : "75px";
+            widget.style.left = isWebPlatformHub ? "24px" : "75px";
             widget.style.bottom = isWebPlatformHub ? "24px" : "auto";
-            widget.style.left = isWebPlatformHub ? "24px" : "auto";
           }
         }
       } catch(e) {}
@@ -403,12 +479,11 @@
       localStorage.removeItem("zad_robot_pos_left");
       localStorage.removeItem("zad_robot_pos_top");
     } catch(e) {}
-    widget.style.removeProperty("left");
+    widget.style.removeProperty("right");
     widget.style.removeProperty("bottom");
-    widget.style.setProperty("top", isWebPlatformHub ? "auto" : "70px", "important");
-    widget.style.setProperty("right", isWebPlatformHub ? "auto" : "20px", "important");
+    widget.style.setProperty("top", isWebPlatformHub ? "auto" : "75px", "important");
+    widget.style.setProperty("left", isWebPlatformHub ? "24px" : "75px", "important");
     widget.style.setProperty("bottom", isWebPlatformHub ? "24px" : "auto", "important");
-    widget.style.setProperty("left", isWebPlatformHub ? "24px" : "auto", "important");
     widget.style.setProperty("display", "block", "important");
     widget.style.setProperty("visibility", "visible", "important");
     widget.style.setProperty("opacity", "1", "important");
@@ -436,16 +511,17 @@
   } else {
     mountRobotSafely();
   }
-  setTimeout(mountRobotSafely, 150);
-  setTimeout(mountRobotSafely, 500);
-  setTimeout(mountRobotSafely, 1500);
+  setTimeout(mountRobotSafely, 100);
+  setTimeout(mountRobotSafely, 300);
+  setTimeout(mountRobotSafely, 800);
+  setTimeout(mountRobotSafely, 2000);
 
-  // حارس الثبات الدوري الدائم: يفحص كل 600 ميلي ثانية ويعيد حقن الروبوت فوراً إن حاولت المنصة إزالته
-  setInterval(mountRobotSafely, 600);
+  // حارس الثبات الدوري الدائم: يفحص كل 500 ميلي ثانية ويعيد حقن الروبوت فوراً إن حاولت المنصة إزالته
+  addTrackedInterval(mountRobotSafely, 500);
 
   // مراقب طفرات الـ DOM (MutationObserver): يعيد حقن الروبوت فوراً في جزء من الملي ثانية إذا قامت المنصة بإعادة رسم الصفحة
   try {
-    const domWatcher = new MutationObserver(() => {
+    globalDomWatcher = new MutationObserver(() => {
       const el = document.getElementById("zad-universal-floating-robot");
       if (!el || !document.body || !document.body.contains(el)) {
         mountRobotSafely();
@@ -453,7 +529,7 @@
     });
     const targetRoot = document.documentElement || document.body;
     if (targetRoot) {
-      domWatcher.observe(targetRoot, { childList: true, subtree: true });
+      globalDomWatcher.observe(targetRoot, { childList: true, subtree: true });
     }
   } catch(e) {}
 
@@ -489,7 +565,11 @@
   }
 
   // ربط أحداث وأزرار النافذة العائمة بشكل موثوق ومستقل ومقاوم لعمليات إعادة بناء الصفحة
+  let isWidgetEventsBound = false;
   function bindWidgetEvents() {
+    if (isWidgetEventsBound) return;
+    isWidgetEventsBound = true;
+
     // 1. أزرار إحصائيات الربح والخسارة
     const bWin = widget.querySelector("#zad-box-win");
     if (bWin && !bWin.dataset.bound) {
@@ -670,6 +750,153 @@
         mountRobotSafely();
       };
     }
+
+    // 8. أزرار اختبار ومعايرة أزرار الشراء والبيع للمنصة
+    const testCallBtn = widget.querySelector("#zad-test-call-btn");
+    const testPutBtn = widget.querySelector("#zad-test-put-btn");
+    const calibrateBtn = widget.querySelector("#zad-calibrate-btn");
+    const testFeedback = widget.querySelector("#zad-test-feedback");
+
+    function updateButtonStatusBadges() {
+      const callTxt = widget.querySelector("#zad-status-call-txt");
+      const putTxt = widget.querySelector("#zad-status-put-txt");
+      const hasCustomCall = !!localStorage.getItem("zad_custom_call_selector");
+      const hasCustomPut = !!localStorage.getItem("zad_custom_put_selector");
+
+      if (callTxt) {
+        if (hasCustomCall) {
+          callTxt.innerHTML = "مثبت يدوياً 📌";
+          callTxt.style.color = "#38bdf8";
+        } else {
+          const found = !!findBrokerTradeButton("CALL");
+          callTxt.innerHTML = found ? "مكتشف باليمين ✓" : "غير مكتشف ⚠️";
+          callTxt.style.color = found ? "#34d399" : "#fbbf24";
+        }
+      }
+      if (putTxt) {
+        if (hasCustomPut) {
+          putTxt.innerHTML = "مثبت يدوياً 📌";
+          putTxt.style.color = "#38bdf8";
+        } else {
+          const found = !!findBrokerTradeButton("PUT");
+          putTxt.innerHTML = found ? "مكتشف باليمين ✓" : "غير مكتشف ⚠️";
+          putTxt.style.color = found ? "#34d399" : "#fbbf24";
+        }
+      }
+    }
+
+    function showFeedback(text, isSuccess) {
+      if (!testFeedback) return;
+      testFeedback.style.display = "block";
+      testFeedback.style.background = isSuccess ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)";
+      testFeedback.style.color = isSuccess ? "#34d399" : "#fca5a5";
+      testFeedback.style.border = isSuccess ? "1px solid #10b981" : "1px solid #ef4444";
+      testFeedback.innerText = text;
+      setTimeout(() => {
+        if (testFeedback) testFeedback.style.display = "none";
+      }, 6000);
+    }
+
+    if (testCallBtn && !testCallBtn.dataset.bound) {
+      testCallBtn.dataset.bound = "1";
+      testCallBtn.onclick = (e) => {
+        e.stopPropagation();
+        const res = triggerBrokerTrade("CALL", true);
+        showFeedback(res.message, res.success);
+        updateButtonStatusBadges();
+      };
+    }
+
+    if (testPutBtn && !testPutBtn.dataset.bound) {
+      testPutBtn.dataset.bound = "1";
+      testPutBtn.onclick = (e) => {
+        e.stopPropagation();
+        const res = triggerBrokerTrade("PUT", true);
+        showFeedback(res.message, res.success);
+        updateButtonStatusBadges();
+      };
+    }
+
+    if (calibrateBtn && !calibrateBtn.dataset.bound) {
+      calibrateBtn.dataset.bound = "1";
+      calibrateBtn.onclick = (e) => {
+        e.stopPropagation();
+        const choice = prompt(
+          "معايرة وتثبيت أزرار المنصة:\n1. تثبيت زر الشراء (الأخضر CALL)\n2. تثبيت زر البيع (الأحمر PUT)\n3. مسح التثبيت والعودة للاكتشاف التلقائي الذكي",
+          "1"
+        );
+        if (!choice) return;
+
+        if (choice === "3") {
+          localStorage.removeItem("zad_custom_call_selector");
+          localStorage.removeItem("zad_custom_put_selector");
+          showFeedback("🔄 تم مسح التثبيت اليدوي والعودة للاكتشاف التلقائي الذكي", true);
+          updateButtonStatusBadges();
+          return;
+        }
+
+        const isCallTarget = choice === "1";
+        const targetName = isCallTarget ? "زر الشراء (CALL الأخضر)" : "زر البيع (PUT الأحمر)";
+
+        showFeedback(`👉 انقر الآن بالماوس مباشرة على ${targetName} في شاشتك لتثبيته وحفظه...`, true);
+
+        // إنشاء طبقة تلميح علوية للمستخدم
+        const overlay = document.createElement("div");
+        overlay.id = "zad-calibrate-overlay";
+        overlay.style.cssText = "position:fixed;top:15px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#0f172a;border:2px solid #fde047;color:#fde047;padding:12px 24px;border-radius:14px;font-size:13px;font-weight:900;box-shadow:0 12px 35px rgba(0,0,0,0.9);cursor:crosshair;font-family:system-ui,-apple-system,sans-serif;";
+        overlay.innerText = `🎯 انقر الآن على ${targetName} في المنصة لحفظه وتثبيته فوراً`;
+        document.body.appendChild(overlay);
+
+        function handlePickerClick(ev) {
+          if (widget.contains(ev.target) || overlay.contains(ev.target)) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+
+          // التقاط الزر الأصلي حتى لو نقر المستخدم على النص الداخلي أو الأيقونة
+          const targetEl = ev.target;
+          const clickedEl = targetEl.closest('button, [role="button"], a[role="button"], [class*="btn"], div[class*="deal"]') || targetEl;
+
+          let selector = "";
+          if (clickedEl.id) {
+            selector = "#" + clickedEl.id;
+          } else if (clickedEl.dataset && clickedEl.dataset.test) {
+            selector = `[data-test="${clickedEl.dataset.test}"]`;
+          } else if (clickedEl.dataset && clickedEl.dataset.qa) {
+            selector = `[data-qa="${clickedEl.dataset.qa}"]`;
+          } else if (clickedEl.className && typeof clickedEl.className === "string") {
+            const classes = clickedEl.className.trim().split(/\s+/).filter(c => !c.includes(":") && !c.includes("/")).slice(0, 2).join(".");
+            if (classes) selector = clickedEl.tagName.toLowerCase() + "." + classes;
+          }
+          if (!selector) {
+            selector = clickedEl.tagName.toLowerCase();
+          }
+
+          const storageKey = isCallTarget ? "zad_custom_call_selector" : "zad_custom_put_selector";
+          localStorage.setItem(storageKey, selector);
+
+          clickedEl.style.outline = isCallTarget ? "4px solid #10b981" : "4px solid #ef4444";
+          clickedEl.style.boxShadow = isCallTarget ? "0 0 35px #10b981" : "0 0 35px #ef4444";
+          setTimeout(() => {
+            try {
+              clickedEl.style.outline = "";
+              clickedEl.style.boxShadow = "";
+            } catch(e) {}
+          }, 3000);
+
+          if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+          document.removeEventListener("click", handlePickerClick, true);
+
+          showFeedback(`✅ تم بنجاح تثبيت وحفظ ${targetName}! اضغط 'تجربة' للتحقق الآن.`, true);
+          updateButtonStatusBadges();
+        }
+
+        setTimeout(() => {
+          document.addEventListener("click", handlePickerClick, true);
+        }, 300);
+      };
+    }
+
+    setTimeout(updateButtonStatusBadges, 800);
   }
 
   // وظيفة السحب والتحريك الحر للنافذة (Draggable)
@@ -760,140 +987,250 @@
     if (dotEl) dotEl.innerText = ".".repeat(dotCounter + 1);
   }, 400);
 
-  // اختصار لوحة المفاتيح: Ctrl + Shift + Z لإظهار الروبوت في أي وقت وإعادة تعيين موقعه للشاشة
-  window.addEventListener("keydown", (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "Z" || e.key === "z" || e.code === "KeyZ")) {
-      e.preventDefault();
-      isWidgetUserMinimized = false;
-      try {
-        localStorage.removeItem("zad_robot_pos_left");
-        localStorage.removeItem("zad_robot_pos_top");
-      } catch(err) {}
-      widget.style.removeProperty("bottom");
-      widget.style.removeProperty("left");
-      widget.style.top = isWebPlatformHub ? "auto" : "70px";
-      widget.style.right = isWebPlatformHub ? "auto" : "20px";
-      widget.style.bottom = isWebPlatformHub ? "24px" : "auto";
-      widget.style.left = isWebPlatformHub ? "24px" : "auto";
-      mountRobotSafely();
-    }
-  });
-
-  // أوامر قائمة Tampermonkey
-  if (typeof GM_registerMenuCommand === "function") {
+  // فحص دوري خفيف ومستقل لحالة أزرار المنصة كل 5 ثوانٍ
+  setInterval(() => {
     try {
-      GM_registerMenuCommand("🤖 إظهار روبوت ZAD FX (Show Robot)", () => {
-        isWidgetUserMinimized = false;
-        try {
-          localStorage.removeItem("zad_robot_pos_left");
-          localStorage.removeItem("zad_robot_pos_top");
-        } catch(e) {}
-        widget.style.removeProperty("bottom");
-        widget.style.removeProperty("left");
-        widget.style.top = isWebPlatformHub ? "auto" : "70px";
-        widget.style.right = isWebPlatformHub ? "auto" : "20px";
-        widget.style.bottom = isWebPlatformHub ? "24px" : "auto";
-        widget.style.left = isWebPlatformHub ? "24px" : "auto";
-        mountRobotSafely();
-      });
-      GM_registerMenuCommand("🔄 استعادة موقع الروبوت الافتراضي (Reset Position)", () => {
-        try {
-          localStorage.removeItem("zad_robot_pos_left");
-          localStorage.removeItem("zad_robot_pos_top");
-        } catch(e) {}
-        widget.style.removeProperty("bottom");
-        widget.style.removeProperty("left");
-        widget.style.top = isWebPlatformHub ? "auto" : "70px";
-        widget.style.right = isWebPlatformHub ? "auto" : "20px";
-        widget.style.bottom = isWebPlatformHub ? "24px" : "auto";
-        widget.style.left = isWebPlatformHub ? "24px" : "auto";
-        mountRobotSafely();
-      });
+      const callTxt = widget.querySelector("#zad-status-call-txt");
+      const putTxt = widget.querySelector("#zad-status-put-txt");
+      if (callTxt || putTxt) {
+        const hasCustomCall = !!localStorage.getItem("zad_custom_call_selector");
+        const hasCustomPut = !!localStorage.getItem("zad_custom_put_selector");
+        if (callTxt) {
+          if (hasCustomCall) {
+            callTxt.innerHTML = "مثبت يدوياً 📌";
+            callTxt.style.color = "#38bdf8";
+          } else {
+            const found = !!findBrokerTradeButton("CALL");
+            callTxt.innerHTML = found ? "مكتشف باليمين ✓" : "غير مكتشف ⚠️";
+            callTxt.style.color = found ? "#34d399" : "#fbbf24";
+          }
+        }
+        if (putTxt) {
+          if (hasCustomPut) {
+            putTxt.innerHTML = "مثبت يدوياً 📌";
+            putTxt.style.color = "#38bdf8";
+          } else {
+            const found = !!findBrokerTradeButton("PUT");
+            putTxt.innerHTML = found ? "مكتشف باليمين ✓" : "غير مكتشف ⚠️";
+            putTxt.style.color = found ? "#34d399" : "#fbbf24";
+          }
+        }
+      }
     } catch(e) {}
+  }, 5000);
+
+  // دالة التحقق من ظهور العنصر وكونه مرئياً وقابلاً للنقر
+  function isVisibleElement(el) {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0" || style.pointerEvents === "none") {
+      return false;
+    }
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
   }
 
-  // وظيفة النقر التلقائي الذكية الفائقة لجميع منصات البروكر (مع محاكاة أحداث الماوس والبوانتر كاملة)
-  function triggerBrokerTrade(direction) {
+  // كاشف ومحدد أزرار التداول الفعلي (شراء / بيع) في منصة كيوتكس وبوكيت أوبشن بدقة 100%
+  // مع حصر كامل داخل لوحة الصفقات بالجانب الأيمن واستبعاد قطعي لشريط الأزواج العلوي أو التبويبات أو شريط البحث
+  function findBrokerTradeButton(direction) {
+    const isCall = direction === "CALL";
+
+    // 0. فحص المعايرة المخصصة المثبتة يدوياً أولاً
+    const customKey = isCall ? "zad_custom_call_selector" : "zad_custom_put_selector";
+    const customSel = localStorage.getItem(customKey);
+    if (customSel) {
+      try {
+        const customEl = document.querySelector(customSel);
+        if (customEl && isVisibleElement(customEl)) return customEl;
+      } catch(e) {}
+    }
+
+    // دوال مساعدة للتحقق من ألوان ونصوص الأزرار دون أي لبس مع كلمة up في payout أو popup
+    function isGreenColor(rgb) {
+      if (!rgb) return false;
+      return rgb.g > 105 && rgb.g > rgb.r * 1.2 && rgb.g > rgb.b * 1.05;
+    }
+    function isRedColor(rgb) {
+      if (!rgb) return false;
+      return rgb.r > 120 && rgb.r > rgb.g * 1.2 && rgb.r > rgb.b * 1.05;
+    }
+    function parseRgb(colorStr) {
+      if (!colorStr) return null;
+      const m = colorStr.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      if (!m) return null;
+      return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
+    }
+    function hasCallText(rawText) {
+      // استبعاد نصوص العائد المالي مثل "Up to 92%" أو "Payout up to"
+      const clean = (rawText || "").toLowerCase().replace(/up\s+to\s+\d+%/gi, "").replace(/payout/gi, "").trim();
+      return /\b(call|higher|buy)\b/i.test(clean) ||
+             /(?:^|\s)up(?:\s|$)/i.test(clean) ||
+             /(صعود|شراء|أعلى)/.test(clean);
+    }
+    function hasPutText(rawText) {
+      const clean = (rawText || "").toLowerCase().trim();
+      return /\b(put|lower|sell|down)\b/i.test(clean) ||
+             /(هبوط|بيع|أسفل)/.test(clean);
+    }
+
+    // دالة تحقق صارمة من موقع الزر:
+    // في منصات التداول (كيوتكس، بوكيت أوبشن)، لوحة فتح الصفقات تقع دائماً في اللوحة الجانبية اليمنى
+    // ويجب استبعاد أي عنصر يقع في شريط التبويبات العلوي أو شريط اختيار الأزواج أو نافذة الروبوت
+    function isValidTradeButtonLocation(el) {
+      if (!isVisibleElement(el)) return false;
+      if (el.closest('#zad-universal-floating-robot, #zad-robot-launcher, #zad-calibrate-overlay')) return false;
+      if (el.closest('.header, header, .tabs, .tab, .asset-select, .pair-select, [class*="asset"], [class*="tabs"], [class*="symbol"], [class*="currency"], [class*="popup"], [class*="modal"]')) {
+        return false;
+      }
+      const rect = el.getBoundingClientRect();
+      const winW = window.innerWidth || 1200;
+      // يجب أن يكون في الجانب الأيمن (الـ 450 بكسل الأخيرة من الشاشة) وتحت الشريط العلوي
+      if (rect.left < (winW - 450) || rect.top < 65) {
+        return false;
+      }
+      return rect.width >= 24 && rect.height >= 20;
+    }
+
+    // 1. فحص محددات الفئات الرسمية الدقيقة في كيوتكس (Quotex Deal Form Selectors)
+    const quotexSelectors = isCall
+      ? [
+          ".section-deal__success button",
+          ".section-deal__button.bg-success",
+          "button.section-deal__button.bg-success",
+          ".section-deal button[data-test='call-button']",
+          ".deal-form button.section-deal__button.bg-success",
+          ".deal-form button[class*='call']",
+          ".deal-form button.success",
+          ".section-deal button.call-btn",
+          "button.call-btn",
+          ".call-btn",
+          ".deal-form__button--call",
+          "button[data-qa='deal-call']",
+          ".section-deal [data-test='call-btn']"
+        ]
+      : [
+          ".section-deal__danger button",
+          ".section-deal__button.bg-danger",
+          "button.section-deal__button.bg-danger",
+          ".section-deal button[data-test='put-button']",
+          ".deal-form button.section-deal__button.bg-danger",
+          ".deal-form button[class*='put']",
+          ".deal-form button.danger",
+          ".section-deal button.put-btn",
+          "button.put-btn",
+          ".put-btn",
+          ".deal-form__button--put",
+          "button[data-qa='deal-put']",
+          ".section-deal [data-test='put-btn']"
+        ];
+
+    // 2. فحص محددات بوكيت أوبشن (Pocket Option)
+    const pocketSelectors = isCall
+      ? [
+          ".btn-call",
+          "a.btn-call",
+          "button.btn-call",
+          "[data-trade-action='call']",
+          ".control__call button",
+          ".control__call"
+        ]
+      : [
+          ".btn-put",
+          "a.btn-put",
+          "button.btn-put",
+          "[data-trade-action='put']",
+          ".control__put button",
+          ".control__put"
+        ];
+
+    const specificSelectors = [...quotexSelectors, ...pocketSelectors];
+    for (let s = 0; s < specificSelectors.length; s++) {
+      try {
+        const els = document.querySelectorAll(specificSelectors[s]);
+        for (let i = 0; i < els.length; i++) {
+          const el = els[i];
+          if (isValidTradeButtonLocation(el)) {
+            return el;
+          }
+        }
+      } catch(e) {}
+    }
+
+    // 3. فحص حاوية الصفقات الجانبية اليمنى (.section-deal أو .deal-form أو aside.sidebar)
     try {
-      const isCall = direction === "CALL";
-      let btn = null;
+      const dealContainers = document.querySelectorAll('.section-deal, .deal-form, aside.sidebar, .sidebar-section, [class*="section-deal"], [class*="deal-form"]');
+      for (let c = 0; c < dealContainers.length; c++) {
+        const container = dealContainers[c];
+        const buttons = container.querySelectorAll('button, div[role="button"], a[role="button"]');
+        for (let i = 0; i < buttons.length; i++) {
+          const b = buttons[i];
+          if (!isValidTradeButtonLocation(b)) continue;
 
-      // 1. منصة كيوتكس Quotex (جميع محددات أزرار الشراء والبيع الحديثة والقديمة)
-      const quotexSelectors = isCall
-        ? [
-            ".call-btn",
-            "button.call-btn",
-            ".section-deal__success button",
-            "button.call",
-            "[data-test='call-button']",
-            ".deal-form__button--call",
-            "button[class*='call']",
-            "button[class*='up']",
-            ".btn-call"
-          ]
-        : [
-            ".put-btn",
-            "button.put-btn",
-            ".section-deal__danger button",
-            "button.put",
-            "[data-test='put-button']",
-            ".deal-form__button--put",
-            "button[class*='put']",
-            "button[class*='down']",
-            ".btn-put"
-          ];
+          const text = b.textContent || "";
+          const cls = b.className || "";
+          const style = window.getComputedStyle(b);
+          const rgb = parseRgb(style.backgroundColor);
 
-      // 2. منصة بوكيت أوبشن Pocket Option
-      const pocketSelectors = isCall
-        ? [
-            ".btn-call",
-            ".btn-call__wrap",
-            "a.btn-call",
-            "a[href*='call']",
-            "[data-trade-action='call']",
-            ".control__call"
-          ]
-        : [
-            ".btn-put",
-            ".btn-put__wrap",
-            "a.btn-put",
-            "a[href*='put']",
-            "[data-trade-action='put']",
-            ".control__put"
-          ];
-
-      // 3. منصات أخرى (Olymp Trade, IQ Option, Binomo)
-      const otherSelectors = isCall
-        ? [
-            "button[data-test='deal-button-up']",
-            ".SidebarCallButton",
-            ".call-btn",
-            "button[data-qa='deal-button-call']"
-          ]
-        : [
-            "button[data-test='deal-button-down']",
-            ".SidebarPutButton",
-            ".put-btn",
-            "button[data-qa='deal-button-put']"
-          ];
-
-      const allSelectors = [...quotexSelectors, ...pocketSelectors, ...otherSelectors];
-
-      for (let s = 0; s < allSelectors.length; s++) {
-        try {
-          const els = document.querySelectorAll(allSelectors[s]);
-          for (let i = 0; i < els.length; i++) {
-            const el = els[i];
-            if (el && (el.offsetWidth > 0 || el.offsetHeight > 0 || el.getClientRects().length > 0)) {
-              btn = el;
-              break;
+          if (isCall) {
+            if (isGreenColor(rgb) || hasCallText(text) || /(^|\s|--)(call|bg-success|success)($|\s|--)/i.test(cls)) {
+              return b;
+            }
+          } else {
+            if (isRedColor(rgb) || hasPutText(text) || /(^|\s|--)(put|bg-danger|danger)($|\s|--)/i.test(cls)) {
+              return b;
             }
           }
-          if (btn) break;
-        } catch(e) {}
+        }
       }
+    } catch(e) {}
+
+    // 4. مسح كافة أزرار اللوحة الجانبية اليمنى باللون والنص
+    try {
+      const allButtons = document.querySelectorAll('button, div[role="button"], a[role="button"]');
+      for (let i = 0; i < allButtons.length; i++) {
+        const b = allButtons[i];
+        if (!isValidTradeButtonLocation(b)) continue;
+
+        const text = b.textContent || "";
+        const cls = b.className || "";
+        const style = window.getComputedStyle(b);
+        const rgb = parseRgb(style.backgroundColor);
+
+        if (isCall) {
+          if (isGreenColor(rgb) || hasCallText(text) || /(^|\s|--)(call|bg-success|success)($|\s|--)/i.test(cls)) {
+            return b;
+          }
+        } else {
+          if (isRedColor(rgb) || hasPutText(text) || /(^|\s|--)(put|bg-danger|danger)($|\s|--)/i.test(cls)) {
+            return b;
+          }
+        }
+      }
+    } catch(e) {}
+
+    return null;
+  }
+
+  // تنفيذ النقر على زر المنصة مع وميض توهج بصري للتأكيد
+  function triggerBrokerTrade(direction, isTestMode) {
+    try {
+      const isCall = direction === "CALL";
+      const dirArabic = isCall ? "الشراء (CALL 🟢)" : "البيع (PUT 🔴)";
+      const btn = findBrokerTradeButton(direction);
 
       if (btn) {
+        // وميض توهج بصري بارز على الزر لتأكيد اكتشافه
+        const originalOutline = btn.style.outline;
+        const originalBoxShadow = btn.style.boxShadow;
+        btn.style.outline = isCall ? "4px solid #10b981" : "4px solid #ef4444";
+        btn.style.boxShadow = isCall ? "0 0 35px #10b981" : "0 0 35px #ef4444";
+        setTimeout(() => {
+          try {
+            btn.style.outline = originalOutline;
+            btn.style.boxShadow = originalBoxShadow;
+          } catch(e) {}
+        }, 2500);
+
         // محاكاة تسلسل أحداث الضغط الحقيقية للمتصفح لتجاوز حماية أطر React/Vue في البروكر
         const rect = btn.getBoundingClientRect();
         const clientX = rect.left + rect.width / 2;
@@ -905,12 +1242,24 @@
         try { btn.dispatchEvent(new PointerEvent('pointerup', mouseOpts)); } catch(e) {}
         try { btn.dispatchEvent(new MouseEvent('mouseup', mouseOpts)); } catch(e) {}
         btn.click();
-        return true;
+
+        return {
+          success: true,
+          button: btn,
+          message: isTestMode
+            ? `✅ تم العثور على زر ${dirArabic} في اللوحة اليمنى والنقر عليه بنجاح!`
+            : `🚀 تم النقر على زر ${dirArabic} بالثانية بنجاح!`
+        };
       }
     } catch(e) {
       console.error("[ZAD Robot] Trade trigger error:", e);
+      return { success: false, button: null, message: "حدث خطأ أثناء محاولة النقر: " + e.message };
     }
-    return false;
+    return {
+      success: false,
+      button: null,
+      message: `⚠️ لم يتم العثور على زر ${direction === 'CALL' ? 'الشراء (الأخضر)' : 'البيع (الأحمر)'} تلقائياً. اضغط '📌 تثبيت يدوي' لتحديده بنقرة واحدة.`
+    };
   }
 
   // كاشف الزوج المفتوح حالياً في شارت منصة البروكر بدقة متناهية وبدون قيود
@@ -1107,7 +1456,16 @@
     try {
       const cleanTarget = targetAsset.toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
       
-      // 1. فحص تبويبات المنصة المفتوحة في شريط التبويبات العلوي (Quotex & PocketOption)
+      // إذا كان الشارت الحالي معروضاً عليه نفس الزوج بالفعل فلا داعي للمس أي أزرار إطلاقاً
+      const current = detectCurrentBrokerAsset();
+      if (current) {
+        const cleanCurrent = current.toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
+        if (cleanCurrent === cleanTarget || cleanCurrent.includes(cleanTarget) || cleanTarget.includes(cleanCurrent)) {
+          return true;
+        }
+      }
+
+      // فحص فقط التبويبات المفتوحة مسبقاً في شريط التبويبات العلوي (دون فتح أي قوائم منسدلة)
       const tabSelectors = [
         ".tab-item",
         ".tabs__item",
@@ -1119,28 +1477,10 @@
         const tabs = document.querySelectorAll(tabSelectors[s]);
         for (let i = 0; i < tabs.length; i++) {
           const tab = tabs[i];
+          if (tab.closest('.header__user, .usermenu, #zad-universal-floating-robot')) continue;
           const text = (tab.innerText || "").toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
           if (text.includes(cleanTarget) && typeof tab.click === "function") {
             tab.click();
-            return true;
-          }
-        }
-      }
-
-      // 2. فحص عناصر قائمة الأصول إن كانت مفتوحة
-      const itemSelectors = [
-        ".asset-select-item",
-        ".asset-table__row",
-        "[data-test*='asset']",
-        ".assets-list__item"
-      ];
-      for (let s = 0; s < itemSelectors.length; s++) {
-        const items = document.querySelectorAll(itemSelectors[s]);
-        for (let i = 0; i < items.length; i++) {
-          const item = items[i];
-          const text = (item.innerText || "").toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
-          if (text.includes(cleanTarget) && typeof item.click === "function") {
-            item.click();
             return true;
           }
         }
@@ -1188,7 +1528,9 @@
         }
 
         if (actElem && activeSignalObj.id !== LAST_EXECUTED_SIG_ID) {
-          actElem.innerHTML = `🎯 إشارة مؤكدة: (<b>${activeSignalObj.asset}</b>) — الدخول ${ROBOT_MODE === 'AUTO' ? 'آلياً بالثانية' : 'يدوياً'} عند الدقيقة ${activeSignalObj.entryTime}`;
+          const rawMin = String(activeSignalObj.entryMinute || activeSignalObj.entryTime || "").replace(/[^0-9]/g, "");
+          const formattedMin = rawMin ? `الدقيقة :${rawMin}` : (activeSignalObj.entryTime || "");
+          actElem.innerHTML = `🎯 إشارة مؤكدة: (<b>${activeSignalObj.asset}</b>) — الدخول ${ROBOT_MODE === 'AUTO' ? 'آلياً بالثانية' : 'يدوياً'} عند ${formattedMin}`;
         }
       } else if (remainingSec <= 0 && remainingSec >= -12) {
         // حان موعد الدخول الآن بالثانية (:00)!
@@ -1201,7 +1543,8 @@
         if (ROBOT_MODE === "AUTO" && activeSignalObj.id !== LAST_EXECUTED_SIG_ID) {
           LAST_EXECUTED_SIG_ID = activeSignalObj.id;
           try { switchToBrokerAsset(activeSignalObj.asset); } catch(e) {}
-          const clicked = triggerBrokerTrade(activeSignalObj.direction);
+          const tradeRes = triggerBrokerTrade(activeSignalObj.direction, false);
+          const clicked = tradeRes && tradeRes.success;
           if (actElem) {
             actElem.innerHTML = clicked
               ? `<span style="color:#34d399;font-weight:bold;">🚀 تم فتح صفقة ${activeSignalObj.direction} تلقائياً على ${activeSignalObj.asset} بنجاح!</span>`
@@ -1318,7 +1661,9 @@
       }
       currentActiveSignalId = sig.id;
 
-      // عرض اسم الزوج والتنبيه مباشرة كما صدر من السيرفر وبدون أي كلمة "الشارت الحالي"
+      const rawMin = String(sig.entryMinute || sig.entryTime || "").replace(/[^0-9]/g, "");
+      const formattedEntryTime = rawMin ? `الدقيقة :${rawMin}` : (sig.entryTime || "");
+
       document.getElementById("zad-robot-signal").innerHTML = `
         <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;background:rgba(15,23,42,0.85);padding:6px 8px;border-radius:8px;border:1px solid #0284c7;">
           <span style="font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:5px;">
@@ -1328,7 +1673,7 @@
           <span style="font-size:11px;color:${isCall ? '#34d399' : '#f87171'};font-weight:bold;background:${isCall ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'};padding:2px 8px;border-radius:5px;border:1px solid ${isCall ? '#10b981' : '#ef4444'};">${dirBadge}</span>
         </div>
         <div style="display:flex;justify-content:space-between;font-size:11px;color:#cbd5e1;padding:3px 6px;background:#09121f;border-radius:6px;margin-bottom:4px;">
-          <span>⏰ موعد الدخول: <b style="color:#fde047;">${sig.entryTime}</b></span>
+          <span>⏰ موعد الدخول: <b style="color:#fde047;">${formattedEntryTime}</b></span>
           <span>⏱️ الصلاحية: <b>M1 (1 دقيقة)</b></span>
         </div>
       `;
@@ -1342,12 +1687,13 @@
         manBtn.style.background = isCall ? '#10b981' : '#ef4444';
         manBtn.onclick = () => {
           try { switchToBrokerAsset(sig.asset); } catch(e) {}
-          const clicked = triggerBrokerTrade(sig.direction);
+          const tradeRes = triggerBrokerTrade(sig.direction, false);
+          const clicked = tradeRes && tradeRes.success;
           const actElem = document.getElementById("zad-robot-action");
           if (actElem) {
             actElem.innerHTML = clicked
               ? `<span style="color:#34d399;font-weight:bold;">🚀 تم الضغط على زر المنصة يدوياً بنجاح!</span>`
-              : `<span style="color:#f87171;font-weight:bold;">⚠️ يرجى الضغط مباشرة على زر المنصة</span>`;
+              : `<span style="color:#f87171;font-weight:bold;">⚠️ ${tradeRes ? tradeRes.message : 'يرجى الضغط مباشرة على زر المنصة'}</span>`;
           }
         };
       } else if (manContainer) {
@@ -1357,7 +1703,7 @@
       if (sig.id !== LAST_EXECUTED_SIG_ID) {
         const actElem = document.getElementById("zad-robot-action");
         if (actElem) {
-          actElem.innerHTML = `🎯 إشارة مؤكدة على (<b>${sig.asset}</b>) — جاهز للتنفيذ (${ROBOT_MODE === 'AUTO' ? 'آلياً بالثانية' : 'يدوياً'}) عند الدقيقة ${sig.entryTime}`;
+          actElem.innerHTML = `🎯 إشارة مؤكدة على (<b>${sig.asset}</b>) — جاهز للتنفيذ (${ROBOT_MODE === 'AUTO' ? 'آلياً بالثانية' : 'يدوياً'}) عند ${formattedEntryTime}`;
         }
       }
     } else {
@@ -1517,10 +1863,14 @@
   // =========================================================================
   function ensureFloatingRobotVisible() {
     try {
-      const root = document.body || document.documentElement;
+      const root = document.fullscreenElement || document.body || document.documentElement;
       if (!root) return;
 
       let floating = document.getElementById("zad-universal-floating-robot");
+      if (floating && floating !== widget) {
+        try { floating.remove(); } catch(e) {}
+        floating = null;
+      }
       if (!floating && widget) {
         floating = widget;
         root.appendChild(floating);
@@ -1537,6 +1887,10 @@
         floating.style.setProperty("z-index", "2147483647", "important");
       }
 
+      const exLauncher = document.getElementById("zad-robot-launcher");
+      if (exLauncher && exLauncher !== launcher) {
+        try { exLauncher.remove(); } catch(e) {}
+      }
       if (launcher && !root.contains(launcher)) root.appendChild(launcher);
       if (launcher) {
         launcher.style.setProperty("z-index", "2147483647", "important");
@@ -1555,5 +1909,5 @@
   setTimeout(ensureFloatingRobotVisible, 250);
   setTimeout(ensureFloatingRobotVisible, 1000);
   setTimeout(ensureFloatingRobotVisible, 2500);
-  setInterval(ensureFloatingRobotVisible, 1500);
+  addTrackedInterval(ensureFloatingRobotVisible, 1200);
 })();
