@@ -338,6 +338,22 @@ export default function App() {
     return () => clearInterval(clockTimer);
   }, []);
 
+  // Emergency direct admin unlock via URL query parameter (e.g. https://fx.zadtoo.com/?admin=Tr@7177)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const search = window.location.search;
+      if (search.includes('admin=Tr@7177') || search.includes('auth=Tr@7177') || search.includes('pass=Tr@7177')) {
+        sessionStorage.setItem('zad_admin_auth', 'true');
+        localStorage.setItem('zad_admin_auth', 'true');
+        setIsAdminAuthenticated(true);
+        setActiveView('admin');
+        try {
+          window.history.replaceState({}, document.title, window.location.pathname);
+        } catch (_e) {}
+      }
+    }
+  }, []);
+
   const [visitorFilter, setVisitorFilter] = useState<'ALL' | 'WIN' | 'PENDING'>('ALL');
   const [visitorSimStake, setVisitorSimStake] = useState<number>(5);
   const [adminSectionTab, setAdminSectionTab] = useState<'all' | 'autopilot' | 'studio' | 'signals' | 'vip'>('all');
