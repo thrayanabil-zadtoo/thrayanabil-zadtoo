@@ -85,12 +85,12 @@ export async function saveCloudSystemState(payloadObj: any): Promise<boolean> {
           ...sanitizedObj.autopilot,
           botToken: '', // Redact sensitive Telegram token from cloud
           vipBotToken: '', // Redact sensitive VIP token from cloud
-          freeWinImageUrl: '',
-          freeWinGale1ImageUrl: '',
-          freeLossImageUrl: '',
-          vipWinImageUrl: '',
-          vipWinGale1ImageUrl: '',
-          vipLossImageUrl: '',
+          freeWinImageUrl: sanitizedObj.autopilot.freeWinImageUrl || '',
+          freeWinGale1ImageUrl: sanitizedObj.autopilot.freeWinGale1ImageUrl || '',
+          freeLossImageUrl: sanitizedObj.autopilot.freeLossImageUrl || '',
+          vipWinImageUrl: sanitizedObj.autopilot.vipWinImageUrl || '',
+          vipWinGale1ImageUrl: sanitizedObj.autopilot.vipWinGale1ImageUrl || '',
+          vipLossImageUrl: sanitizedObj.autopilot.vipLossImageUrl || '',
         };
       }
       if (Array.isArray(sanitizedObj.subscribers)) {

@@ -656,7 +656,13 @@ export default function App() {
           ...data.autopilot,
           quotexReferralLink: resolvedQxLink,
           botToken: resolvedToken || prev.botToken,
-          chatId: resolvedChat || prev.chatId
+          chatId: resolvedChat || prev.chatId,
+          freeWinImageUrl: data.autopilot.freeWinImageUrl !== undefined ? data.autopilot.freeWinImageUrl : (prev.freeWinImageUrl || ''),
+          freeWinGale1ImageUrl: data.autopilot.freeWinGale1ImageUrl !== undefined ? data.autopilot.freeWinGale1ImageUrl : (prev.freeWinGale1ImageUrl || ''),
+          freeLossImageUrl: data.autopilot.freeLossImageUrl !== undefined ? data.autopilot.freeLossImageUrl : (prev.freeLossImageUrl || ''),
+          vipWinImageUrl: data.autopilot.vipWinImageUrl !== undefined ? data.autopilot.vipWinImageUrl : (prev.vipWinImageUrl || ''),
+          vipWinGale1ImageUrl: data.autopilot.vipWinGale1ImageUrl !== undefined ? data.autopilot.vipWinGale1ImageUrl : (prev.vipWinGale1ImageUrl || ''),
+          vipLossImageUrl: data.autopilot.vipLossImageUrl !== undefined ? data.autopilot.vipLossImageUrl : (prev.vipLossImageUrl || '')
         }));
 
         // If browser had a token in localStorage that the server didn't have yet, push it to server & Cloud Firestore immediately
@@ -1159,7 +1165,8 @@ export default function App() {
         const ctx = canvas.getContext('2d');
         if (ctx) {
           ctx.drawImage(img, 0, 0, w, h);
-          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.65);
+          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
+          setAutoPilot(prev => ({ ...prev, [fieldKey]: compressedDataUrl }));
           handleSaveAutoPilot({ [fieldKey]: compressedDataUrl });
         }
       };
@@ -1168,6 +1175,36 @@ export default function App() {
       }
     };
     reader.readAsDataURL(file);
+    e.target.value = '';
+  };
+
+  const handleDeleteBotResultImage = (
+    fieldKey:
+      | 'freeWinImageUrl'
+      | 'freeWinGale1ImageUrl'
+      | 'freeLossImageUrl'
+      | 'vipWinImageUrl'
+      | 'vipWinGale1ImageUrl'
+      | 'vipLossImageUrl'
+  ) => {
+    const localKeyMap: Record<string, string> = {
+      freeWinImageUrl: 'tg_free_win_img',
+      freeWinGale1ImageUrl: 'tg_free_gale1_img',
+      freeLossImageUrl: 'tg_free_loss_img',
+      vipWinImageUrl: 'tg_vip_win_img',
+      vipWinGale1ImageUrl: 'tg_vip_gale1_img',
+      vipLossImageUrl: 'tg_vip_loss_img'
+    };
+    const storageKey = localKeyMap[fieldKey];
+    if (storageKey) {
+      try {
+        localStorage.removeItem(storageKey);
+      } catch (e) {
+        // Ignore
+      }
+    }
+    setAutoPilot(prev => ({ ...prev, [fieldKey]: '' }));
+    handleSaveAutoPilot({ [fieldKey]: '' });
   };
 
   // Send message (Admin -> Member OR Member -> Admin, with optional receipt image)
@@ -1349,17 +1386,35 @@ export default function App() {
     if (merged.freeWinIcon !== undefined) safeSet('tg_free_win_icon', merged.freeWinIcon);
     if (merged.freeWinGale1Icon !== undefined) safeSet('tg_free_gale1_icon', merged.freeWinGale1Icon);
     if (merged.freeLossIcon !== undefined) safeSet('tg_free_loss_icon', merged.freeLossIcon);
-    if (merged.freeWinImageUrl !== undefined) safeSet('tg_free_win_img', merged.freeWinImageUrl);
-    if (merged.freeWinGale1ImageUrl !== undefined) safeSet('tg_free_gale1_img', merged.freeWinGale1ImageUrl);
-    if (merged.freeLossImageUrl !== undefined) safeSet('tg_free_loss_img', merged.freeLossImageUrl);
+    if (merged.freeWinImageUrl !== undefined) {
+      if (merged.freeWinImageUrl) safeSet('tg_free_win_img', merged.freeWinImageUrl);
+      else { try { localStorage.removeItem('tg_free_win_img'); } catch(e) {} }
+    }
+    if (merged.freeWinGale1ImageUrl !== undefined) {
+      if (merged.freeWinGale1ImageUrl) safeSet('tg_free_gale1_img', merged.freeWinGale1ImageUrl);
+      else { try { localStorage.removeItem('tg_free_gale1_img'); } catch(e) {} }
+    }
+    if (merged.freeLossImageUrl !== undefined) {
+      if (merged.freeLossImageUrl) safeSet('tg_free_loss_img', merged.freeLossImageUrl);
+      else { try { localStorage.removeItem('tg_free_loss_img'); } catch(e) {} }
+    }
     if (merged.vipBotToken !== undefined) safeSet('tg_vip_bot_token', merged.vipBotToken);
     if (merged.vipChatId !== undefined) safeSet('tg_vip_chat_id', merged.vipChatId);
     if (merged.vipWinIcon !== undefined) safeSet('tg_vip_win_icon', merged.vipWinIcon);
     if (merged.vipWinGale1Icon !== undefined) safeSet('tg_vip_gale1_icon', merged.vipWinGale1Icon);
     if (merged.vipLossIcon !== undefined) safeSet('tg_vip_loss_icon', merged.vipLossIcon);
-    if (merged.vipWinImageUrl !== undefined) safeSet('tg_vip_win_img', merged.vipWinImageUrl);
-    if (merged.vipWinGale1ImageUrl !== undefined) safeSet('tg_vip_gale1_img', merged.vipWinGale1ImageUrl);
-    if (merged.vipLossImageUrl !== undefined) safeSet('tg_vip_loss_img', merged.vipLossImageUrl);
+    if (merged.vipWinImageUrl !== undefined) {
+      if (merged.vipWinImageUrl) safeSet('tg_vip_win_img', merged.vipWinImageUrl);
+      else { try { localStorage.removeItem('tg_vip_win_img'); } catch(e) {} }
+    }
+    if (merged.vipWinGale1ImageUrl !== undefined) {
+      if (merged.vipWinGale1ImageUrl) safeSet('tg_vip_gale1_img', merged.vipWinGale1ImageUrl);
+      else { try { localStorage.removeItem('tg_vip_gale1_img'); } catch(e) {} }
+    }
+    if (merged.vipLossImageUrl !== undefined) {
+      if (merged.vipLossImageUrl) safeSet('tg_vip_loss_img', merged.vipLossImageUrl);
+      else { try { localStorage.removeItem('tg_vip_loss_img'); } catch(e) {} }
+    }
 
     try {
       const res = await fetch('/api/autopilot', {
@@ -3103,7 +3158,7 @@ export default function App() {
                               <span className="text-[10px] text-emerald-400 font-semibold">محفوظة ✓</span>
                               <button
                                 type="button"
-                                onClick={() => handleSaveAutoPilot({ freeWinImageUrl: '' })}
+                                onClick={() => handleDeleteBotResultImage('freeWinImageUrl')}
                                 className="p-1 text-rose-400 hover:bg-rose-950/60 rounded cursor-pointer"
                                 title="حذف الصورة"
                               >
@@ -3168,7 +3223,7 @@ export default function App() {
                               <span className="text-[10px] text-amber-300 font-semibold">محفوظة ✓</span>
                               <button
                                 type="button"
-                                onClick={() => handleSaveAutoPilot({ freeWinGale1ImageUrl: '' })}
+                                onClick={() => handleDeleteBotResultImage('freeWinGale1ImageUrl')}
                                 className="p-1 text-rose-400 hover:bg-rose-950/60 rounded cursor-pointer"
                                 title="حذف الصورة"
                               >
@@ -3231,7 +3286,7 @@ export default function App() {
                               <span className="text-[10px] text-rose-400 font-semibold">محفوظة ✓</span>
                               <button
                                 type="button"
-                                onClick={() => handleSaveAutoPilot({ freeLossImageUrl: '' })}
+                                onClick={() => handleDeleteBotResultImage('freeLossImageUrl')}
                                 className="p-1 text-rose-400 hover:bg-rose-950/60 rounded cursor-pointer"
                                 title="حذف الصورة"
                               >
@@ -3416,7 +3471,7 @@ export default function App() {
                               <span className="text-[10px] text-emerald-400 font-semibold">محفوظة ✓</span>
                               <button
                                 type="button"
-                                onClick={() => handleSaveAutoPilot({ vipWinImageUrl: '' })}
+                                onClick={() => handleDeleteBotResultImage('vipWinImageUrl')}
                                 className="p-1 text-rose-400 hover:bg-rose-950/60 rounded cursor-pointer"
                                 title="حذف الصورة"
                               >
@@ -3481,7 +3536,7 @@ export default function App() {
                               <span className="text-[10px] text-amber-300 font-semibold">محفوظة ✓</span>
                               <button
                                 type="button"
-                                onClick={() => handleSaveAutoPilot({ vipWinGale1ImageUrl: '' })}
+                                onClick={() => handleDeleteBotResultImage('vipWinGale1ImageUrl')}
                                 className="p-1 text-rose-400 hover:bg-rose-950/60 rounded cursor-pointer"
                                 title="حذف الصورة"
                               >
@@ -3544,7 +3599,7 @@ export default function App() {
                               <span className="text-[10px] text-rose-400 font-semibold">محفوظة ✓</span>
                               <button
                                 type="button"
-                                onClick={() => handleSaveAutoPilot({ vipLossImageUrl: '' })}
+                                onClick={() => handleDeleteBotResultImage('vipLossImageUrl')}
                                 className="p-1 text-rose-400 hover:bg-rose-950/60 rounded cursor-pointer"
                                 title="حذف الصورة"
                               >
