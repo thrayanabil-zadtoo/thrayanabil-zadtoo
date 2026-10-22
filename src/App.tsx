@@ -287,6 +287,7 @@ export interface AutoPilotConfig {
   quotexReferralLink?: string;
   quotexMinDepositUsd?: number;
   autoWinNotification: boolean;
+  resultNotificationStyle?: 'emoji_size' | 'photo';
   autoDailyReportEnabled?: boolean;
   lastDailyReportSentDate?: string;
   lastRunAt: string | null;
@@ -513,6 +514,7 @@ export default function App() {
     quotexReferralLink: 'https://broker-qx.pro/?lid=2303934',
     quotexMinDepositUsd: 100,
     autoWinNotification: true,
+    resultNotificationStyle: (localStorage.getItem('tg_result_notification_style') as any) || 'emoji_size',
     autoDailyReportEnabled: true,
     lastDailyReportSentDate: '',
     lastRunAt: null,
@@ -1148,7 +1150,7 @@ export default function App() {
       const img = new Image();
       img.onload = () => {
         const canvas = document.createElement('canvas');
-        const maxDim = 400;
+        const maxDim = 96; // Compact emoji/icon scale
         let w = img.width;
         let h = img.height;
         if (w > maxDim || h > maxDim) {
@@ -1164,8 +1166,10 @@ export default function App() {
         canvas.height = h;
         const ctx = canvas.getContext('2d');
         if (ctx) {
+          ctx.clearRect(0, 0, w, h);
           ctx.drawImage(img, 0, 0, w, h);
-          const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.7);
+          // Preserve transparent PNG format so it never produces an unsightly black background
+          const compressedDataUrl = canvas.toDataURL('image/png');
           setAutoPilot(prev => ({ ...prev, [fieldKey]: compressedDataUrl }));
           handleSaveAutoPilot({ [fieldKey]: compressedDataUrl });
         }
@@ -1414,6 +1418,9 @@ export default function App() {
     if (merged.vipLossImageUrl !== undefined) {
       if (merged.vipLossImageUrl) safeSet('tg_vip_loss_img', merged.vipLossImageUrl);
       else { try { localStorage.removeItem('tg_vip_loss_img'); } catch(e) {} }
+    }
+    if (merged.resultNotificationStyle !== undefined) {
+      safeSet('tg_result_notification_style', merged.resultNotificationStyle);
     }
 
     try {
@@ -1832,17 +1839,16 @@ export default function App() {
     }
   };
 
-  // Only show and calculate stats for TODAY's signals within official Egypt trading hours (09:00 AM to 09:00 PM)
+  // Show and calculate stats for all of TODAY's signals
   const todaySignals = useMemo(() => {
     const todayEgypt = getEgyptDateString(deviceNow);
     return signals.filter(s => {
       if (!s.createdAt) return false;
       const sigDate = new Date(s.createdAt);
       if (isNaN(sigDate.getTime())) return false;
-      // Must be today in Egypt AND strictly within 09:00 AM to 09:00 PM Egypt trading hours
       const isToday = getEgyptDateString(sigDate) === todayEgypt;
       const isPendingRecent = s.status === 'PENDING' && Date.now() - sigDate.getTime() < 10 * 60 * 1000;
-      return (isToday || isPendingRecent) && isSignalWithinEgyptHours(sigDate);
+      return isToday || isPendingRecent;
     });
   }, [signals, deviceNow]);
 
@@ -3103,6 +3109,44 @@ export default function App() {
                           {freeBotIconsSavedBadge ? 'تم حفظ الأيقونات والصور ✓' : 'حفظ أيقونات وصور البوت المجاني'}
                         </span>
                       </button>
+                    </div>
+
+                    {/* Selector for Telegram Result Display Size: Emoji Size vs Full Photo */}
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 bg-[#0B0F17]/90 border border-emerald-500/30 rounded-lg">
+                      <div className="space-y-0.5">
+                        <span className="text-xs font-bold text-emerald-300 block">
+                          حجم نتيجة الصفقة على التليجرام:
+                        </span>
+                        <span className="text-[11px] text-slate-400 block">
+                          {autoPilot.resultNotificationStyle === 'photo'
+                            ? 'يتم إرسال ملصق/صورة كإشعار نتيجة للصفقة'
+                            : '⚡ بحجم الإيموجي: إشعار فوري بحجم الإيموجي الأنيق (بدون صور ضخمة تملأ شاشة الهاتف)'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 bg-slate-900 p-1 border border-slate-800 rounded-md shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleSaveAutoPilot({ resultNotificationStyle: 'emoji_size' })}
+                          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer transition-colors ${
+                            autoPilot.resultNotificationStyle !== 'photo'
+                              ? 'bg-emerald-500 text-slate-950 shadow font-extrabold'
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          ⚡ بحجم الإيموجي (مطلوب)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSaveAutoPilot({ resultNotificationStyle: 'photo' })}
+                          className={`px-3 py-1.5 text-xs font-bold rounded cursor-pointer transition-colors ${
+                            autoPilot.resultNotificationStyle === 'photo'
+                              ? 'bg-emerald-500 text-slate-950 shadow font-extrabold'
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          📸 صورة / ملصق
+                        </button>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">

@@ -135,6 +135,7 @@ export interface AutoPilotConfig {
   quotexReferralLink?: string; // Official Quotex Affiliate/Referral Link for Free VIP activation
   quotexMinDepositUsd?: number; // Minimum deposit in Quotex account for Free VIP (default 100$)
   autoWinNotification: boolean;
+  resultNotificationStyle?: 'emoji_size' | 'photo'; // 'emoji_size' (default) sends clean compact native emoji reply; 'photo' sends full image
   autoDailyReportEnabled?: boolean; // Automatically send End-of-Day Final Report when trading day closes at freeEndHourEgypt
   lastDailyReportSentDate?: string; // Tracks Cairo date (YYYY-MM-DD) when the end-of-day report was last sent
   lastRunAt: string | null;
@@ -302,6 +303,7 @@ const defaultAutoPilot: AutoPilotConfig = {
   quotexReferralLink: 'https://broker-qx.pro/?lid=2303934',
   quotexMinDepositUsd: 100,
   autoWinNotification: true,
+  resultNotificationStyle: 'emoji_size',
   autoDailyReportEnabled: true,
   lastDailyReportSentDate: '',
   lastRunAt: null,
@@ -347,9 +349,7 @@ function syncSignalsIntoDailyStats(signalsList: SignalItem[], allowOverwriteActi
   for (const sig of signalsList) {
     if (!sig.createdAt || sig.status === 'PENDING') continue;
     const sigDate = new Date(sig.createdAt);
-    if (isNaN(sigDate.getTime())) continue;
-    // Strict requirement: Only signals within Egypt trading hours (09:00 AM to 09:00 PM) are counted in statistics
-    if (!isSignalWithinEgyptTradingHours(sigDate)) continue;
+    // Include all completed signals issued on that date in statistics
     const dateKey = getCurrentEgyptDateString(sigDate);
     if (!byDate[dateKey]) {
       byDate[dateKey] = { directWins: 0, gale1Wins: 0, losses: 0, draws: 0 };
@@ -684,7 +684,8 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       reversalPatternRequired: parsed.autopilot.reversalPatternRequired !== false,
       newsFilterEnabled: parsed.autopilot.newsFilterEnabled !== false,
       assetCooldownMinutes: Math.max(5, Number(parsed.autopilot.assetCooldownMinutes || autoPilot.assetCooldownMinutes || 20)),
-      minQualityScore: Number(parsed.autopilot.minQualityScore || autoPilot.minQualityScore || 65)
+      minQualityScore: Number(parsed.autopilot.minQualityScore || autoPilot.minQualityScore || 65),
+      resultNotificationStyle: parsed.autopilot.resultNotificationStyle || autoPilot.resultNotificationStyle || 'emoji_size'
     };
   }
 }
@@ -813,7 +814,7 @@ async function saveState(): Promise<boolean> {
           if (!s.createdAt) return false;
           const d = new Date(s.createdAt);
           if (isNaN(d.getTime())) return false;
-          return getCurrentEgyptDateString(d) === todayStr && isSignalWithinEgyptTradingHours(d);
+          return getCurrentEgyptDateString(d) === todayStr;
         });
         const todayDirectWins = todayTradingSignals.filter(s => s.status === 'WIN').length;
         const todayNoGaleLosses = todayTradingSignals.filter(
@@ -1439,7 +1440,8 @@ async function updateSingleTelegramDestination(
         if (editCapData.ok) success = true;
       }
     } else if (originalMessageId) {
-      if (resultImageUrl && resultImageUrl.trim()) {
+      const isEmojiSize = autoPilot.resultNotificationStyle !== 'photo';
+      if (!isEmojiSize && resultImageUrl && resultImageUrl.trim()) {
         const photoData = await sendTelegramPhoto(
           botToken,
           chatId,
@@ -1464,6 +1466,7 @@ async function updateSingleTelegramDestination(
           }
         }
       } else {
+        // Send clean compact native emoji-sized notification (✅ or ❌)
         const replyData = await sendTelegramMessage(
           botToken,
           chatId,
@@ -2204,12 +2207,12 @@ function buildEndOfDayFinalReport(customDateStr?: string): EndOfDayFinalReport {
     ? currentEgyptHour >= 21
     : !isFreeBotActiveNow(autoPilot);
 
-  // Filter signals belonging to the target date strictly within Egypt trading hours (09:00 AM to 09:00 PM)
+  // Filter signals belonging to the target date
   const daySignals = signalsStore.filter(s => {
     if (!s.createdAt) return false;
     const d = new Date(s.createdAt);
     if (isNaN(d.getTime())) return false;
-    return getCurrentEgyptDateString(d) === todayEgypt && isSignalWithinEgyptTradingHours(d);
+    return getCurrentEgyptDateString(d) === todayEgypt;
   });
 
   const liveDirectWins = daySignals.filter(s => s.status === 'WIN').length;
@@ -2613,11 +2616,11 @@ setInterval(() => {
   pollTelegramBotIncomingForwards();
 }, 6 * 1000);
 
-// Keep-Alive every 55 seconds on current instance only (avoid waking two containers at once)
+// 24/7 Permanent Keep-Alive: Pings external Cloud Run URL + localhost every 45s so container never enters idle sleep
 setInterval(() => {
-  const appUrl = process.env.APP_URL || 'http://localhost:3000';
-  fetch(`${appUrl}/api/health`).catch(() => {});
-}, 55 * 1000);
+  fetch('http://localhost:3000/api/health').catch(() => {});
+  fetch('https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app/api/health').catch(() => {});
+}, 45 * 1000);
 
 async function startServer() {
   const app = express();
@@ -3223,7 +3226,7 @@ async function startServer() {
       if (!s.createdAt) return false;
       const d = new Date(s.createdAt);
       if (isNaN(d.getTime())) return false;
-      return getCurrentEgyptDateString(d) === todayStr && isSignalWithinEgyptTradingHours(d);
+      return getCurrentEgyptDateString(d) === todayStr;
     });
     const todayDirectWins = todayTradingSignals.filter(s => s.status === 'WIN').length;
     const todayNoGaleLosses = todayTradingSignals.filter(
@@ -3422,7 +3425,7 @@ async function startServer() {
       if (!s.createdAt) return false;
       const d = new Date(s.createdAt);
       if (isNaN(d.getTime())) return false;
-      return getCurrentEgyptDateString(d) === todayStr && isSignalWithinEgyptTradingHours(d);
+      return getCurrentEgyptDateString(d) === todayStr;
     });
     const todayDirectWins = todayTradingSignals.filter(s => s.status === 'WIN').length;
     const todayNoGaleLosses = todayTradingSignals.filter(
