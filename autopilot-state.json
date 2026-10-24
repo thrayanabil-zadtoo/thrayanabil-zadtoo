@@ -1,32 +1,6 @@
 {
-  "stateUpdatedAt": "2026-10-22T07:06:10.506Z",
-  "signals": [
-    {
-      "id": "sig-1792652460",
-      "asset": "AUD/USD",
-      "isOtc": false,
-      "direction": "PUT",
-      "timeframe": "1 دقيقة (M1)",
-      "entryMinute": "01",
-      "entryTime": ":01",
-      "targetEntryTimestamp": 1792652460,
-      "payout": "السوق العالمي",
-      "livePrice": "0.70200",
-      "rsiValue": 66.8,
-      "analysisReason": "أقوى فرصة متاحة حالياً في السوق العالمي (RSI 66.8 - ميل هبوطي)",
-      "entryPriceNumeric": 0.7020007371902466,
-      "qualityScore": 50,
-      "reversalPattern": "لا يوجد نموذج معتمد",
-      "sma10Value": 0.70171,
-      "formattedMessage": "✨ نَبض التداول | السوق العالمي ✨\n━━━━━━━━━━━━━━\n📊 الزوج: AUD/USD (السوق العالمي 🌍)\n⏱ المدة: 1 دقيقة (M1)\n⏰ وقت الدخول: الدقيقة :01 (حسب ساعة جهازك)\n🔴 الاتجاه: هبوط (بيع ⬇️)\n📈 السعر الحالي: 0.70200 | مؤشر RSI: 66.8\n━━━━━━━━━━━━━━\n📢 قناتنا المجانية: @ZadNBFX\n💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n✅ ربح",
-      "status": "WIN",
-      "createdAt": "2026-10-22T07:01:12.973Z",
-      "resultSent": true,
-      "autoSent": true,
-      "telegramMessageId": 1571,
-      "telegramReplyMessageId": 1573
-    }
-  ],
+  "stateUpdatedAt": "2026-10-24T07:37:57.708Z",
+  "signals": [],
   "settings": {
     "sourceChannel": "LIVE_GLOBAL_FOREX",
     "channelTitle": "نَبض التداول | السوق العالمي",
@@ -94,8 +68,8 @@
     "botToken": "8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U",
     "chatId": "@ZadNBFX",
     "freeScheduleEnabled": true,
-    "freeStartHourEgypt": 9,
-    "freeEndHourEgypt": 21,
+    "freeStartHourEgypt": 10,
+    "freeEndHourEgypt": 18,
     "freeWinIcon": "✅ ربح",
     "freeWinGale1Icon": "✅ ربح مضاعفة واحدة",
     "freeLossIcon": "❌",
@@ -113,26 +87,27 @@
     "vipLossImageUrl": "",
     "sourceChannel": "LIVE_GLOBAL_FOREX",
     "intervalMinutes": 15,
-    "strictnessLevel": "high",
+    "strictnessLevel": "super",
     "rsiOversoldThreshold": 28,
     "rsiOverboughtThreshold": 72,
     "smaFilterEnabled": true,
     "reversalPatternRequired": true,
     "newsFilterEnabled": true,
     "assetCooldownMinutes": 20,
-    "minQualityScore": 65,
+    "minQualityScore": 75,
     "resultMode": "candle_exact",
     "oneGaleEnabled": false,
     "quotexReferralLink": "https://broker-qx.pro/?lid=2303934",
     "quotexMinDepositUsd": 100,
     "autoWinNotification": true,
+    "resultNotificationStyle": "emoji_size",
     "autoDailyReportEnabled": true,
     "lastDailyReportSentDate": "2026-10-14",
-    "lastRunAt": "2026-10-22T07:01:12.973Z",
-    "nextRunAt": "2026-10-22T07:16:12.973Z",
-    "totalAutoSent": 1,
+    "lastRunAt": "2026-10-23T17:03:23.844Z",
+    "nextRunAt": "2026-10-23T17:18:23.844Z",
+    "totalAutoSent": 0,
     "lastError": null,
-    "marketOpenStatus": true,
+    "marketOpenStatus": false,
     "pairSelectionMode": "custom_list",
     "primaryFixedPair": "EUR/JPY",
     "allowedPairs": [
@@ -157,10 +132,9 @@
       "USD/CAD",
       "EUR/GBP"
     ],
-    "currentEgyptHour": 11,
+    "currentEgyptHour": 10,
     "isFreeBotWithinSchedule": true,
-    "lastResetEgyptDate": "2026-10-22",
-    "resultNotificationStyle": "emoji_size"
+    "lastResetEgyptDate": "2026-10-24"
   },
   "robotSettings": {
     "isPublishedToVisitors": false,
@@ -174,16 +148,41 @@
     "defaultStakeUsd": 5
   },
   "subscribers": [],
-  "quickNotes": [],
+  "quickNotes": [
+    {
+      "id": "note-1",
+      "title": "باقات وأسعار VIP وطرق الدفع",
+      "content": "👑 باقات الاشتراك في قناة VIP (شغال 24 ساعة):\n• شهر واحد: 30$ (في مصر: 1,650 جنيه)\n• 3 شهور: 65$ (في مصر: 3,575 جنيه)\n• 6 شهور: 80$ (في مصر: 4,400 جنيه)\n• سنة كاملة: 111$ (في مصر: 6,105 جنيه)\n💳 الدفع متاح عبر: محافظ إلكترونية (لمصر) | تحويل لبنك فلسطيني بالدولار أو الشيكل ($) (لفلسطين) | تحويل بنكي"
+    },
+    {
+      "id": "note-2",
+      "title": "تأكيد استلام الدفع والتفعيل",
+      "content": "✅ تم استلام الدفعة بنجاح وتفعيل عضويتك في قناة VIP! تجد رابط الدخول وتاريخ انتهاء عضويتك في أعلى صفحتك الآن. بالتوفيق والربح الوفير."
+    },
+    {
+      "id": "note-3",
+      "title": "تنبيه قرب انتهاء العضوية",
+      "content": "🔔 تنبيه ودي: قاربت عضويتك في قناة VIP على الانتهاء. يمكنك تجديد الباقة من خلال أيقونة طلب تجديد الاشتراك في حسابك لاستمرار وصول الإشارات 24/7 بدون انقطاع."
+    }
+  ],
   "dailyStats": [
     {
-      "date": "2026-10-22",
-      "directWins": 1,
+      "date": "2026-10-23",
+      "directWins": 17,
       "gale1Wins": 0,
-      "losses": 0,
+      "losses": 21,
       "draws": 0,
       "manualOverride": false,
-      "updatedAt": "2026-10-22T07:03:58.201Z"
+      "updatedAt": "2026-10-23T16:49:58.160Z"
+    },
+    {
+      "date": "2026-10-22",
+      "directWins": 20,
+      "gale1Wins": 0,
+      "losses": 16,
+      "draws": 0,
+      "manualOverride": false,
+      "updatedAt": "2026-10-22T16:17:10.551Z"
     },
     {
       "date": "2026-10-21",
@@ -267,5 +266,5 @@
       "updatedAt": "2026-10-08T21:42:25.132Z"
     }
   ],
-  "lastDispatchedEpochMinute": 1792652460
+  "lastDispatchedEpochMinute": 1792775040
 }

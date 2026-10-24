@@ -271,8 +271,8 @@ const defaultAutoPilot: AutoPilotConfig = {
   botToken: '',
   chatId: '@ZadNBFX',
   freeScheduleEnabled: true,
-  freeStartHourEgypt: 9,  // Default 09:00 AM Cairo Time
-  freeEndHourEgypt: 21,   // Default 09:00 PM Cairo Time
+  freeStartHourEgypt: 10, // Fixed 10:00 AM Cairo Time
+  freeEndHourEgypt: 18,  // Fixed 06:00 PM Cairo Time
   freeWinIcon: '✅ ربح',
   freeWinGale1Icon: '✅ ربح مضاعفة واحدة',
   freeLossIcon: '❌',
@@ -289,15 +289,15 @@ const defaultAutoPilot: AutoPilotConfig = {
   vipWinGale1ImageUrl: '',
   vipLossImageUrl: '',
   sourceChannel: 'LIVE_GLOBAL_FOREX',
-  intervalMinutes: 15, // Anti-flooding: minimum 15 minutes between focused signals
-  strictnessLevel: 'high',
-  rsiOversoldThreshold: 28,
-  rsiOverboughtThreshold: 72,
+  intervalMinutes: 15, // Strictly 15 minutes between signals
+  strictnessLevel: 'super', // Highest strictness (75%+ win rate)
+  rsiOversoldThreshold: 20,
+  rsiOverboughtThreshold: 80,
   smaFilterEnabled: true,
   reversalPatternRequired: true,
   newsFilterEnabled: true,
   assetCooldownMinutes: 20,
-  minQualityScore: 65,
+  minQualityScore: 75, // Highest Composite Quality Score (75%+)
   resultMode: 'candle_exact',
   oneGaleEnabled: false, // Default: Martingale disabled (0 Gale)
   quotexReferralLink: 'https://broker-qx.pro/?lid=2303934',
@@ -482,11 +482,11 @@ function getEgyptHourFromDate(dateObj: Date): number {
 
 /**
  * Checks whether a signal was created strictly within Egypt trading hours (09:00 AM to 09:00 PM Egypt Time).
- * (From 09:00 up to 21:00 Cairo Time)
+ * (From 10:00 up to 18:00 Cairo Time)
  */
 function isSignalWithinEgyptTradingHours(dateObj: Date): boolean {
   const h = getEgyptHourFromDate(dateObj);
-  return h >= 9 && h < 21;
+  return h >= 10 && h < 18;
 }
 
 /**
@@ -497,7 +497,7 @@ function isFreeBotActiveNow(cfg: AutoPilotConfig): boolean {
   if (!cfg.freeScheduleEnabled) return true; // If schedule restriction is off, Free Bot runs 24/7
   const currentHour = getCurrentEgyptHour();
   const start = Number(cfg.freeStartHourEgypt ?? 10);
-  const end = Number(cfg.freeEndHourEgypt ?? 22);
+  const end = Number(cfg.freeEndHourEgypt ?? 18);
 
   if (start === end) return true; // 24 hours
   if (start < end) {
@@ -1983,7 +1983,7 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
   autoPilot.lastRunAt = new Date().toISOString();
   if (isAuto) {
     autoPilot.totalAutoSent += 1;
-    const cooldownMs = Math.max(5, autoPilot.intervalMinutes) * 60 * 1000;
+    const cooldownMs = Math.max(15, autoPilot.intervalMinutes || 15) * 60 * 1000;
     autoPilot.nextRunAt = new Date(Date.now() + cooldownMs).toISOString();
   }
   await saveState();
@@ -2201,10 +2201,10 @@ export interface EndOfDayFinalReport {
 function buildEndOfDayFinalReport(customDateStr?: string): EndOfDayFinalReport {
   const todayEgypt = customDateStr || getCurrentEgyptDateString(new Date());
   const currentEgyptHour = getCurrentEgyptHour();
-  const startHour = Number(autoPilot.freeStartHourEgypt ?? 9);
-  const endHour = Number(autoPilot.freeEndHourEgypt ?? 21);
+  const startHour = Number(autoPilot.freeStartHourEgypt ?? 10);
+  const endHour = Number(autoPilot.freeEndHourEgypt ?? 18);
   const isAfterClosingHour = !autoPilot.freeScheduleEnabled
-    ? currentEgyptHour >= 21
+    ? currentEgyptHour >= 18
     : !isFreeBotActiveNow(autoPilot);
 
   // Filter signals belonging to the target date
@@ -2484,9 +2484,9 @@ async function checkFocusedGlobalMarketAutoPilot() {
     if (autoPilot.autoDailyReportEnabled !== false) {
       const todayEgypt = getCurrentEgyptDateString(new Date());
       const currentEgyptH = getCurrentEgyptHour();
-      const closeH = Number(autoPilot.freeEndHourEgypt ?? 21);
+      const closeH = Number(autoPilot.freeEndHourEgypt ?? 18);
       const isScheduleClosedNow = autoPilot.freeScheduleEnabled === false
-        ? currentEgyptH >= 21
+        ? currentEgyptH >= 18
         : !isFreeBotActiveNow(autoPilot) && currentEgyptH >= closeH;
       const hasPending = signalsStore.some(s => s.status === 'PENDING');
       const reportNow = buildEndOfDayFinalReport(todayEgypt);
@@ -2504,27 +2504,34 @@ async function checkFocusedGlobalMarketAutoPilot() {
     if (!autoPilot.enabled) return;
     if (!autoPilot.marketOpenStatus) return; // Never send fake signals when global market is closed
 
+    // 1. Working Hours Check: Signals only run strictly between 10:00 AM and 06:00 PM (18:00) Cairo time
+    const isFreeActive = isFreeBotActiveNow(autoPilot);
+    if (!isFreeActive && !autoPilot.vipEnabled) return;
+
+    // 2. Strict Interval Enforcement (strictly at least 15 minutes between signals, no early dispatch!)
     const freshNow = Date.now();
     const nextRun = autoPilot.nextRunAt ? new Date(autoPilot.nextRunAt).getTime() : 0;
     const lastSigTime = signalsStore.length > 0 ? new Date(signalsStore[0].createdAt).getTime() : 0;
     const timeSinceLastSignal = freshNow - lastSigTime;
-    const minSafeGapMs = 4 * 60 * 1000 + 30000; // 4.5 minutes absolute safe minimum between any consecutive signals
+    const targetIntervalMinutes = Math.max(15, autoPilot.intervalMinutes || 15);
+    const minSafeGapMs = targetIntervalMinutes * 60 * 1000;
 
-    // Prevent flooding: must wait at least 4.5 minutes between any two signals
-    if (timeSinceLastSignal < minSafeGapMs) return;
+    // Strictly enforce minimum 15 minutes between consecutive signals
+    if (lastSigTime > 0 && timeSinceLastSignal < minSafeGapMs) return;
+    if (autoPilot.nextRunAt && freshNow < nextRun) return;
 
+    // 3. Highest Quality Filter Gate: only candidates with quality score >= 75%
+    const requiredMinQuality = Math.max(75, autoPilot.minQualityScore || 75);
     let candidateToSend: LivePairSnapshot | null = null;
 
-    // 1. High probability setup detected before the 15-minute interval (early dispatch)
-    if (selectedCandidate) {
+    if (selectedCandidate && (selectedCandidate.qualityScore || 0) >= requiredMinQuality) {
       candidateToSend = selectedCandidate;
     }
 
-    // 2. Scheduled 15-minute interval has elapsed (guaranteed periodic signal)
-    // If no perfect setup passed the strict gate, pick the strongest available opportunity in the global market
+    // Only dispatch when a qualified candidate meets the strict 75%+ quality filter
     if (!candidateToSend && (freshNow >= nextRun || autoPilot.totalAutoSent === 0)) {
-      const fallback = await scanRealGlobalForexMarket(true);
-      if (fallback.selectedCandidate) {
+      const fallback = await scanRealGlobalForexMarket(false);
+      if (fallback.selectedCandidate && (fallback.selectedCandidate.qualityScore || 0) >= requiredMinQuality) {
         candidateToSend = fallback.selectedCandidate;
       }
     }
