@@ -14,13 +14,13 @@ jobs:
       - name: Build Project
         run: npm run build
       - name: Deploy to Firebase Hosting
-        if: "${{ secrets.FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0312361187 != '' }}"
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0312361187 }}
         run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "::notice::Build succeeded cleanly! Firebase Hosting deployment skipped because secret is not configured."
+            exit 0
+          fi
           echo "$FIREBASE_SERVICE_ACCOUNT" > $HOME/gcp-key.json
           export GOOGLE_APPLICATION_CREDENTIALS=$HOME/gcp-key.json
           npx --yes firebase-tools deploy --only hosting --project gen-lang-client-0312361187 --non-interactive
-      - name: Skip Notice if Firebase Secret is not set
-        if: "${{ secrets.FIREBASE_SERVICE_ACCOUNT_GEN_LANG_CLIENT_0312361187 == '' }}"
-        run: echo "Build succeeded cleanly! Firebase Hosting deployment skipped because FIREBASE_SERVICE_ACCOUNT secret is not configured in GitHub repository settings."
