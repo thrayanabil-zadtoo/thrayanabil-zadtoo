@@ -2,8 +2,8 @@ import React from 'react';
 import { LogIn, UserCheck, Shield, Sparkles, Send } from 'lucide-react';
 
 interface ZadtooNavbarProps {
-  activeTab: 'home' | 'signals' | 'autotrade' | 'memberships' | 'admin';
-  setActiveTab: (tab: 'home' | 'signals' | 'autotrade' | 'memberships' | 'admin') => void;
+  activeTab: 'home' | 'signals' | 'news' | 'autotrade' | 'memberships' | 'admin';
+  setActiveTab: (tab: 'home' | 'signals' | 'news' | 'autotrade' | 'memberships' | 'admin') => void;
   isAdmin: boolean;
   onOpenLogin: () => void;
   onOpenAbout?: () => void;
@@ -73,6 +73,23 @@ export const ZadtooNavbar: React.FC<ZadtooNavbarProps> = ({
           >
             <span>الإشارات</span>
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          </button>
+
+          {/* Forex Breaking News Tab */}
+          <button
+            type="button"
+            onClick={() => setActiveTab('news')}
+            className={`px-3 py-2 text-sm font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 ${
+              activeTab === 'news'
+                ? 'text-rose-700 bg-rose-50 font-extrabold shadow-xs'
+                : 'text-slate-600 hover:text-rose-600 hover:bg-rose-50/50'
+            }`}
+          >
+            <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+            <span>الأخبار العاجلة</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 font-bold border border-rose-200">
+              أسبوعي 🔴
+            </span>
           </button>
 
           <button
@@ -177,6 +194,14 @@ export const ZadtooNavbar: React.FC<ZadtooNavbarProps> = ({
           className={`px-2.5 py-1 rounded ${activeTab === 'signals' ? 'text-emerald-700 bg-emerald-100/70 font-extrabold' : ''}`}
         >
           الإشارات
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('news')}
+          className={`px-2.5 py-1 rounded flex items-center gap-1 ${activeTab === 'news' ? 'text-rose-700 bg-rose-100/80 font-extrabold' : 'text-rose-600'}`}
+        >
+          <span>الأخبار</span>
+          <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
         </button>
         <button
           type="button"

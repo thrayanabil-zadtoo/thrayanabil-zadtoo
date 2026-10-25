@@ -65,6 +65,7 @@ import { ZadtooAutoTradePage } from './components/ZadtooAutoTradePage';
 import { ZadtooMembershipsPage } from './components/ZadtooMembershipsPage';
 import { ZadtooAdminDashboard } from './components/ZadtooAdminDashboard';
 import { ZadtooAboutContactModal } from './components/ZadtooAboutContactModal';
+import { ZadtooForexNewsPage } from './components/ZadtooForexNewsPage';
 
 export interface SubscriberMessage {
   id: string;
@@ -309,7 +310,7 @@ export default function App() {
     () => typeof window !== 'undefined' && (sessionStorage.getItem('zad_admin_auth') === 'true' || localStorage.getItem('zad_admin_auth') === 'true')
   );
   const [activeView, setActiveView] = useState<'visitor' | 'admin' | 'stats' | 'robot'>('visitor');
-  const [zadtooTab, setZadtooTab] = useState<'home' | 'signals' | 'autotrade' | 'memberships' | 'admin'>('home');
+  const [zadtooTab, setZadtooTab] = useState<'home' | 'signals' | 'news' | 'autotrade' | 'memberships' | 'admin'>('home');
   const [aboutContactType, setAboutContactType] = useState<'about' | 'contact' | null>(null);
   const [showLegacyAdminStudio, setShowLegacyAdminStudio] = useState<boolean>(false);
   const [robotSettings, setRobotSettings] = useState<QuotexRobotSettings>({
@@ -2541,11 +2542,21 @@ export default function App() {
           onStartNow={() => setZadtooTab('memberships')}
           onExploreSignals={() => setZadtooTab('signals')}
           onExploreAutoTrade={() => setZadtooTab('autotrade')}
+          onExploreNews={() => setZadtooTab('news')}
           telegramChannelLink="https://t.me/ZadNBFX"
         />
       )}
 
-      {/* Screen 2: صفحة الإشارات (قناة التليجرام) */}
+      {/* Screen 2: صفحة الأخبار العاجلة والمفكرة الاقتصادية وتوقعات الدولار */}
+      {zadtooTab === 'news' && (
+        <ZadtooForexNewsPage
+          isAdmin={isAdminAuthenticated}
+          onNavigateSignals={() => setZadtooTab('signals')}
+          onNavigateHome={() => setZadtooTab('home')}
+        />
+      )}
+
+      {/* Screen 3: صفحة الإشارات (قناة التليجرام) */}
       {zadtooTab === 'signals' && (
         <ZadtooSignalsPage
           signals={signals.map((s) => ({

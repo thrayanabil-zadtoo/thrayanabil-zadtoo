@@ -15,6 +15,7 @@ import {
   FormatterOptions,
   ParsedSignal
 } from './src/utils/signalParser.ts';
+import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS } from './src/types/forexNews.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -230,6 +231,7 @@ interface PersistedState {
   subscribers?: VipSubscriber[];
   quickNotes?: QuickNote[];
   dailyStats?: DailyStatRecord[];
+  forexNews?: ForexNewsItem[];
   lastDispatchedEpochMinute?: number;
 }
 
@@ -538,6 +540,7 @@ let signalsStore: SignalItem[] = [...initialSignals];
 let subscribersStore: VipSubscriber[] = [];
 let quickNotesStore: QuickNote[] = [...initialQuickNotes];
 let dailyStatsStore: Record<string, DailyStatRecord> = {};
+let forexNewsStore: ForexNewsItem[] = [...INITIAL_WEEKLY_FOREX_NEWS];
 let lastDispatchedEpochMinute = 0;
 let appSettings: AppSettings = { ...defaultSettings };
 let autoPilot: AutoPilotConfig = { ...defaultAutoPilot };
@@ -688,6 +691,9 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       resultNotificationStyle: parsed.autopilot.resultNotificationStyle || autoPilot.resultNotificationStyle || 'emoji_size'
     };
   }
+  if (parsed.forexNews && Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0) {
+    forexNewsStore = parsed.forexNews;
+  }
 }
 
 async function loadStateFromCloudAndDisk() {
@@ -754,6 +760,7 @@ async function saveState(): Promise<boolean> {
       subscribers: subscribersStore.slice(0, 200),
       quickNotes: quickNotesStore.slice(0, 50),
       dailyStats: sortedDailyStats,
+      forexNews: forexNewsStore,
       lastDispatchedEpochMinute
     };
     const serialized = JSON.stringify(state);
@@ -794,6 +801,7 @@ async function saveState(): Promise<boolean> {
         subscribers: sanitizedSubscribers,
         quickNotes: [], // Exclude private internal admin notes
         dailyStats: sortedDailyStats,
+        forexNews: forexNewsStore,
         lastDispatchedEpochMinute
       };
 
@@ -3048,6 +3056,7 @@ async function startServer() {
       subscribers: subscribersStore,
       quickNotes: quickNotesStore,
       dailyStats: Object.values(dailyStatsStore).sort((a, b) => b.date.localeCompare(a.date)),
+      forexNews: forexNewsStore,
       todayEgyptDate: getCurrentEgyptDateString(new Date()),
       endOfDayReport: buildEndOfDayFinalReport(),
       cloudSynced: Boolean(serverFirestoreDb)
@@ -3984,6 +3993,181 @@ async function startServer() {
       saveState();
     }
     res.json({ ok: true });
+  });
+
+  // -------------------------------------------------------------
+  // FOREX BREAKING NEWS & ECONOMIC CALENDAR ENDPOINTS
+  // -------------------------------------------------------------
+
+  // Get all weekly forex news (Public)
+  app.get('/api/forex-news', async (_req, res) => {
+    if (!isCloudStateLoaded) {
+      await loadStateFromCloudAndDisk();
+    }
+    const now = Date.now();
+    const mapped = forexNewsStore
+      .map(item => ({
+        ...item,
+        isExpired: now > item.targetEpochMs
+      }))
+      .sort((a, b) => a.targetEpochMs - b.targetEpochMs);
+    res.json({ ok: true, news: mapped });
+  });
+
+  // Create news item (Admin)
+  app.post('/api/forex-news', async (req, res) => {
+    const itemData = req.body;
+    if (!itemData || !itemData.title || !itemData.currency) {
+      return res.status(400).json({ ok: false, error: 'العنوان والعملة حقول مطلوبة' });
+    }
+    const newItem: ForexNewsItem = {
+      id: `news-${Date.now()}`,
+      title: String(itemData.title).trim(),
+      currency: itemData.currency || 'USD',
+      impact: itemData.impact || 'high',
+      category: itemData.category || 'أخبار اقتصادية',
+      eventDate: itemData.eventDate || new Date().toISOString().split('T')[0],
+      eventDayArabic: itemData.eventDayArabic || 'اليوم',
+      timeGmt: itemData.timeGmt || '12:00',
+      timeCairo: itemData.timeCairo || '14:00',
+      timeMecca: itemData.timeMecca || '15:00',
+      targetEpochMs: Number(itemData.targetEpochMs) || Date.now() + 3600000,
+      previous: itemData.previous || '',
+      forecast: itemData.forecast || '',
+      actual: itemData.actual || '',
+      expectedImpact: itemData.expectedImpact || 'usd_bullish',
+      expectedMoveSummary: String(itemData.expectedMoveSummary || '').trim(),
+      recommendation: itemData.recommendation || undefined,
+      isBroadcasted: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    forexNewsStore.unshift(newItem);
+    await saveState();
+    res.json({ ok: true, item: newItem });
+  });
+
+  // Update news item (Admin)
+  app.put('/api/forex-news/:id', async (req, res) => {
+    const { id } = req.params;
+    const idx = forexNewsStore.findIndex(n => n.id === id);
+    if (idx === -1) {
+      return res.status(404).json({ ok: false, error: 'الخبر غير موجود' });
+    }
+    forexNewsStore[idx] = {
+      ...forexNewsStore[idx],
+      ...req.body,
+      id,
+      updatedAt: new Date().toISOString()
+    };
+    await saveState();
+    res.json({ ok: true, item: forexNewsStore[idx] });
+  });
+
+  // Delete news item (Admin)
+  app.delete('/api/forex-news/:id', async (req, res) => {
+    const { id } = req.params;
+    const idx = forexNewsStore.findIndex(n => n.id === id);
+    if (idx !== -1) {
+      forexNewsStore.splice(idx, 1);
+      await saveState();
+    }
+    res.json({ ok: true });
+  });
+
+  // Re-seed default weekly news schedule (Admin)
+  app.post('/api/forex-news/seed-weekly', async (_req, res) => {
+    forexNewsStore = [...INITIAL_WEEKLY_FOREX_NEWS];
+    await saveState();
+    res.json({ ok: true, count: forexNewsStore.length, news: forexNewsStore });
+  });
+
+  // Broadcast news as recommendation to Telegram (Admin)
+  app.post('/api/forex-news/:id/broadcast', async (req, res) => {
+    const { id } = req.params;
+    const item = forexNewsStore.find(n => n.id === id);
+    if (!item) {
+      return res.status(404).json({ ok: false, error: 'الخبر غير موجود' });
+    }
+
+    const impactBadge = item.impact === 'high' ? '🔴 عالي الأهمية (High Impact) 🔥' : item.impact === 'medium' ? '🟡 متوسط الأهمية' : '🟢 منخفض الأهمية';
+    const impactEmoji = item.expectedImpact.includes('bullish') ? '🟢 صعود متوقع ↗️' : item.expectedImpact.includes('bearish') ? '🔴 هبوط متوقع ↘️' : '⚖️ محايد / تذبذب';
+    const recActionText = item.recommendation?.action === 'BUY' ? '🟢 شراء (BUY) 📈' : '🔴 بيع (SELL) 📉';
+
+    const lines = [
+      `🚨 خبر عاجل وتوصية فوركس حصرية | ${appSettings.channelTitle || 'نَبض التداول'}`,
+      `━━━━━━━━━━━━━━━━━━━━`,
+      `📌 الحدث: ${item.title}`,
+      `⚡ العملة المتأثرة: ${item.currency} | ${impactBadge}`,
+      `📅 الموعد: ${item.eventDayArabic} (${item.eventDate})`,
+      ``,
+      `⏰ توقيت الصدور بدقة:`,
+      `• 🇪🇬 توقيت مصر (القاهرة): ${item.timeCairo}`,
+      `• 🕋 توقيت مكة المكرمة: ${item.timeMecca}`,
+      `• 🌍 توقيت غرينتش (GMT): ${item.timeGmt}`,
+      ``,
+      item.previous ? `📊 القراءة السابقة: ${item.previous}` : '',
+      item.forecast ? `🎯 التوقع التقديري: ${item.forecast}` : '',
+      item.actual ? `⚡ النتيجة الفعلية: ${item.actual}` : '',
+      `🔮 اتجاه الحركة المتوقع: ${impactEmoji}`,
+      item.expectedMoveSummary ? `💡 التحليل وتأثير الخبر: ${item.expectedMoveSummary}` : '',
+      `━━━━━━━━━━━━━━━━━━━━`
+    ].filter(Boolean);
+
+    if (item.recommendation) {
+      lines.push(
+        `🎯 توصية التداول المباشرة:`,
+        `• الزوج الموصى به: ${item.recommendation.pair}`,
+        `• القرار: ${recActionText}`,
+        item.recommendation.entryStrategy ? `• الاستراتيجية: ${item.recommendation.entryStrategy}` : ''
+      );
+    }
+
+    lines.push(
+      `━━━━━━━━━━━━━━━━━━━━`,
+      `📢 القناة الرسمية: @ZadNBFX`,
+      `${appSettings.channelSignature || '💡 إدارة رأس المال سر النجاح — تداول بذكاء'}`
+    );
+
+    const messageText = lines.filter(Boolean).join('\n');
+
+    let sentFree = false;
+    let sentVip = false;
+    let error: string | undefined;
+
+    // Send to Free Bot
+    if (autoPilot.botToken.trim() && autoPilot.chatId.trim()) {
+      try {
+        const tgRes = await sendTelegramMessage(autoPilot.botToken, autoPilot.chatId, messageText);
+        if (tgRes.ok) sentFree = true;
+        else error = tgRes.description;
+      } catch (e: any) {
+        error = e.message;
+      }
+    }
+
+    // Send to VIP if enabled
+    const vipToken = (autoPilot.vipBotToken || autoPilot.botToken).trim();
+    const vipChat = (autoPilot.vipChatId || '').trim();
+    if (autoPilot.vipEnabled && vipToken && vipChat && vipChat.toLowerCase() !== autoPilot.chatId.trim().toLowerCase()) {
+      try {
+        const tgVip = await sendTelegramMessage(vipToken, vipChat, messageText);
+        if (tgVip.ok) sentVip = true;
+      } catch (_e) {}
+    }
+
+    if (sentFree || sentVip) {
+      item.isBroadcasted = true;
+      item.broadcastedAt = new Date().toISOString();
+      await saveState();
+    }
+
+    res.json({
+      ok: sentFree || sentVip,
+      sentFree,
+      sentVip,
+      error: (sentFree || sentVip) ? undefined : error || 'يرجى التأكد من إدخال توكن البوت ومعرف القناة في إعدادات البوت'
+    });
   });
 
   // Phase 3: Comprehensive Performance Analytics, Testing & Audit Endpoint

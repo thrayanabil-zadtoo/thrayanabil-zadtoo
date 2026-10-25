@@ -11,13 +11,16 @@ import {
   Sparkles,
   BarChart2,
   Bell,
-  Smartphone
+  Smartphone,
+  Newspaper,
+  Flame
 } from 'lucide-react';
 
 interface ZadtooHomePageProps {
   onStartNow: () => void;
   onExploreSignals: () => void;
   onExploreAutoTrade: () => void;
+  onExploreNews?: () => void;
   telegramChannelLink?: string;
 }
 
@@ -25,6 +28,7 @@ export const ZadtooHomePage: React.FC<ZadtooHomePageProps> = ({
   onStartNow,
   onExploreSignals,
   onExploreAutoTrade,
+  onExploreNews,
   telegramChannelLink = 'https://t.me/ZadNBFX'
 }) => {
   const [showVideoModal, setShowVideoModal] = useState(false);
@@ -65,6 +69,18 @@ export const ZadtooHomePage: React.FC<ZadtooHomePageProps> = ({
                 >
                   ابدأ الآن
                 </button>
+
+                {onExploreNews && (
+                  <button
+                    type="button"
+                    onClick={onExploreNews}
+                    className="px-5 py-3 text-sm font-bold text-rose-700 hover:text-rose-800 bg-rose-50/90 hover:bg-rose-100 border border-rose-300 rounded-xl transition-all cursor-pointer flex items-center gap-2 shadow-2xs group"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping group-hover:scale-125" />
+                    <Flame className="w-4 h-4 text-rose-600" />
+                    <span>الأخبار العاجلة 🔴</span>
+                  </button>
+                )}
 
                 <button
                   type="button"
@@ -297,6 +313,39 @@ export const ZadtooHomePage: React.FC<ZadtooHomePageProps> = ({
               </p>
             </div>
           </div>
+
+          {/* Section Banner: قسم الأخبار العاجلة والمفكرة الاقتصادية الأسبوعية */}
+          {onExploreNews && (
+            <div className="mt-8 p-6 sm:p-8 rounded-3xl bg-gradient-to-r from-slate-900 via-slate-900 to-rose-950/70 border border-slate-800 text-white shadow-xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-96 h-96 bg-rose-500/10 rounded-full blur-3xl pointer-events-none" />
+              <div className="relative z-10 flex flex-col lg:flex-row items-center justify-between gap-6">
+                <div className="space-y-2 text-center lg:text-right">
+                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 text-xs font-bold">
+                    <span className="w-2 h-2 rounded-full bg-rose-400 animate-ping" />
+                    <Flame className="w-3.5 h-3.5 text-rose-400" />
+                    <span>تحديث أسبوعي مستمر · مفكرة الفوركس الاقتصادية</span>
+                  </div>
+                  <h3 className="text-xl sm:text-2xl font-black text-white">
+                    الأخبار العاجلة وتوقعات حركة الدولار والعملات 🔴
+                  </h3>
+                  <p className="text-xs sm:text-sm text-slate-300 max-w-2xl leading-relaxed">
+                    تابع أقوى الأخبار الاقتصادية عالية التأثير (الفائدة الأمريكية FOMC، التضخم CPI، الوظائف NFP) مع توقيت مكة ومصر وجرينتش وتوقعات الصعود والهبوط ونشرها كتوصيات تداول مباشرة.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center justify-center gap-3 shrink-0">
+                  <button
+                    type="button"
+                    onClick={onExploreNews}
+                    className="px-6 py-3 text-sm font-extrabold text-white bg-rose-600 hover:bg-rose-500 active:bg-rose-700 rounded-xl transition-all shadow-lg hover:shadow-rose-500/20 cursor-pointer flex items-center gap-2"
+                  >
+                    <Newspaper className="w-4 h-4" />
+                    <span>تصفح الأخبار والمفكرة الآن ←</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
