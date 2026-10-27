@@ -316,12 +316,26 @@
       <button id="zad-mode-manual" style="padding:5px;font-size:11px;font-weight:bold;border-radius:7px;border:1px solid ${ROBOT_MODE === 'MANUAL' ? '#f59e0b' : '#334155'};background:${ROBOT_MODE === 'MANUAL' ? '#f59e0b' : '#1e293b'};color:${ROBOT_MODE === 'MANUAL' ? '#020617' : '#cbd5e1'};cursor:pointer;">🖐️ تداول يدوي</button>
     </div>
 
-    <!-- صندوق الإشارة: يعرض فقط 'بانتظار إشارة...' أو 'مغلق السوق' عند إغلاق السوق -->
+    <!-- صندوق الإشارة: يعرض إما الإشارة الحية مع العداد التنازلي أو 'وضع الانتظار WAIT' لمنع التكرار -->
     <div style="background:#111827;border:1px solid #1e293b;border-radius:9px;padding:8px;margin-bottom:8px;font-size:11px;" id="zad-signal-box">
       <div id="zad-robot-signal" style="margin-bottom:4px;font-size:12px;"></div>
       
-      <div id="zad-robot-countdown" style="display:none;background:#032b44;color:#38bdf8;padding:5px 8px;border-radius:6px;font-weight:extrabold;text-align:center;margin-bottom:5px;font-size:12px;border:1px solid #0284c7;">
-        ⏳ العد التنازلي: <span id="zad-countdown-val" style="color:#fde047;font-size:14px;font-family:monospace;">--</span>
+      <!-- عداد تنازلي تفاعلي بارز لأخذ الصفقة -->
+      <div id="zad-robot-countdown" style="display:none;background:linear-gradient(135deg, #032035 0%, #01111d 100%);color:#38bdf8;padding:8px 10px;border-radius:8px;font-weight:extrabold;text-align:center;margin-bottom:6px;font-size:11.5px;border:1.5px solid #0284c7;box-shadow:0 0 15px rgba(2,132,199,0.3);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+          <span style="font-size:11px;color:#93c5fd;display:flex;align-items:center;gap:4px;">
+            <span style="font-size:13px;">⏳</span>
+            <span id="zad-countdown-label">متبقي على بدء الصفقة:</span>
+          </span>
+          <span id="zad-countdown-val" style="color:#fde047;font-size:16px;font-family:monospace;font-weight:900;letter-spacing:0.5px;background:#061b2d;padding:2px 8px;border-radius:5px;border:1px solid #0369a1;">-- ثانية</span>
+        </div>
+        <div style="width:100%;background:#091b2c;border-radius:999px;height:5px;overflow:hidden;margin-top:4px;">
+          <div id="zad-countdown-bar" style="background:linear-gradient(90deg,#0284c7,#38bdf8);height:100%;width:100%;border-radius:999px;transition:width 0.9s linear;"></div>
+        </div>
+        <div id="zad-countdown-tip" style="font-size:9.5px;color:#94a3b8;margin-top:4px;display:flex;align-items:center;justify-content:center;gap:4px;">
+          <span>🎯</span>
+          <span>ادخل الصفقة بدقة عند ثانية :00 افتتاح الشمعة</span>
+        </div>
       </div>
 
       <div id="zad-manual-trigger-container" style="display:none;margin-bottom:5px;">
@@ -461,9 +475,9 @@
         }
       } catch(e) {}
 
-      // تحديث حالة العرض الأولية (إما 'مغلق السوق' أو 'بانتظار إشارة...')
+      // تحديث حالة العرض الأولية فقط عند أول تحميل (لمنع الوميض)
       try {
-        if (!activeSignalObj || activeSignalObj.status !== "PENDING") {
+        if (!currentRobotUiState && (!activeSignalObj || activeSignalObj.status !== "PENDING")) {
           renderWaitingState();
         }
       } catch(e) {}
@@ -1410,8 +1424,73 @@
     return null;
   }
 
-  // دالة تحديث خانة الزوج والإشارة: إما 'بانتظار إشارة...' عند فتح السوق، أو 'مغلق السوق' عند إغلاق السوق
+  // حالة العرض الحالية للواجهة (لمنع الوميض وإعادة بناء الـ DOM المتكررة)
+  let currentRobotUiState = "";
+  let currentActiveTrade = null;
+
+  // دالة عرض صفحة الصفقة الجارية في المنصة طوال فترة فتحها (60 ثانية M1) بالثواني ودون وميض
+  function renderInTradeState() {
+    if (!currentActiveTrade) return;
+    const sigElem = document.getElementById("zad-robot-signal");
+    const actElem = document.getElementById("zad-robot-action");
+    const cdContainer = document.getElementById("zad-robot-countdown");
+    const manContainer = document.getElementById("zad-manual-trigger-container");
+    if (cdContainer) cdContainer.style.display = "none";
+    if (manContainer) manContainer.style.display = "none";
+    if (!sigElem) return;
+
+    const isCall = currentActiveTrade.direction === "CALL";
+    const dirBadge = isCall ? "🟢 صعود (CALL)" : "🔴 هبوط (PUT)";
+    const tradeRemainingSec = Math.max(0, Math.ceil((currentActiveTrade.expireTime - Date.now()) / 1000));
+
+    if (currentRobotUiState !== "IN_TRADE") {
+      currentRobotUiState = "IN_TRADE";
+      sigElem.innerHTML = `
+        <div id="zad-in-trade-card" style="background:linear-gradient(135deg, rgba(6,78,59,0.95) 0%, rgba(2,44,34,0.98) 100%);border:2px solid ${isCall ? '#10b981' : '#ef4444'};border-radius:10px;padding:9px 10px;text-align:center;box-shadow:0 0 20px ${isCall ? 'rgba(16,185,129,0.45)' : 'rgba(239,68,68,0.45)'};">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+            <span style="color:#6ee7b7;font-size:12px;font-weight:900;display:flex;align-items:center;gap:5px;">
+              <span style="font-size:14px;">⚡</span>
+              <span>الصفقة جارية الآن في المنصة</span>
+            </span>
+            <span style="font-size:11px;font-weight:900;padding:2px 8px;border-radius:6px;background:${isCall ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'};color:${isCall ? '#34d399' : '#f87171'};border:1px solid ${isCall ? '#10b981' : '#ef4444'};">
+              ${dirBadge}
+            </span>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(0,0,0,0.4);padding:4px 8px;border-radius:6px;margin-bottom:6px;font-size:11px;">
+            <span style="color:#94a3b8;">🎯 الزوج: <b style="color:#38bdf8;font-family:monospace;font-size:13px;">${currentActiveTrade.asset}</b></span>
+            <span style="color:#cbd5e1;">⏱️ الصلاحية: <b>M1 (1 دقيقة)</b></span>
+          </div>
+          <div style="background:#022c22;border:1.5px solid #10b981;border-radius:8px;padding:6px;margin-bottom:6px;">
+            <div style="font-size:10.5px;color:#a7f3d0;margin-bottom:2px;">⏳ متبقي على انتهاء الصفقة:</div>
+            <div id="zad-in-trade-sec" style="font-size:20px;font-weight:900;font-family:monospace;color:#fde047;letter-spacing:0.5px;">${tradeRemainingSec} ثانية</div>
+            <div style="width:100%;background:#064e3b;height:5px;border-radius:999px;overflow:hidden;margin-top:4px;">
+              <div id="zad-in-trade-bar" style="background:linear-gradient(90deg, #10b981, #34d399);height:100%;width:${(tradeRemainingSec / 60) * 100}%;border-radius:999px;transition:width 0.9s linear;"></div>
+            </div>
+          </div>
+          <div style="font-size:10px;color:#94a3b8;">📊 الصفقة مفتوحة في حسابك — بانتظار إغلاق الشمعة وإعلان النتيجة</div>
+        </div>
+      `;
+      widget.style.borderColor = isCall ? '#10b981' : '#ef4444';
+      widget.style.boxShadow = isCall ? '0 0 25px rgba(16,185,129,0.5)' : '0 0 25px rgba(239,68,68,0.5)';
+    } else {
+      // تحديث النصوص فقط دون المساس بـ innerHTML لمنع أي وميض
+      const secEl = document.getElementById("zad-in-trade-sec");
+      const barEl = document.getElementById("zad-in-trade-bar");
+      if (secEl) secEl.innerText = tradeRemainingSec + " ثانية";
+      if (barEl) barEl.style.width = Math.min(100, Math.max(0, (tradeRemainingSec / 60) * 100)) + "%";
+    }
+
+    if (actElem) {
+      actElem.innerHTML = `<span style="color:#34d399;font-weight:bold;">🚀 صفقة ${currentActiveTrade.direction} جارية على ${currentActiveTrade.asset} (متبقي ${tradeRemainingSec} ثانية)</span>`;
+    }
+  }
+
+  // دالة تحديث خانة الزوج والإشارة: إما 'وضع الانتظار (WAIT)' أو 'مغلق السوق' دون وميض
   function renderWaitingState() {
+    if (currentActiveTrade && Date.now() < currentActiveTrade.expireTime) {
+      renderInTradeState();
+      return;
+    }
     if (activeSignalObj && activeSignalObj.status === "PENDING") return;
     const sigElem = document.getElementById("zad-robot-signal");
     const actElem = document.getElementById("zad-robot-action");
@@ -1420,7 +1499,8 @@
     const isOpen = isForexMarketOpen();
 
     if (!isOpen) {
-      // عندما يكون السوق مغلقاً: إظهار 'مغلق السوق'
+      if (currentRobotUiState === "MARKET_CLOSED") return;
+      currentRobotUiState = "MARKET_CLOSED";
       sigElem.innerHTML = `
         <div style="background:rgba(239,68,68,0.14);border:1.5px solid #ef4444;border-radius:8px;padding:9px 10px;text-align:center;">
           <div style="color:#f87171;font-size:13px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:6px;">
@@ -1436,13 +1516,22 @@
       return;
     }
 
-    // عندما يكون السوق مفتوحاً: في خانة الزوج إبقاء فقط 'بانتظار إشارة...'
+    // عندما يكون السوق مفتوحاً: إذا كنا بالفعل في وضع الانتظار لا نعيد كتابة innerHTML إطلاقاً لمنع الوميض
+    if (currentRobotUiState === "WAITING") return;
+    currentRobotUiState = "WAITING";
+
+    const cSec = 60 - (new Date().getSeconds());
     sigElem.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:center;gap:6px;padding:9px 10px;background:rgba(15,23,42,0.85);border-radius:8px;border:1px solid #1e293b;text-align:center;">
-        <span style="color:#38bdf8;font-size:13px;font-weight:bold;display:flex;align-items:center;gap:6px;">
-          <span>📡</span>
-          <span id="zad-signal-pair-name">بانتظار إشارة...</span>
-        </span>
+      <div style="background:rgba(234,179,8,0.12);border:1.5px solid #ca8a04;border-radius:8px;padding:8px 10px;text-align:center;">
+        <div style="color:#fde047;font-size:13px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:6px;">
+          <span>⏸️</span>
+          <span id="zad-signal-pair-name">وضع الانتظار (WAIT)</span>
+        </div>
+        <div style="color:#94a3b8;font-size:10px;margin-top:3px;">جاري مسح السوق للشمعة القادمة — لن يتم تكرار الإشارة فوراً</div>
+        <div style="margin-top:6px;display:inline-flex;align-items:center;gap:5px;background:#061b2d;border:1px solid #0284c7;border-radius:6px;padding:3px 8px;font-size:11px;">
+          <span style="color:#93c5fd;">⏳ اكتمال الشمعة:</span>
+          <b id="zad-wait-candle-cd" style="color:#38bdf8;font-family:monospace;font-size:13px;">${cSec} ثانية</b>
+        </div>
       </div>
     `;
     if (actElem) {
@@ -1499,79 +1588,150 @@
   LAST_EXECUTED_SIG_ID = null;
   LAST_ALERTED_SIG_ID = null;
 
-  // مؤقت ثوانٍ للعد التنازلي التفاعلي المباشر بالثانية - مستمر بسلاسة ولا يتأثر بإعادة الجلب من السحابة إطلاقاً
+  let LAST_EXECUTED_TIMESTAMP = 0;
+
+  // مؤقت ثوانٍ للعد التنازلي التفاعلي المباشر بالثانية - مستمر بسلاسة بالثواني فقط دون دقائق ودون وميض
   setInterval(() => {
+    // 0. إذا كانت هناك صفقة جارية حالياً: استمرار ظهور "الصفقة جارية الآن" طوال الـ 60 ثانية كاملة
+    if (currentActiveTrade) {
+      if (Date.now() < currentActiveTrade.expireTime) {
+        renderInTradeState();
+        return;
+      } else {
+        // انتهت مدة الصفقة (60 ثانية كاملة) - إغلاق الصفقة والعودة السلسة لوضع الانتظار
+        currentActiveTrade = null;
+        currentRobotUiState = "";
+        activeSignalObj = null;
+        currentActiveSignalId = null;
+        currentTargetEntryEpoch = null;
+        const cdContainer = document.getElementById("zad-robot-countdown");
+        if (cdContainer) cdContainer.style.display = "none";
+        renderWaitingState();
+        return;
+      }
+    }
+
     const cdContainer = document.getElementById("zad-robot-countdown");
     const cdVal = document.getElementById("zad-countdown-val");
+    const cdBar = document.getElementById("zad-countdown-bar");
+    const cdTip = document.getElementById("zad-countdown-tip");
+    const cdLabel = document.getElementById("zad-countdown-label");
     const actElem = document.getElementById("zad-robot-action");
-    if (!cdContainer || !cdVal) return;
 
+    // 1. تحديث عداد الشمعة القادمة في وضع الانتظار (WAIT) بالثواني فقط (بدون دقائق 00:) ودون إعادة رسم الـ DOM لمنع الوميض
+    const waitCandleEl = document.getElementById("zad-wait-candle-cd");
+    if (waitCandleEl) {
+      const cSec = 60 - (new Date().getSeconds());
+      waitCandleEl.innerText = cSec + " ثانية";
+    }
+
+    // 2. تحديث العداد التنازلي لأخذ الصفقة عند وجود إشارة معلقة (PENDING) بالثواني فقط
     if (activeSignalObj && activeSignalObj.status === "PENDING" && currentTargetEntryEpoch) {
       const currentNowSec = Math.floor(Date.now() / 1000) + serverClockOffsetSec;
       const remainingSec = currentTargetEntryEpoch - currentNowSec;
 
-      cdContainer.style.display = "block";
-
-      if (remainingSec > 0) {
-        const mm = Math.floor(remainingSec / 60);
-        const ss = remainingSec % 60;
-        cdVal.innerText = (mm > 0 ? mm + "د " : "") + (ss < 10 ? "0" + ss : ss) + " ثانية";
-
-        if (remainingSec <= 5) {
-          cdContainer.style.background = "#7f1d1d";
-          cdContainer.style.borderColor = "#ef4444";
-          cdVal.style.color = "#fef08a";
-        } else {
-          cdContainer.style.background = "#032b44";
-          cdContainer.style.borderColor = "#0284c7";
-          cdVal.style.color = "#fde047";
-        }
-
-        if (actElem && activeSignalObj.id !== LAST_EXECUTED_SIG_ID) {
-          const rawMin = String(activeSignalObj.entryMinute || activeSignalObj.entryTime || "").replace(/[^0-9]/g, "");
-          const formattedMin = rawMin ? `الدقيقة :${rawMin}` : (activeSignalObj.entryTime || "");
-          actElem.innerHTML = `🎯 إشارة مؤكدة: (<b>${activeSignalObj.asset}</b>) — الدخول ${ROBOT_MODE === 'AUTO' ? 'آلياً بالثانية' : 'يدوياً'} عند ${formattedMin}`;
-        }
-      } else if (remainingSec <= 0 && remainingSec >= -12) {
-        // حان موعد الدخول الآن بالثانية (:00)!
-        cdVal.innerText = "🚀 حان موعد الدخول الآن!";
-        cdContainer.style.background = "#064e3b";
-        cdContainer.style.borderColor = "#10b981";
-        cdVal.style.color = "#6ee7b7";
-
-        // تنفيذ الصفقة تلقائياً عند موعد الدخول بالثانية إذا كان وضع التداول الآلي مفعلاً!
-        if (ROBOT_MODE === "AUTO" && activeSignalObj.id !== LAST_EXECUTED_SIG_ID) {
-          LAST_EXECUTED_SIG_ID = activeSignalObj.id;
-          try { switchToBrokerAsset(activeSignalObj.asset); } catch(e) {}
-          const tradeRes = triggerBrokerTrade(activeSignalObj.direction, false);
-          const clicked = tradeRes && tradeRes.success;
-          if (actElem) {
-            actElem.innerHTML = clicked
-              ? `<span style="color:#34d399;font-weight:bold;">🚀 تم فتح صفقة ${activeSignalObj.direction} تلقائياً على ${activeSignalObj.asset} بنجاح!</span>`
-              : `<span style="color:#f59e0b;font-weight:bold;">⚠️ حان موعد صفقة ${activeSignalObj.direction} على ${activeSignalObj.asset} — اضغط زر المنصة</span>`;
-          }
-        }
-      } else {
-        // بعد مرور أكثر من 12 ثانية من الدخول: انتهاء وضع الدخول والعودة لانتظار الإشارة القادمة
+      // حماية صارمة: في تداول M1، أي عداد يزيد عن 95 ثانية أو يقل عن -15 ثانية هو إشارة قديمة
+      if (remainingSec > 95 || remainingSec < -15) {
         activeSignalObj = null;
         currentActiveSignalId = null;
         currentTargetEntryEpoch = null;
-        cdContainer.style.display = "none";
+        if (cdContainer) cdContainer.style.display = "none";
         const manContainer = document.getElementById("zad-manual-trigger-container");
         if (manContainer) manContainer.style.display = "none";
         renderWaitingState();
-        if (actElem) {
-          actElem.innerText = isForexMarketOpen()
-            ? `جاهز لاستقبال الإشارة القادمة وتنفيذها بالثانية (${ROBOT_MODE === 'AUTO' ? 'آلياً' : 'يدوياً'})`
-            : "السوق مغلق حالياً";
+        return;
+      }
+
+      if (cdContainer) cdContainer.style.display = "block";
+
+      if (remainingSec > 0) {
+        // عرض الثواني فقط كما طلب المستخدم بالضبط (إلغاء الدقائق نهائياً: مثال: "28 ثانية" بدلاً من "28:00")
+        if (cdVal) cdVal.innerText = remainingSec + " ثانية";
+        if (cdLabel) cdLabel.innerText = "متبقي على بدء الصفقة:";
+        if (cdBar) cdBar.style.width = Math.min(100, Math.max(5, (remainingSec / 60) * 100)) + "%";
+
+        if (remainingSec <= 5) {
+          // حالة التأهب القصوى قبل 5 ثوانٍ من شمعة الدخول
+          if (cdContainer) {
+            cdContainer.style.background = "linear-gradient(135deg, #450a0a 0%, #1c0505 100%)";
+            cdContainer.style.borderColor = "#ef4444";
+            cdContainer.style.boxShadow = "0 0 20px rgba(239, 68, 68, 0.45)";
+          }
+          if (cdVal) {
+            cdVal.style.color = "#fef08a";
+            cdVal.style.borderColor = "#ef4444";
+          }
+          if (cdTip) cdTip.innerHTML = `<span style="color:#fca5a5;font-weight:900;">⚠️ جهّز نفسك! الدخول بعد ${remainingSec} ثوانٍ عند ثانية :00</span>`;
+          if (cdBar) cdBar.style.background = "linear-gradient(90deg, #f59e0b, #ef4444)";
+        } else {
+          // حالة العد التنازلي الطبيعي
+          if (cdContainer) {
+            cdContainer.style.background = "linear-gradient(135deg, #032035 0%, #01111d 100%)";
+            cdContainer.style.borderColor = "#0284c7";
+            cdContainer.style.boxShadow = "0 0 15px rgba(2, 132, 199, 0.3)";
+          }
+          if (cdVal) {
+            cdVal.style.color = "#fde047";
+            cdVal.style.borderColor = "#0369a1";
+          }
+          if (cdTip) cdTip.innerHTML = `<span>🎯 ادخل الصفقة بدقة عند ثانية :00 افتتاح الشمعة</span>`;
+          if (cdBar) cdBar.style.background = "linear-gradient(90deg, #0284c7, #38bdf8)";
         }
-        widget.style.borderColor = "#10b981";
-        widget.style.boxShadow = "0 15px 35px rgba(0,0,0,0.85)";
+
+        if (actElem && activeSignalObj.id !== LAST_EXECUTED_SIG_ID) {
+          actElem.innerHTML = `🎯 إشارة مؤكدة: (<b>${activeSignalObj.asset}</b>) — الدخول ${ROBOT_MODE === 'AUTO' ? 'آلياً' : 'يدوياً'} عند ثانية :00`;
+        }
+      } else if (remainingSec <= 0 && remainingSec >= -10) {
+        // حان موعد الدخول الآن بالثانية (:00)!
+        if (cdVal) cdVal.innerText = "🚀 ادخل الآن!";
+        if (cdLabel) cdLabel.innerText = "نقطة الدخول الفورية:";
+
+        // حماية صارمة لمنع التكرار الفوري: تنفيذ الصفقة مرة واحدة فقط
+        const isCooldownPassed = (Date.now() - LAST_EXECUTED_TIMESTAMP) > 60000;
+        if (ROBOT_MODE === "AUTO" && activeSignalObj.id !== LAST_EXECUTED_SIG_ID && isCooldownPassed) {
+          LAST_EXECUTED_SIG_ID = activeSignalObj.id;
+          LAST_EXECUTED_TIMESTAMP = Date.now();
+          try { switchToBrokerAsset(activeSignalObj.asset); } catch(e) {}
+          triggerBrokerTrade(activeSignalObj.direction, false);
+        }
+
+        // بدء حالة "الصفقة جارية الآن" فوراً وتثبيتها طوال فترة فتحها (60 ثانية M1)
+        if (!currentActiveTrade) {
+          currentActiveTrade = {
+            sigId: activeSignalObj.id,
+            asset: activeSignalObj.asset,
+            direction: activeSignalObj.direction,
+            startTime: Date.now(),
+            expireTime: Date.now() + 60000
+          };
+          renderInTradeState();
+          return;
+        }
+      } else {
+        // بعد مرور وقت الدخول: إذا لم تكن هناك صفقة جارية يعود الروبوت لوضع الانتظار
+        if (!currentActiveTrade) {
+          activeSignalObj = null;
+          currentActiveSignalId = null;
+          currentTargetEntryEpoch = null;
+          if (cdContainer) cdContainer.style.display = "none";
+          const manContainer = document.getElementById("zad-manual-trigger-container");
+          if (manContainer) manContainer.style.display = "none";
+          renderWaitingState();
+          if (actElem) {
+            actElem.innerText = isForexMarketOpen()
+              ? `⏸️ في وضع الانتظار (WAIT) — جاري مسح السوق للشمعة القادمة لمنع التكرار`
+              : "السوق مغلق حالياً";
+          }
+          widget.style.borderColor = "#10b981";
+          widget.style.boxShadow = "0 15px 35px rgba(0,0,0,0.85)";
+        }
       }
     } else {
-      cdContainer.style.display = "none";
-      const manContainer = document.getElementById("zad-manual-trigger-container");
-      if (manContainer) manContainer.style.display = "none";
+      if (!currentActiveTrade) {
+        if (cdContainer) cdContainer.style.display = "none";
+        const manContainer = document.getElementById("zad-manual-trigger-container");
+        if (manContainer) manContainer.style.display = "none";
+      }
     }
 
     // تحديث مؤشر الاتصال
@@ -1625,6 +1785,12 @@
       }
     }
 
+    // إذا كانت هناك صفقة جارية حالياً: استمرار ظهور "الصفقة جارية الآن" طوال فترة فتحها وعدم مقاطعتها
+    if (currentActiveTrade && Date.now() < currentActiveTrade.expireTime) {
+      renderInTradeState();
+      return;
+    }
+
     // لا يتم استحداث أي إشارة محلية إطلاقاً - الروبوت يستقبل حصرياً الإشارات الرسمية
     const sig = data.activeSignal;
     if (sig && sig.status === "PENDING") {
@@ -1632,7 +1798,7 @@
       const isCall = sig.direction === "CALL";
       const dirBadge = isCall ? "🟢 صعود (CALL)" : "🔴 هبوط (PUT)";
 
-      // وميض وتوهج الصندوق بلون الإشارة
+      // توهج الصندوق بلون الإشارة
       widget.style.borderColor = isCall ? '#10b981' : '#ef4444';
       widget.style.boxShadow = isCall ? '0 0 25px rgba(16, 185, 129, 0.4)' : '0 0 25px rgba(239, 68, 68, 0.4)';
 
@@ -1651,63 +1817,86 @@
       } else if (sig.entryMinute) {
         const now = new Date();
         const targetMin = parseInt(sig.entryMinute, 10);
-        const targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), targetMin, 0, 0);
-        if (targetDate.getTime() <= Date.now() - 30000) {
-          targetDate.setHours(targetDate.getHours() + 1);
+        const currentMin = now.getMinutes();
+        const minDiff = (targetMin - currentMin + 60) % 60;
+        if (minDiff > 2) {
+          activeSignalObj = null;
+          currentTargetEntryEpoch = null;
+          renderWaitingState();
+          return;
         }
+        const targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), now.getHours(), now.getMinutes() + (minDiff === 0 ? 1 : minDiff), 0, 0);
         currentTargetEntryEpoch = Math.floor(targetDate.getTime() / 1000);
       } else if (!currentTargetEntryEpoch || currentActiveSignalId !== sig.id) {
-        currentTargetEntryEpoch = Math.floor(Date.now() / 1000) + serverClockOffsetSec + (sig.secondsUntilEntry || 30);
+        currentTargetEntryEpoch = Math.floor(Date.now() / 1000) + serverClockOffsetSec + Math.min(60, sig.secondsUntilEntry || 30);
+      }
+
+      // فحص أمان أخير: التأكد من أن وقت الدخول واقعي لشمعة M1 (أقل من 95 ثانية)
+      const nowEpochSec = Math.floor(Date.now() / 1000);
+      const diffSec = currentTargetEntryEpoch - nowEpochSec;
+      if (diffSec > 95 || diffSec < -15) {
+        activeSignalObj = null;
+        currentTargetEntryEpoch = null;
+        renderWaitingState();
+        return;
       }
       currentActiveSignalId = sig.id;
 
-      const rawMin = String(sig.entryMinute || sig.entryTime || "").replace(/[^0-9]/g, "");
-      const formattedEntryTime = rawMin ? `الدقيقة :${rawMin}` : (sig.entryTime || "");
+      // منع إعادة كتابة innerHTML إذا كانت الإشارة معروضة بالفعل لتجنب الوميض نهائياً
+      const sigKey = "SIGNAL_" + sig.id;
+      if (currentRobotUiState !== sigKey) {
+        currentRobotUiState = sigKey;
+        document.getElementById("zad-robot-signal").innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;background:rgba(15,23,42,0.85);padding:6px 8px;border-radius:8px;border:1px solid #0284c7;">
+            <span style="font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:5px;">
+              <span>🎯 الزوج:</span>
+              <b style="color:#38bdf8;font-size:14px;font-family:monospace;background:#0c1a2e;padding:2px 8px;border-radius:5px;border:1px solid #0284c7;">${sig.asset}</b>
+            </span>
+            <span style="font-size:11px;color:${isCall ? '#34d399' : '#f87171'};font-weight:bold;background:${isCall ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'};padding:2px 8px;border-radius:5px;border:1px solid ${isCall ? '#10b981' : '#ef4444'};">${dirBadge}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#cbd5e1;padding:3px 6px;background:#09121f;border-radius:6px;margin-bottom:4px;">
+            <span>⏰ نقطة الدخول: <b style="color:#fde047;">ثانية :00 (افتتاح الشمعة)</b></span>
+            <span>⏱️ الصلاحية: <b>60 ثانية (M1)</b></span>
+          </div>
+        `;
 
-      document.getElementById("zad-robot-signal").innerHTML = `
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;background:rgba(15,23,42,0.85);padding:6px 8px;border-radius:8px;border:1px solid #0284c7;">
-          <span style="font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:5px;">
-            <span>🎯 الزوج:</span>
-            <b style="color:#38bdf8;font-size:14px;font-family:monospace;background:#0c1a2e;padding:2px 8px;border-radius:5px;border:1px solid #0284c7;">${sig.asset}</b>
-          </span>
-          <span style="font-size:11px;color:${isCall ? '#34d399' : '#f87171'};font-weight:bold;background:${isCall ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'};padding:2px 8px;border-radius:5px;border:1px solid ${isCall ? '#10b981' : '#ef4444'};">${dirBadge}</span>
-        </div>
-        <div style="display:flex;justify-content:space-between;font-size:11px;color:#cbd5e1;padding:3px 6px;background:#09121f;border-radius:6px;margin-bottom:4px;">
-          <span>⏰ موعد الدخول: <b style="color:#fde047;">${formattedEntryTime}</b></span>
-          <span>⏱️ الصلاحية: <b>M1 (1 دقيقة)</b></span>
-        </div>
-      `;
-
-      // تجهيز زر التداول اليدوي إذا كان الوضع يدوياً
-      const manContainer = document.getElementById("zad-manual-trigger-container");
-      const manBtn = document.getElementById("zad-manual-trade-btn");
-      if (ROBOT_MODE === "MANUAL" && manContainer && manBtn) {
-        manContainer.style.display = "block";
-        manBtn.innerText = `👉 اضغط لتنفيذ صفقة ${isCall ? 'شراء (CALL 🟢)' : 'بيع (PUT 🔴)'} الآن!`;
-        manBtn.style.background = isCall ? '#10b981' : '#ef4444';
-        manBtn.onclick = () => {
-          try { switchToBrokerAsset(sig.asset); } catch(e) {}
-          const tradeRes = triggerBrokerTrade(sig.direction, false);
-          const clicked = tradeRes && tradeRes.success;
-          const actElem = document.getElementById("zad-robot-action");
-          if (actElem) {
-            actElem.innerHTML = clicked
-              ? `<span style="color:#34d399;font-weight:bold;">🚀 تم الضغط على زر المنصة يدوياً بنجاح!</span>`
-              : `<span style="color:#f87171;font-weight:bold;">⚠️ ${tradeRes ? tradeRes.message : 'يرجى الضغط مباشرة على زر المنصة'}</span>`;
-          }
-        };
-      } else if (manContainer) {
-        manContainer.style.display = "none";
+        // تجهيز زر التداول اليدوي إذا كان الوضع يدوياً
+        const manContainer = document.getElementById("zad-manual-trigger-container");
+        const manBtn = document.getElementById("zad-manual-trade-btn");
+        if (ROBOT_MODE === "MANUAL" && manContainer && manBtn) {
+          manContainer.style.display = "block";
+          manBtn.innerText = `👉 اضغط لتنفيذ صفقة ${isCall ? 'شراء (CALL 🟢)' : 'بيع (PUT 🔴)'} الآن!`;
+          manBtn.style.background = isCall ? '#10b981' : '#ef4444';
+          manBtn.onclick = () => {
+            try { switchToBrokerAsset(sig.asset); } catch(e) {}
+            const tradeRes = triggerBrokerTrade(sig.direction, false);
+            // بدء وتثبيت بطاقة "الصفقة جارية الآن" فوراً طوال فترة فتحها
+            currentActiveTrade = {
+              sigId: sig.id,
+              asset: sig.asset,
+              direction: sig.direction,
+              startTime: Date.now(),
+              expireTime: Date.now() + 60000
+            };
+            renderInTradeState();
+          };
+        } else if (manContainer) {
+          manContainer.style.display = "none";
+        }
       }
 
-      if (sig.id !== LAST_EXECUTED_SIG_ID) {
+      if (sig.id !== LAST_EXECUTED_SIG_ID && !currentActiveTrade) {
         const actElem = document.getElementById("zad-robot-action");
         if (actElem) {
-          actElem.innerHTML = `🎯 إشارة مؤكدة على (<b>${sig.asset}</b>) — جاهز للتنفيذ (${ROBOT_MODE === 'AUTO' ? 'آلياً بالثانية' : 'يدوياً'}) عند ${formattedEntryTime}`;
+          actElem.innerHTML = `🎯 إشارة مؤكدة على (<b>${sig.asset}</b>) — جاهز للتنفيذ (${ROBOT_MODE === 'AUTO' ? 'آلياً' : 'يدوياً'}) عند ثانية :00`;
         }
       }
     } else {
-      // إذا انتهت الصفقة يعود الروبوت إلى وضع الانتظار
+      // إذا لم تكن هناك إشارة نشطة: التحقق أولاً من عدم وجود صفقة جارية
+      if (currentActiveTrade && Date.now() < currentActiveTrade.expireTime) {
+        renderInTradeState();
+        return;
+      }
       activeSignalObj = null;
       currentActiveSignalId = null;
       currentTargetEntryEpoch = null;

@@ -25,10 +25,8 @@ service cloud.firestore {
     }
 
     match /system_state/{docId} {
-      allow get: if isValidId(docId) && docId == 'zad_main_state_v1';
-      allow create: if isValidId(docId) && docId == 'zad_main_state_v1' && isValidAppState(incoming());
-      allow update: if isValidId(docId) && docId == 'zad_main_state_v1' && isValidAppState(incoming()) &&
-                    incoming().diff(resource.data).affectedKeys().hasOnly(['updatedAt', 'payload']);
+      allow get, list: if isValidId(docId);
+      allow create, update: if isValidId(docId) && isValidAppState(incoming());
     }
 
     match /robot_feed/{docId} {

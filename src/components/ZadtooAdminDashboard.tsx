@@ -24,10 +24,14 @@ import {
   Clock,
   ExternalLink,
   Target,
-  Trash2
+  Trash2,
+  Crown
 } from 'lucide-react';
 import { ZadtooLogo } from './ZadtooNavbar';
 import { getPairFlags } from './ZadtooSignalsPage';
+import { ZadtooPlansAndLinksManager } from './ZadtooPlansAndLinksManager';
+import { ZadtooPaymentsManager } from './ZadtooPaymentsManager';
+import type { SubscriptionPlan, PlatformContactLinks } from '../types/platformConfig';
 import type { AutoPilotConfig } from '../App';
 
 interface ZadtooAdminDashboardProps {
@@ -45,6 +49,9 @@ interface ZadtooAdminDashboardProps {
   onSaveAutoPilot?: (patch: Partial<AutoPilotConfig>) => Promise<void>;
   onAddCustomPair?: (pair: string) => Promise<void>;
   onRemoveCustomPair?: (pair: string) => Promise<void>;
+  plans?: SubscriptionPlan[];
+  contactLinks?: PlatformContactLinks;
+  onConfigChanged?: (plans: SubscriptionPlan[], contactLinks: PlatformContactLinks) => void;
 }
 
 export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
@@ -61,10 +68,13 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
   autoPilot,
   onSaveAutoPilot,
   onAddCustomPair,
-  onRemoveCustomPair
+  onRemoveCustomPair,
+  plans,
+  contactLinks,
+  onConfigChanged
 }) => {
   const [activeAdminNav, setActiveAdminNav] = useState<
-    'overview' | 'pairs' | 'signals' | 'users' | 'subs' | 'reports' | 'settings'
+    'overview' | 'pairs' | 'signals' | 'users' | 'subs' | 'reports' | 'settings' | 'plans_links' | 'payments'
   >('overview');
 
   const [showAddSignalModal, setShowAddSignalModal] = useState(false);
@@ -281,6 +291,38 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
 
             <button
               type="button"
+              onClick={() => setActiveAdminNav('payments')}
+              className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl transition-colors cursor-pointer text-right ${
+                activeAdminNav === 'payments'
+                  ? 'bg-emerald-50 text-emerald-800 font-extrabold border border-emerald-300 shadow-xs'
+                  : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+              }`}
+            >
+              <DollarSign className="w-4 h-4 text-emerald-600" />
+              <span>المدفوعات ووسائل الدفع</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800 font-bold mr-auto">
+                جديد
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveAdminNav('plans_links')}
+              className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl transition-colors cursor-pointer text-right ${
+                activeAdminNav === 'plans_links'
+                  ? 'bg-amber-50 text-amber-900 font-extrabold border border-amber-300 shadow-xs'
+                  : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+              }`}
+            >
+              <Crown className="w-4 h-4 text-amber-600" />
+              <span>الباقات والروابط</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 font-bold mr-auto">
+                إدارة
+              </span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => {
                 setActiveAdminNav('reports');
                 if (onOpenReports) onOpenReports();
@@ -363,14 +405,32 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
             <p className="text-xs text-slate-400">إدارة الإشارات والمستخدمين وزوج التداول والروبوت الآلي</p>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end">
+            <button
+              type="button"
+              onClick={() => setActiveAdminNav(activeAdminNav === 'payments' ? 'overview' : 'payments')}
+              className="flex items-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+            >
+              <CreditCard className="w-3.5 h-3.5" />
+              <span>{activeAdminNav === 'payments' ? '← العودة للرئيسية' : 'إدارة المدفوعات ووسائل الدفع'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveAdminNav(activeAdminNav === 'plans_links' ? 'overview' : 'plans_links')}
+              className="flex items-center gap-1.5 px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+            >
+              <Crown className="w-3.5 h-3.5" />
+              <span>{activeAdminNav === 'plans_links' ? '← العودة للرئيسية' : 'الباقات والروابط'}</span>
+            </button>
+
             <button
               type="button"
               onClick={() => setShowAddSignalModal(true)}
-              className="hidden sm:flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+              className="hidden sm:flex items-center gap-1.5 px-3 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>إضافة إشارة سريعة</span>
+              <span>إضافة إشارة</span>
             </button>
 
             <div className="flex items-center gap-2 text-xs bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-xl">
@@ -385,6 +445,53 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
           </div>
         </div>
 
+        {/* View Switch: Payments Manager OR Plans & Links Manager OR Normal Overview */}
+        {activeAdminNav === 'payments' ? (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between bg-emerald-50 border border-emerald-200 p-3.5 rounded-2xl">
+              <div className="flex items-center gap-2">
+                <CreditCard className="w-5 h-5 text-emerald-600 shrink-0" />
+                <span className="text-xs sm:text-sm font-black text-emerald-950">
+                  قسم إدارة المدفوعات، وسائل الدفع المعتمدة (USDT، فودافون كاش، إنستاباي، بايننس)، ومراجعة وتفعيل الإيصالات
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveAdminNav('overview')}
+                className="px-3.5 py-1.5 bg-white hover:bg-emerald-100/60 text-emerald-900 text-xs font-bold rounded-xl border border-emerald-300 transition-colors cursor-pointer"
+              >
+                ← العودة إلى لوحة التحكم الرئيسية
+              </button>
+            </div>
+
+            <ZadtooPaymentsManager />
+          </div>
+        ) : activeAdminNav === 'plans_links' ? (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between bg-amber-50 border border-amber-200 p-3.5 rounded-2xl">
+              <div className="flex items-center gap-2">
+                <Crown className="w-5 h-5 text-amber-600 shrink-0" />
+                <span className="text-xs sm:text-sm font-black text-amber-950">
+                  قسم إدارة باقات الاشتراك المتاحة للزوار وروابط التواصل والإحالة
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveAdminNav('overview')}
+                className="px-3.5 py-1.5 bg-white hover:bg-amber-100/60 text-amber-900 text-xs font-bold rounded-xl border border-amber-300 transition-colors cursor-pointer"
+              >
+                ← العودة إلى لوحة التحكم الرئيسية
+              </button>
+            </div>
+
+            <ZadtooPlansAndLinksManager
+              initialPlans={plans}
+              initialContactLinks={contactLinks}
+              onConfigChanged={onConfigChanged}
+            />
+          </div>
+        ) : (
+          <>
         {/* DEDICATED SECTION: Trading Pair Control for Signals & Robot */}
         <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-2xs space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
@@ -582,6 +689,101 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
             <p className="leading-relaxed">
               <strong>ملاحظة تقنية هامة:</strong> أي زوج يتم تحديده أو إضافته هنا يُحفظ فوراً في خادم المنصة، ويُنقل آلياً ومباشرة إلى روبوت التداول العائم (Quotex Pro Bot) وقناة التليجرام دون الحاجة لأي تدخل يدوي من المستخدمين.
             </p>
+          </div>
+        </div>
+
+        {/* DEDICATED SECTION: Live Quotex Strategy & Indicators (SuperTrend + Fractal + RSI) */}
+        <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-slate-800 text-white rounded-2xl p-5 border border-slate-700/80 shadow-md space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-amber-400/20 text-amber-400 border border-amber-400/30 flex items-center justify-center">
+                <TrendingUp className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-black text-white">
+                    استراتيجية التداول المعتمدة (Quotex Triple Confluence Strategy)
+                  </h2>
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-mono-num font-bold">
+                    فريم M1 مباشر
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400">
+                  تم ضبط الرادار السحابي والبوت بالكامل وفقاً لمنظومة المؤشرات الثلاثية لشاشة منصة Quotex
+                </p>
+              </div>
+            </div>
+
+            <a
+              href="/strategy.txt"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer"
+            >
+              <FileText className="w-3.5 h-3.5 text-amber-400" />
+              <span>عرض ملف الاستراتيجية (strategy.txt)</span>
+              <ExternalLink className="w-3 h-3 text-slate-400" />
+            </a>
+          </div>
+
+          {/* 3 Indicators Breakdown Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {/* 1. SuperTrend (10, 3) */}
+            <div className="p-3.5 bg-slate-950/60 rounded-xl border border-emerald-500/30 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-mono-num font-black text-xs text-emerald-400">
+                  1. SUPERTREND (10, 3)
+                </span>
+                <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold">
+                  الاتجاه والانقلاب
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                مؤشر الاتجاه المعتمد (ATR 10, Multiplier 3): خط أخضر أسفل الشموع للصعود وخط أحمر أعلاها للهبوط، مع رصد دقيق لانقلاب الاتجاه (Trend Flip).
+              </p>
+              <div className="text-[10px] text-slate-400 font-mono-num flex items-center justify-between pt-1 border-t border-slate-800">
+                <span>الخط الأخضر: شراء 🟢</span>
+                <span>الخط الأحمر: بيع 🔴</span>
+              </div>
+            </div>
+
+            {/* 2. Williams Fractal (5) */}
+            <div className="p-3.5 bg-slate-950/60 rounded-xl border border-sky-500/30 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-mono-num font-black text-xs text-sky-400">
+                  2. FRACTAL (Period = 5)
+                </span>
+                <span className="text-[10px] px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold">
+                  دعوم ومقاومات
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                مؤشر الفركتالز الكلاسيكي (5 شموع): رصد قيعان الانعكاس وقمم المقاومة بأسهم واضحة، مع تأكيد رفض السعر للمستويات الحرجة (Pivots).
+              </p>
+              <div className="text-[10px] text-slate-400 font-mono-num flex items-center justify-between pt-1 border-t border-slate-800">
+                <span>سهم سفلي: دعم قاع ▲</span>
+                <span>سهم علوي: مقاومة قمة ▼</span>
+              </div>
+            </div>
+
+            {/* 3. RSI (9, 70, 30) */}
+            <div className="p-3.5 bg-slate-950/60 rounded-xl border border-amber-500/30 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-mono-num font-black text-xs text-amber-400">
+                  3. RSI (9) [70 / 30]
+                </span>
+                <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">
+                  الزخم السريع M1
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-300 leading-relaxed">
+                مؤشر القوة النسبية بفترة 9 شموع سريعة لفريم الدقيقة: تشبع بيعي عند &lt;= 30 وتشبع شرائي عند &gt;= 70 لاقتناص نقطة الدخول اللحظية.
+              </p>
+              <div className="text-[10px] text-slate-400 font-mono-num flex items-center justify-between pt-1 border-t border-slate-800">
+                <span>تشبع بيعي: &lt;= 30 🟢</span>
+                <span>تشبع شرائي: &gt;= 70 🔴</span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -816,9 +1018,20 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               >
                 <span>تقرير الأرباح والخسائر والنتائج</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveAdminNav('plans_links')}
+                className="w-full py-2 px-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
+              >
+                <Crown className="w-4 h-4 text-slate-950" />
+                <span>إدارة وتعديل الباقات والروابط</span>
+              </button>
             </div>
           </div>
         </div>
+        </>
+        )}
       </main>
 
       {/* Quick Add Signal Modal */}

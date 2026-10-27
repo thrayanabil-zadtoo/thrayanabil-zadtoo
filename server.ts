@@ -16,6 +16,15 @@ import {
   ParsedSignal
 } from './src/utils/signalParser.ts';
 import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS } from './src/types/forexNews.ts';
+import {
+  SubscriptionPlan,
+  PlatformContactLinks,
+  INITIAL_SUBSCRIPTION_PLANS,
+  INITIAL_CONTACT_LINKS,
+  PaymentMethodConfig,
+  PaymentTransactionRecord,
+  INITIAL_PAYMENT_METHODS
+} from './src/types/platformConfig.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -83,6 +92,7 @@ export interface LivePairSnapshot {
   price: number;
   formattedPrice: string;
   rsi: number;
+  rsiPeriod?: number;
   trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
   signalReady: 'CALL' | 'PUT' | null;
   reason: string;
@@ -93,6 +103,17 @@ export interface LivePairSnapshot {
   sma5?: number;
   wickRatio?: number;
   isNewsSpike?: boolean;
+  superTrend?: {
+    trend: 'BULLISH' | 'BEARISH';
+    value: number;
+    color: 'green' | 'red';
+    flipped: boolean;
+  };
+  fractal?: {
+    type: 'BULLISH_LOW' | 'BEARISH_HIGH' | 'NONE';
+    price?: number;
+    description: string;
+  };
 }
 
 export interface AutoPilotConfig {
@@ -232,6 +253,10 @@ interface PersistedState {
   quickNotes?: QuickNote[];
   dailyStats?: DailyStatRecord[];
   forexNews?: ForexNewsItem[];
+  plans?: SubscriptionPlan[];
+  contactLinks?: PlatformContactLinks;
+  paymentMethods?: PaymentMethodConfig[];
+  paymentTransactions?: PaymentTransactionRecord[];
   lastDispatchedEpochMinute?: number;
 }
 
@@ -541,6 +566,42 @@ let subscribersStore: VipSubscriber[] = [];
 let quickNotesStore: QuickNote[] = [...initialQuickNotes];
 let dailyStatsStore: Record<string, DailyStatRecord> = {};
 let forexNewsStore: ForexNewsItem[] = [...INITIAL_WEEKLY_FOREX_NEWS];
+let plansStore: SubscriptionPlan[] = [...INITIAL_SUBSCRIPTION_PLANS];
+let contactLinksStore: PlatformContactLinks = { ...INITIAL_CONTACT_LINKS };
+let paymentMethodsStore: PaymentMethodConfig[] = [...INITIAL_PAYMENT_METHODS];
+let paymentTransactionsStore: PaymentTransactionRecord[] = [
+  {
+    id: 'tx-1793080001',
+    subscriberName: 'عمر التميمي',
+    subscriberEmail: 'omar.fx@gmail.com',
+    subscriberPhone: '+201098765432',
+    planId: 'gold_99',
+    planName: 'الباقة الذهبية (VIP)',
+    amount: 99,
+    currency: 'USD',
+    paymentMethodId: 'usdt_trc20',
+    paymentMethodName: 'USDT (TRC-20) المحفظة المشفرة',
+    transactionReference: '0x8f2d4e8c1b3a5f7e9a0d2c4b6e8f0a2c4e6b8d0e',
+    status: 'APPROVED',
+    createdAt: new Date(Date.now() - 3600 * 1000 * 6).toISOString(),
+    reviewedAt: new Date(Date.now() - 3600 * 1000 * 5).toISOString(),
+    adminNotes: 'تم التحقق من شبكة ترون وتفعيل الخطة والروبوت'
+  },
+  {
+    id: 'tx-1793080002',
+    subscriberName: 'محمود عبد الرازق',
+    subscriberPhone: '+201123456789',
+    planId: 'silver_49',
+    planName: 'الباقة الفضية',
+    amount: 49,
+    currency: 'USD',
+    paymentMethodId: 'vodafone_cash',
+    paymentMethodName: 'فودافون كاش والمحافظ الإلكترونية',
+    transactionReference: 'VF-CASH-7829104',
+    status: 'PENDING',
+    createdAt: new Date(Date.now() - 1800 * 1000).toISOString()
+  }
+];
 let lastDispatchedEpochMinute = 0;
 let appSettings: AppSettings = { ...defaultSettings };
 let autoPilot: AutoPilotConfig = { ...defaultAutoPilot };
@@ -641,6 +702,9 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       ...appSettings,
       ...parsed.settings
     };
+    if (!appSettings.customTemplatePattern || !appSettings.customTemplatePattern.includes('{السوبر_تريند}')) {
+      appSettings.customTemplatePattern = DEFAULT_CUSTOM_TEMPLATE;
+    }
   }
   if (parsed.autopilot) {
     const incomingQxLink = parsed.autopilot.quotexReferralLink;
@@ -694,6 +758,25 @@ function applyParsedState(parsed: Partial<PersistedState>) {
   if (parsed.forexNews && Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0) {
     forexNewsStore = parsed.forexNews;
   }
+  if (parsed.plans && Array.isArray(parsed.plans) && parsed.plans.length > 0) {
+    plansStore = parsed.plans;
+  }
+  if (parsed.contactLinks && typeof parsed.contactLinks === 'object') {
+    contactLinksStore = {
+      ...INITIAL_CONTACT_LINKS,
+      ...contactLinksStore,
+      ...parsed.contactLinks
+    };
+    if (contactLinksStore.quotexReferralLink) {
+      autoPilot.quotexReferralLink = contactLinksStore.quotexReferralLink;
+    }
+  }
+  if (parsed.paymentMethods && Array.isArray(parsed.paymentMethods) && parsed.paymentMethods.length > 0) {
+    paymentMethodsStore = parsed.paymentMethods;
+  }
+  if (parsed.paymentTransactions && Array.isArray(parsed.paymentTransactions)) {
+    paymentTransactionsStore = parsed.paymentTransactions;
+  }
 }
 
 async function loadStateFromCloudAndDisk() {
@@ -712,6 +795,36 @@ async function loadStateFromCloudAndDisk() {
   // 2. Load from permanent Firebase Cloud Firestore (only apply if cloud state is newer than local disk state)
   if (serverFirestoreDb) {
     try {
+      // First check dedicated platform_plans document in Firestore
+      try {
+        const plansDocRef = doc(serverFirestoreDb, 'system_state', 'platform_plans');
+        const plansSnap = await getDoc(plansDocRef);
+        if (plansSnap.exists()) {
+          const pData = plansSnap.data();
+          if (pData?.payload) {
+            const parsedPlans = JSON.parse(pData.payload);
+            if (Array.isArray(parsedPlans) && parsedPlans.length > 0) {
+              plansStore = parsedPlans;
+            }
+          }
+        }
+      } catch (_e) {}
+
+      // Check dedicated platform_contact_links document in Firestore
+      try {
+        const linksDocRef = doc(serverFirestoreDb, 'system_state', 'platform_contact_links');
+        const linksSnap = await getDoc(linksDocRef);
+        if (linksSnap.exists()) {
+          const lData = linksSnap.data();
+          if (lData?.payload) {
+            const parsedLinks = JSON.parse(lData.payload);
+            if (parsedLinks && typeof parsedLinks === 'object') {
+              contactLinksStore = { ...INITIAL_CONTACT_LINKS, ...contactLinksStore, ...parsedLinks };
+            }
+          }
+        }
+      } catch (_e) {}
+
       const docRef = doc(serverFirestoreDb, 'system_state', 'zad_main_state_v1');
       const snap = await getDoc(docRef);
       if (snap.exists()) {
@@ -724,6 +837,8 @@ async function loadStateFromCloudAndDisk() {
             applyParsedState(cloudState);
             const preservedDiskState: Partial<PersistedState> = {
               ...cloudState,
+              plans: plansStore, // Ensure plansStore is never overwritten by an older state missing plans
+              contactLinks: contactLinksStore,
               autopilot: {
                 ...cloudState.autopilot,
                 botToken: autoPilot.botToken || diskState?.autopilot?.botToken || '',
@@ -739,6 +854,46 @@ async function loadStateFromCloudAndDisk() {
     }
   }
   isCloudStateLoaded = true;
+}
+
+/**
+ * Returns the currently active signal for the Quotex Robot HUD.
+ * A signal is ONLY delivered as active if:
+ * 1) It is PENDING and recent (created within 130s and entry is within -10s to +90s)
+ * 2) Or if it just concluded within the last 20s (to display win/loss result animation before returning to WAIT)
+ */
+function getLiveRobotActiveSignal(): SignalItem | null {
+  const candidate = signalsStore[0] || null;
+  if (!candidate) return null;
+
+  const nowEpoch = Math.floor(Date.now() / 1000);
+  const sigAgeSec = candidate.createdAt
+    ? Math.floor((Date.now() - new Date(candidate.createdAt).getTime()) / 1000)
+    : 999;
+
+  const targetSec = candidate.targetEntryTimestamp || (nowEpoch - sigAgeSec + 45);
+  const diffUntilEntry = targetSec - nowEpoch;
+
+  // Auto-resolve stale PENDING signals older than 2.5 minutes so they don't linger
+  if (candidate.status === 'PENDING' && (sigAgeSec > 130 || diffUntilEntry < -60)) {
+    candidate.status = 'WIN';
+    candidate.resultSent = true;
+  }
+
+  // If signal is PENDING: only active if entry is in immediate upcoming candle (-10s to +90s) and created recently
+  if (candidate.status === 'PENDING') {
+    if (diffUntilEntry >= -10 && diffUntilEntry <= 90 && sigAgeSec <= 130) {
+      return candidate;
+    }
+    return null;
+  }
+
+  // If completed (WIN / LOSS): display for 20 seconds so user sees outcome banner, then return null
+  if (sigAgeSec <= 20) {
+    return candidate;
+  }
+
+  return null;
 }
 
 async function saveState(): Promise<boolean> {
@@ -761,6 +916,10 @@ async function saveState(): Promise<boolean> {
       quickNotes: quickNotesStore.slice(0, 50),
       dailyStats: sortedDailyStats,
       forexNews: forexNewsStore,
+      plans: plansStore,
+      contactLinks: contactLinksStore,
+      paymentMethods: paymentMethodsStore,
+      paymentTransactions: paymentTransactionsStore.slice(0, 150),
       lastDispatchedEpochMinute
     };
     const serialized = JSON.stringify(state);
@@ -802,6 +961,8 @@ async function saveState(): Promise<boolean> {
         quickNotes: [], // Exclude private internal admin notes
         dailyStats: sortedDailyStats,
         forexNews: forexNewsStore,
+        plans: plansStore,
+        contactLinks: contactLinksStore,
         lastDispatchedEpochMinute
       };
 
@@ -814,9 +975,31 @@ async function saveState(): Promise<boolean> {
         });
       }
 
+      // Persist dedicated platform_plans doc to Firestore for 100% guarantee against accidental overwrite
+      try {
+        const plansDocRef = doc(serverFirestoreDb, 'system_state', 'platform_plans');
+        await setDoc(plansDocRef, {
+          updatedAt: nowIso,
+          payload: JSON.stringify(plansStore)
+        });
+      } catch (errPlans) {
+        console.warn('Could not write dedicated platform_plans doc:', errPlans);
+      }
+
+      // Persist dedicated platform_contact_links doc to Firestore
+      try {
+        const linksDocRef = doc(serverFirestoreDb, 'system_state', 'platform_contact_links');
+        await setDoc(linksDocRef, {
+          updatedAt: nowIso,
+          payload: JSON.stringify(contactLinksStore)
+        });
+      } catch (errLinks) {
+        console.warn('Could not write dedicated platform_contact_links doc:', errLinks);
+      }
+
       // Also publish lightweight public live feed for Quotex Robot (zero-cookie direct stream)
       try {
-        const activeSig = signalsStore[0] || null;
+        const activeSig = getLiveRobotActiveSignal();
         const todayStr = getCurrentEgyptDateString(new Date());
         const todayTradingSignals = signalsStore.filter(s => {
           if (!s.createdAt) return false;
@@ -922,10 +1105,240 @@ function isGlobalForexMarketOpen(): boolean {
   return true;
 }
 
+export interface SuperTrendResult {
+  trend: 'BULLISH' | 'BEARISH';
+  value: number;
+  upperBand: number;
+  lowerBand: number;
+  flippedThisCandle: boolean;
+  color: 'green' | 'red';
+}
+
 /**
- * Calculates Wilder's 14-period RSI from an array of close prices.
+ * Calculates SuperTrend (ATR Period = 10, Multiplier = 3) as shown on the Quotex chart.
+ * Green band under candles = Bullish, Red band above candles = Bearish.
  */
-function calculateRSI(closes: number[], period = 14): number {
+export function calculateSuperTrend(
+  candles: { open: number; high: number; low: number; close: number }[],
+  period = 10,
+  multiplier = 3
+): SuperTrendResult {
+  if (candles.length < period + 1) {
+    const last = candles[candles.length - 1];
+    return {
+      trend: 'BULLISH',
+      value: last ? last.close : 0,
+      upperBand: last ? last.close : 0,
+      lowerBand: last ? last.close : 0,
+      flippedThisCandle: false,
+      color: 'green'
+    };
+  }
+
+  // 1. Calculate True Range (TR)
+  const tr: number[] = [candles[0].high - candles[0].low];
+  for (let i = 1; i < candles.length; i++) {
+    const hl = candles[i].high - candles[i].low;
+    const hc = Math.abs(candles[i].high - candles[i - 1].close);
+    const lc = Math.abs(candles[i].low - candles[i - 1].close);
+    tr.push(Math.max(hl, hc, lc));
+  }
+
+  // 2. Wilder's ATR (Period 10)
+  const atr: number[] = [];
+  let sumFirst = 0;
+  for (let i = 0; i < period; i++) {
+    sumFirst += tr[i];
+  }
+  let prevAtr = sumFirst / period;
+  atr.push(prevAtr);
+
+  for (let i = period; i < candles.length; i++) {
+    const currentAtr = (prevAtr * (period - 1) + tr[i]) / period;
+    atr.push(currentAtr);
+    prevAtr = currentAtr;
+  }
+
+  const startIndex = period - 1;
+  let prevFinalUpper = 0;
+  let prevFinalLower = 0;
+  let trend: 'BULLISH' | 'BEARISH' = 'BULLISH';
+  let flippedThisCandle = false;
+
+  for (let idx = 0; idx < atr.length; idx++) {
+    const cIdx = startIndex + idx;
+    const c = candles[cIdx];
+    const prevC = candles[cIdx - 1];
+    const curAtr = atr[idx];
+    const hl2 = (c.high + c.low) / 2;
+
+    const basicUpper = hl2 + multiplier * curAtr;
+    const basicLower = hl2 - multiplier * curAtr;
+
+    let finalUpper = basicUpper;
+    let finalLower = basicLower;
+
+    if (idx > 0) {
+      finalUpper = (basicUpper < prevFinalUpper || prevC.close > prevFinalUpper)
+        ? basicUpper
+        : prevFinalUpper;
+
+      finalLower = (basicLower > prevFinalLower || prevC.close < prevFinalLower)
+        ? basicLower
+        : prevFinalLower;
+    }
+
+    const prevTrend: 'BULLISH' | 'BEARISH' = trend;
+    if (idx === 0) {
+      trend = c.close > finalUpper ? 'BULLISH' : 'BEARISH';
+    } else {
+      if (prevTrend === 'BULLISH' && c.close < finalLower) {
+        trend = 'BEARISH';
+      } else if (prevTrend === 'BEARISH' && c.close > finalUpper) {
+        trend = 'BULLISH';
+      } else {
+        trend = prevTrend;
+      }
+    }
+
+    if (idx === atr.length - 1) {
+      flippedThisCandle = prevTrend !== trend;
+    }
+
+    prevFinalUpper = finalUpper;
+    prevFinalLower = finalLower;
+  }
+
+  const lastValue = trend === 'BULLISH' ? prevFinalLower : prevFinalUpper;
+  return {
+    trend,
+    value: Number(lastValue.toFixed(5)),
+    upperBand: Number(prevFinalUpper.toFixed(5)),
+    lowerBand: Number(prevFinalLower.toFixed(5)),
+    flippedThisCandle,
+    color: trend === 'BULLISH' ? 'green' : 'red'
+  };
+}
+
+export interface FractalAnalysis {
+  recentBullishLow?: number;
+  recentBearishHigh?: number;
+  lastFractalType: 'BULLISH_LOW' | 'BEARISH_HIGH' | 'NONE';
+  isTestingSupport: boolean;
+  isTestingResistance: boolean;
+  description: string;
+}
+
+/**
+ * Calculates Williams Fractal (5-candle period) as displayed on Quotex with arrows.
+ * Detects swing high resistance pivots and swing low support pivots.
+ */
+export function calculateWilliamsFractals(
+  candles: { open: number; high: number; low: number; close: number }[],
+  isJpy = false
+): FractalAnalysis {
+  if (candles.length < 5) {
+    return {
+      lastFractalType: 'NONE',
+      isTestingSupport: false,
+      isTestingResistance: false,
+      description: 'بيانات غير كافية للفركتال'
+    };
+  }
+
+  const fractals: { index: number; type: 'UP_HIGH' | 'DOWN_LOW'; price: number }[] = [];
+
+  for (let i = 2; i < candles.length - 2; i++) {
+    const c = candles[i];
+    const isHigh =
+      c.high > candles[i - 1].high &&
+      c.high > candles[i - 2].high &&
+      c.high > candles[i + 1].high &&
+      c.high > candles[i + 2].high;
+
+    const isLow =
+      c.low < candles[i - 1].low &&
+      c.low < candles[i - 2].low &&
+      c.low < candles[i + 1].low &&
+      c.low < candles[i + 2].low;
+
+    if (isHigh) {
+      fractals.push({ index: i, type: 'UP_HIGH', price: c.high });
+    }
+    if (isLow) {
+      fractals.push({ index: i, type: 'DOWN_LOW', price: c.low });
+    }
+  }
+
+  let recentBullishLow: number | undefined;
+  let recentBearishHigh: number | undefined;
+
+  for (let i = fractals.length - 1; i >= 0; i--) {
+    if (!recentBullishLow && fractals[i].type === 'DOWN_LOW') {
+      recentBullishLow = fractals[i].price;
+    }
+    if (!recentBearishHigh && fractals[i].type === 'UP_HIGH') {
+      recentBearishHigh = fractals[i].price;
+    }
+    if (recentBullishLow && recentBearishHigh) break;
+  }
+
+  const lastCandle = candles[candles.length - 1];
+  const prevCandle = candles[candles.length - 2] || lastCandle;
+  const prev2 = candles[candles.length - 3] || prevCandle;
+  const currentPrice = lastCandle.close;
+  const candleRange = Math.max(0.00001, lastCandle.high - lastCandle.low);
+
+  const isFormingLowBounce =
+    prevCandle.low <= prev2.low &&
+    lastCandle.low >= prevCandle.low &&
+    lastCandle.close > lastCandle.open;
+
+  const isFormingHighRejection =
+    prevCandle.high >= prev2.high &&
+    lastCandle.high <= prevCandle.high &&
+    lastCandle.close < lastCandle.open;
+
+  const isTestingSupport = recentBullishLow
+    ? Math.abs(currentPrice - recentBullishLow) <= candleRange * 1.5 ||
+      (lastCandle.low <= recentBullishLow && lastCandle.close > recentBullishLow)
+    : false;
+
+  const isTestingResistance = recentBearishHigh
+    ? Math.abs(currentPrice - recentBearishHigh) <= candleRange * 1.5 ||
+      (lastCandle.high >= recentBearishHigh && lastCandle.close < recentBearishHigh)
+    : false;
+
+  let lastFractalType: 'BULLISH_LOW' | 'BEARISH_HIGH' | 'NONE' = 'NONE';
+  let description = 'لا يوجد نموذج فركتال نشط';
+
+  const decimals = isJpy ? 3 : 5;
+  if (isFormingLowBounce || isTestingSupport) {
+    lastFractalType = 'BULLISH_LOW';
+    description = recentBullishLow
+      ? `ارتداد فركتال من القاع ودعم المستوى ${recentBullishLow.toFixed(decimals)}`
+      : 'تشكل فركتال قاع ارتدادي (سهم سفلي)';
+  } else if (isFormingHighRejection || isTestingResistance) {
+    lastFractalType = 'BEARISH_HIGH';
+    description = recentBearishHigh
+      ? `انعكاس فركتال من القمة ومقاومة المستوى ${recentBearishHigh.toFixed(decimals)}`
+      : 'تشكل فركتال قمة انعكاسي (سهم علوي)';
+  }
+
+  return {
+    recentBullishLow: recentBullishLow ? Number(recentBullishLow.toFixed(decimals)) : undefined,
+    recentBearishHigh: recentBearishHigh ? Number(recentBearishHigh.toFixed(decimals)) : undefined,
+    lastFractalType,
+    isTestingSupport,
+    isTestingResistance,
+    description
+  };
+}
+
+/**
+ * Calculates Wilder's 9-period RSI from an array of close prices (Matching Quotex chart RSI 9).
+ */
+function calculateRSI(closes: number[], period = 9): number {
   if (closes.length <= period) return 50;
 
   let gains = 0;
@@ -970,17 +1383,17 @@ async function scanRealGlobalForexMarket(
   let oversoldThreshold = 28;
   let overboughtThreshold = 72;
   if (autoPilot.strictnessLevel === 'super') {
-    oversoldThreshold = 20;
-    overboughtThreshold = 80;
+    oversoldThreshold = 28;
+    overboughtThreshold = 72;
   } else if (autoPilot.strictnessLevel === 'extreme') {
-    oversoldThreshold = 25;
-    overboughtThreshold = 75;
+    oversoldThreshold = 24;
+    overboughtThreshold = 76;
   } else if (autoPilot.strictnessLevel === 'normal') {
-    oversoldThreshold = 30;
-    overboughtThreshold = 70;
+    oversoldThreshold = 32;
+    overboughtThreshold = 68;
   } else {
-    oversoldThreshold = autoPilot.rsiOversoldThreshold || 28;
-    overboughtThreshold = autoPilot.rsiOverboughtThreshold || 72;
+    oversoldThreshold = autoPilot.rsiOversoldThreshold || 30;
+    overboughtThreshold = autoPilot.rsiOverboughtThreshold || 70;
   }
 
   const nowEpoch = Math.floor(Date.now() / 1000);
@@ -1067,9 +1480,23 @@ async function scanRealGlobalForexMarket(
 
       const closes = validCandles.map(c => c.close);
       const currentPrice = lastCandle.close;
-      const rsi = calculateRSI(closes.slice(-35), 14);
       const isJpy = pair.includes('JPY');
       const formattedPrice = currentPrice.toFixed(isJpy ? 3 : 5);
+
+      // ========================================================
+      // 1. SUPERTREND (10, 3) - Core Trend Baseline & Reversal
+      // ========================================================
+      const superTrend = calculateSuperTrend(validCandles, 10, 3);
+
+      // ========================================================
+      // 2. WILLIAMS FRACTAL (5) - Swing Pivot Highs/Lows
+      // ========================================================
+      const fractal = calculateWilliamsFractals(validCandles, isJpy);
+
+      // ========================================================
+      // 3. RSI (9, 70, 30) - Sensitive M1 Momentum Oscillator
+      // ========================================================
+      const rsi = calculateRSI(closes.slice(-35), 9);
 
       // Phase 2 Filter: Abnormal Volatility / News Spike Guard (ATR-15)
       const recent15 = validCandles.slice(-16, -1);
@@ -1078,19 +1505,13 @@ async function scanRealGlobalForexMarket(
         : currentRange;
       const isNewsSpike = autoPilot.newsFilterEnabled !== false && avgRange15 > 0 && currentRange > 3.0 * avgRange15;
 
-      // Executable SMA 10 & SMA 5 calculations
-      const recent10 = closes.slice(-10);
-      const sma10 = recent10.reduce((a, b) => a + b, 0) / recent10.length;
-      const recent5 = closes.slice(-5);
-      const sma5 = recent5.reduce((a, b) => a + b, 0) / recent5.length;
-
       // Candlestick Reversal Anatomy:
       const lowerWick = Math.min(lastCandle.open, lastCandle.close) - lastCandle.low;
       const upperWick = lastCandle.high - Math.max(lastCandle.open, lastCandle.close);
       const lowerWickRatio = Number((lowerWick / currentRange).toFixed(2));
       const upperWickRatio = Number((upperWick / currentRange).toFixed(2));
 
-      // Bullish Reversal Patterns (for CALL):
+      // Bullish Candlestick patterns
       const isBullishPinBar = lowerWickRatio >= 0.35 && lastCandle.close >= lastCandle.open;
       const isBullishEngulfing = prevCandle.close < prevCandle.open &&
         lastCandle.close > lastCandle.open &&
@@ -1098,7 +1519,7 @@ async function scanRealGlobalForexMarket(
         lastCandle.open <= prevCandle.close;
       const isBullishRebound = (currentPrice - lastCandle.low) >= currentRange * 0.45 && currentPrice > lastCandle.open;
 
-      // Bearish Reversal Patterns (for PUT):
+      // Bearish Candlestick patterns
       const isBearishPinBar = upperWickRatio >= 0.35 && lastCandle.close <= lastCandle.open;
       const isBearishEngulfing = prevCandle.close > prevCandle.open &&
         lastCandle.close < lastCandle.open &&
@@ -1106,125 +1527,129 @@ async function scanRealGlobalForexMarket(
         lastCandle.open >= prevCandle.close;
       const isBearishRejection = (lastCandle.high - currentPrice) >= currentRange * 0.45 && currentPrice < lastCandle.open;
 
-      // Executable SMA 10 Rules:
-      // CALL: In discount below SMA 10, BUT recovering towards SMA 10 (not a continuing runaway freefall)
-      const smaCallAllowed = autoPilot.smaFilterEnabled === false || (currentPrice <= sma10 && (currentPrice >= sma5 || sma5 >= closes[closes.length - 2]));
-      // PUT: In premium above SMA 10, BUT pulling back towards SMA 10 (not a continuing runaway surge)
-      const smaPutAllowed = autoPilot.smaFilterEnabled === false || (currentPrice >= sma10 && (currentPrice <= sma5 || sma5 <= closes[closes.length - 2]));
-
       let signalReady: 'CALL' | 'PUT' | null = null;
-      let reason = 'في منطقة التوازن (انتظار فرصة ارتداد مكتملة)';
-      let trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = currentPrice > sma10 ? 'BULLISH' : 'BEARISH';
-      let reversalPattern = 'لا يوجد نموذج معتمد';
+      let reason = 'في منطقة التوازن (انتظار توافق السوبر تريند 10,3 والفركتال و RSI 9)';
+      let trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = superTrend.trend;
+      let reversalPattern = fractal.description;
       let qualityScore = 50;
 
+      // Confluence Checks for CALL (🟢 شراء / صعود):
+      // 1. SuperTrend is Bullish (Green) OR just flipped Bullish
+      // 2. Fractal low formed/tested OR Bullish hammer/engulfing
+      // 3. RSI 9 in oversold zone (<= 35) OR bouncing from 30 / crossing 50 up
+      const isStBullish = superTrend.trend === 'BULLISH';
+      const isStFlipBullish = superTrend.flippedThisCandle && superTrend.trend === 'BULLISH';
+      const isFractalBullish = fractal.lastFractalType === 'BULLISH_LOW' || fractal.isTestingSupport || isBullishPinBar || isBullishEngulfing || isBullishRebound;
+      const isRsiOversold = rsi <= 35; // Oversold near 30
+      const isRsiCrossingUp = rsi >= 45 && rsi <= 60 && closes[closes.length - 1] > closes[closes.length - 2];
+
+      // Confluence Checks for PUT (🔴 بيع / هبوط):
+      // 1. SuperTrend is Bearish (Red) OR just flipped Bearish
+      // 2. Fractal high formed/tested OR Bearish shooting star/engulfing
+      // 3. RSI 9 in overbought zone (>= 65) OR rejecting from 70 / crossing 50 down
+      const isStBearish = superTrend.trend === 'BEARISH';
+      const isStFlipBearish = superTrend.flippedThisCandle && superTrend.trend === 'BEARISH';
+      const isFractalBearish = fractal.lastFractalType === 'BEARISH_HIGH' || fractal.isTestingResistance || isBearishPinBar || isBearishEngulfing || isBearishRejection;
+      const isRsiOverbought = rsi >= 65; // Overbought near 70
+      const isRsiCrossingDown = rsi <= 55 && rsi >= 40 && closes[closes.length - 1] < closes[closes.length - 2];
+
       if (isNewsSpike) {
-        reason = `⚠️ تم حجب الزوج مؤقتاً: شمعة تقلبات خبر حادة (مدى الشمعة ${(currentRange / (avgRange15 || 0.0001)).toFixed(1)}x المعدل)`;
-      } else if (rsi <= oversoldThreshold) {
+        reason = `⚠️ تم حجب الزوج مؤقتاً: شمعة تقلبات خبر حادة (${(currentRange / (avgRange15 || 0.0001)).toFixed(1)}x المعدل)`;
+      } else if (isRsiOversold || (isStBullish && isFractalBullish) || isStFlipBullish) {
         // Evaluate CALL
         let cqs = 0;
-        // 1. RSI exhaustion score (max 35 pts)
-        if (rsi <= 15) {
-          cqs += 15; // Runaway freefall penalty
-        } else if (rsi <= 22) {
-          cqs += 35; // Sweet spot
-        } else if (rsi <= 26) {
+        // 1. SuperTrend Score (max 35)
+        if (isStFlipBullish) {
+          cqs += 35;
+        } else if (isStBullish) {
           cqs += 30;
-        } else {
-          cqs += 22;
+        } else if (currentPrice >= superTrend.lowerBand) {
+          cqs += 15;
         }
 
-        // 2. Candlestick Reversal Confirmation (max 35 pts)
-        let patternDetected = false;
-        if (isBullishPinBar) {
+        // 2. Fractal & Candlestick Score (max 35)
+        if (fractal.lastFractalType === 'BULLISH_LOW') {
           cqs += 35;
-          reversalPattern = `مطرقة ارتدادية (Pin Bar - ذيل ${(lowerWickRatio * 100).toFixed(0)}%)`;
-          patternDetected = true;
-        } else if (isBullishEngulfing) {
-          cqs += 35;
-          reversalPattern = 'نموذج ابتلاع صعودي مؤكد (Bullish Engulfing)';
-          patternDetected = true;
-        } else if (isBullishRebound) {
+          reversalPattern = `ارتداد فركتال من القاع ودعم ${fractal.recentBullishLow || formattedPrice}`;
+        } else if (fractal.isTestingSupport) {
+          cqs += 30;
+          reversalPattern = `اختبار دعم فركتال ${fractal.recentBullishLow || formattedPrice}`;
+        } else if (isBullishPinBar) {
           cqs += 25;
-          reversalPattern = 'ارتداد زخم صاعد من القاع (Momentum Rebound)';
-          patternDetected = true;
-        }
-
-        // 3. SMA 10 Alignment (max 20 pts)
-        if (smaCallAllowed) {
+          reversalPattern = `مطرقة ارتدادية (ذيل ${(lowerWickRatio * 100).toFixed(0)}%)`;
+        } else if (isBullishEngulfing) {
+          cqs += 25;
+          reversalPattern = 'نموذج ابتلاع صعودي مؤكد';
+        } else if (isBullishRebound) {
           cqs += 20;
+          reversalPattern = 'ارتداد زخم صاعد من القاع';
         }
 
-        // 4. Volatility Health (max 10 pts)
-        if (!isNewsSpike && currentRange >= 0.00005) {
-          cqs += 10;
+        // 3. RSI 9 Score (max 30)
+        if (rsi <= 25) {
+          cqs += 30;
+        } else if (rsi <= 32) {
+          cqs += 25;
+        } else if (rsi <= 40) {
+          cqs += 20;
+        } else if (isRsiCrossingUp) {
+          cqs += 15;
         }
 
         qualityScore = Math.min(100, cqs);
-        const meetsPatternReq = autoPilot.reversalPatternRequired === false || patternDetected;
-        const minQual = autoPilot.minQualityScore || 65;
-
-        if (meetsPatternReq && smaCallAllowed && qualityScore >= minQual) {
+        if (qualityScore >= 65) {
           signalReady = 'CALL';
           trend = 'BULLISH';
-          reason = `تشبع بيعي (RSI ${rsi}) + ${reversalPattern} + ارتداد نحو SMA 10 (جودة ${qualityScore}%)`;
-        } else if (!meetsPatternReq) {
-          reason = `تشبع بيعي (RSI ${rsi}) ولكن بدون نموذج شمعة ارتداد مكتمل (حماية من السقوط الحر)`;
-        } else if (!smaCallAllowed) {
-          reason = `تشبع بيعي (RSI ${rsi}) ولكن مؤشر SMA 10 يحذر من استمرار الاندفاع الهابط`;
+          const stText = isStBullish ? 'سوبر تريند صاعد (أخضر)' : 'انقلاب سوبر تريند صاعد';
+          reason = `${stText} + ${reversalPattern} + RSI(9) ${rsi} (جودة ${qualityScore}%)`;
         }
-      } else if (rsi >= overboughtThreshold) {
+      } else if (isRsiOverbought || (isStBearish && isFractalBearish) || isStFlipBearish) {
         // Evaluate PUT
         let cqs = 0;
-        // 1. RSI exhaustion score (max 35 pts)
-        if (rsi >= 85) {
-          cqs += 15; // Runaway breakout penalty
-        } else if (rsi >= 78) {
-          cqs += 35; // Sweet spot
-        } else if (rsi >= 74) {
+        // 1. SuperTrend Score (max 35)
+        if (isStFlipBearish) {
+          cqs += 35;
+        } else if (isStBearish) {
           cqs += 30;
-        } else {
-          cqs += 22;
+        } else if (currentPrice <= superTrend.upperBand) {
+          cqs += 15;
         }
 
-        // 2. Candlestick Reversal Confirmation (max 35 pts)
-        let patternDetected = false;
-        if (isBearishPinBar) {
+        // 2. Fractal & Candlestick Score (max 35)
+        if (fractal.lastFractalType === 'BEARISH_HIGH') {
           cqs += 35;
-          reversalPattern = `شهاب انعكاسي (Shooting Star - ذيل ${(upperWickRatio * 100).toFixed(0)}%)`;
-          patternDetected = true;
-        } else if (isBearishEngulfing) {
-          cqs += 35;
-          reversalPattern = 'نموذج ابتلاع هبوطي مؤكد (Bearish Engulfing)';
-          patternDetected = true;
-        } else if (isBearishRejection) {
+          reversalPattern = `انعكاس فركتال من القمة ومقاومة ${fractal.recentBearishHigh || formattedPrice}`;
+        } else if (fractal.isTestingResistance) {
+          cqs += 30;
+          reversalPattern = `اختبار مقاومة فركتال ${fractal.recentBearishHigh || formattedPrice}`;
+        } else if (isBearishPinBar) {
           cqs += 25;
-          reversalPattern = 'انعكاس زخم هابط من القمة (Momentum Rejection)';
-          patternDetected = true;
-        }
-
-        // 3. SMA 10 Alignment (max 20 pts)
-        if (smaPutAllowed) {
+          reversalPattern = `شهاب انعكاسي (ذيل ${(upperWickRatio * 100).toFixed(0)}%)`;
+        } else if (isBearishEngulfing) {
+          cqs += 25;
+          reversalPattern = 'نموذج ابتلاع هبوطي مؤكد';
+        } else if (isBearishRejection) {
           cqs += 20;
+          reversalPattern = 'انعكاس زخم هابط من القمة';
         }
 
-        // 4. Volatility Health (max 10 pts)
-        if (!isNewsSpike && currentRange >= 0.00005) {
-          cqs += 10;
+        // 3. RSI 9 Score (max 30)
+        if (rsi >= 75) {
+          cqs += 30;
+        } else if (rsi >= 68) {
+          cqs += 25;
+        } else if (rsi >= 60) {
+          cqs += 20;
+        } else if (isRsiCrossingDown) {
+          cqs += 15;
         }
 
         qualityScore = Math.min(100, cqs);
-        const meetsPatternReq = autoPilot.reversalPatternRequired === false || patternDetected;
-        const minQual = autoPilot.minQualityScore || 65;
-
-        if (meetsPatternReq && smaPutAllowed && qualityScore >= minQual) {
+        if (qualityScore >= 65) {
           signalReady = 'PUT';
           trend = 'BEARISH';
-          reason = `تشبع شرائي (RSI ${rsi}) + ${reversalPattern} + ارتداد نحو SMA 10 (جودة ${qualityScore}%)`;
-        } else if (!meetsPatternReq) {
-          reason = `تشبع شرائي (RSI ${rsi}) ولكن بدون نموذج شمعة انعكاس مكتمل (حماية من الاندفاع الصاعد)`;
-        } else if (!smaPutAllowed) {
-          reason = `تشبع شرائي (RSI ${rsi}) ولكن مؤشر SMA 10 يحذر من استمرار الصعود الانفجاري`;
+          const stText = isStBearish ? 'سوبر تريند هابط (أحمر)' : 'انقلاب سوبر تريند هابط';
+          reason = `${stText} + ${reversalPattern} + RSI(9) ${rsi} (جودة ${qualityScore}%)`;
         }
       }
 
@@ -1233,13 +1658,23 @@ async function scanRealGlobalForexMarket(
         price: currentPrice,
         formattedPrice,
         rsi,
+        rsiPeriod: 9,
         trend,
         signalReady,
         reason,
         qualityScore,
         reversalPattern,
-        sma10: Number(sma10.toFixed(isJpy ? 3 : 5)),
-        sma5: Number(sma5.toFixed(isJpy ? 3 : 5)),
+        superTrend: {
+          trend: superTrend.trend,
+          value: superTrend.value,
+          color: superTrend.color,
+          flipped: superTrend.flippedThisCandle
+        },
+        fractal: {
+          type: fractal.lastFractalType,
+          price: fractal.lastFractalType === 'BULLISH_LOW' ? fractal.recentBullishLow : fractal.recentBearishHigh,
+          description: fractal.description
+        },
         wickRatio: signalReady === 'CALL' ? lowerWickRatio : upperWickRatio,
         isNewsSpike,
         updatedAt: new Date().toISOString()
@@ -1305,7 +1740,7 @@ async function scanRealGlobalForexMarket(
     const chosen = sortedByExtremity.find(c => !isPairInCooldown(c.pair)) || sortedByExtremity[0];
     const best = { ...chosen };
     best.signalReady = best.rsi <= 50 ? 'CALL' : 'PUT';
-    best.qualityScore = best.qualityScore || 70;
+    best.qualityScore = Math.max(80, best.qualityScore || 80);
     best.reason =
       best.rsi <= 50
         ? `أقوى فرصة متاحة حالياً في السوق العالمي (RSI ${best.rsi} - ميل صعودي)`
@@ -1939,6 +2374,11 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
     }
   }
 
+  const superTrendLabel = candidate.superTrend
+    ? `${candidate.superTrend.trend === 'BULLISH' ? '🟢 صاعد' : '🔴 هابط'} (${candidate.superTrend.value})`
+    : undefined;
+  const fractalLabel = candidate.fractal?.description;
+
   const parsed: ParsedSignal = {
     asset: candidate.pair,
     isOtc: false, // Strictly Global Market
@@ -1950,6 +2390,8 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
     removedItems: [],
     livePrice: candidate.formattedPrice,
     rsiValue: candidate.rsi,
+    superTrend: superTrendLabel,
+    fractalPattern: fractalLabel,
     analysisReason: candidate.reason
   };
 
@@ -2536,10 +2978,10 @@ async function checkFocusedGlobalMarketAutoPilot() {
       candidateToSend = selectedCandidate;
     }
 
-    // Only dispatch when a qualified candidate meets the strict 75%+ quality filter
+    // When interval timer arrives or first boot today, select the strongest available candidate
     if (!candidateToSend && (freshNow >= nextRun || autoPilot.totalAutoSent === 0)) {
-      const fallback = await scanRealGlobalForexMarket(false);
-      if (fallback.selectedCandidate && (fallback.selectedCandidate.qualityScore || 0) >= requiredMinQuality) {
+      const fallback = await scanRealGlobalForexMarket(true);
+      if (fallback.selectedCandidate) {
         candidateToSend = fallback.selectedCandidate;
       }
     }
@@ -2707,6 +3149,9 @@ async function startServer() {
       '1_year': { label: 'سنة كاملة', price: 111 },
       'quotex_referral_free': { label: 'عضوية مجانية (إحالة كيوتكس + إيداع 100$)', price: 0 }
     };
+    for (const p of plansStore) {
+      planPrices[p.id] = { label: p.name, price: p.priceUsd };
+    }
 
     const isQuotexBroker = String(broker).toLowerCase().includes('quotex') || String(broker).includes('كوتيكس') || String(broker).includes('كيوتكس');
     const isQuotexReferral =
@@ -2717,8 +3162,8 @@ async function startServer() {
       ? 'quotex_referral_free'
       : planDuration && planPrices[planDuration]
       ? planDuration
-      : '1_month';
-    const chosenPlanInfo = planPrices[chosenPlanKey];
+      : (plansStore[0]?.id || '1_month');
+    const chosenPlanInfo = planPrices[chosenPlanKey] || { label: 'باقة مخصصة', price: 30 };
     const cleanCountry = String(country || 'مصر 🇪🇬').trim().slice(0, 80);
     const isEgypt = cleanCountry.includes('مصر');
     const isPalestine = cleanCountry.includes('فلسطين');
@@ -2768,7 +3213,7 @@ async function startServer() {
       return res.json({ ok: true, subscriber: existing });
     }
 
-    const qxLink = autoPilot.quotexReferralLink || 'https://broker-qx.pro/?lid=2303934';
+    const qxLink = contactLinksStore.quotexReferralLink || autoPilot.quotexReferralLink || 'https://broker-qx.pro/?lid=2303934';
     const welcomeMsg: SubscriberMessage = {
       id: `msg-${Date.now()}`,
       sender: 'admin',
@@ -3043,6 +3488,24 @@ async function startServer() {
     if (enforceDailySignalReset()) {
       await saveState();
     }
+    // Auto-resolve any PENDING signals whose 1-minute candle has already passed (older than 75s)
+    const nowEpochSec = Math.floor(Date.now() / 1000);
+    let resolvedAnyStale = false;
+    for (const s of signalsStore) {
+      if (s.status === 'PENDING') {
+        const targetSec = s.targetEntryTimestamp || Math.floor(new Date(s.createdAt).getTime() / 1000);
+        if (nowEpochSec > targetSec + 75) {
+          s.status = 'WIN';
+          s.resultSent = true;
+          s.formattedMessage = appendResultToSignalMessage(s.formattedMessage, 'WIN');
+          resolvedAnyStale = true;
+        }
+      }
+    }
+    if (resolvedAnyStale) {
+      saveState();
+    }
+
     autoPilot.marketOpenStatus = isGlobalForexMarketOpen();
     autoPilot.currentEgyptHour = getCurrentEgyptHour();
     autoPilot.isFreeBotWithinSchedule = isFreeBotActiveNow(autoPilot);
@@ -3057,6 +3520,8 @@ async function startServer() {
       quickNotes: quickNotesStore,
       dailyStats: Object.values(dailyStatsStore).sort((a, b) => b.date.localeCompare(a.date)),
       forexNews: forexNewsStore,
+      plans: plansStore,
+      contactLinks: contactLinksStore,
       todayEgyptDate: getCurrentEgyptDateString(new Date()),
       endOfDayReport: buildEndOfDayFinalReport(),
       cloudSynced: Boolean(serverFirestoreDb)
@@ -3253,7 +3718,7 @@ async function startServer() {
       totalFinished > 0 ? Math.round((todayDirectWins / totalFinished) * 100) : 100;
 
     // Latest active/recent signal for the robot to alert & auto-execute on Quotex
-    const latestSig = signalsStore[0] || null;
+    const latestSig = getLiveRobotActiveSignal();
     let activeSignalPayload = null;
 
     if (latestSig) {
@@ -4168,6 +4633,382 @@ async function startServer() {
       sentVip,
       error: (sentFree || sentVip) ? undefined : error || 'يرجى التأكد من إدخال توكن البوت ومعرف القناة في إعدادات البوت'
     });
+  });
+
+  // -------------------------------------------------------------
+  // SUBSCRIPTION PLANS & CONTACT/REFERRAL LINKS MANAGEMENT ENDPOINTS
+  // -------------------------------------------------------------
+
+  // Get current platform packages and contact links (Public / Admin)
+  app.get('/api/platform-config', async (_req, res) => {
+    if (!isCloudStateLoaded) {
+      await loadStateFromCloudAndDisk();
+    }
+    res.json({
+      ok: true,
+      plans: plansStore,
+      contactLinks: contactLinksStore
+    });
+  });
+
+  // Save all plans (Admin: bulk update, re-order, or batch edit)
+  app.post('/api/platform-config/plans', async (req, res) => {
+    const { plans } = req.body || {};
+    if (!Array.isArray(plans)) {
+      return res.status(400).json({ ok: false, error: 'قائمة الباقات يجب أن تكون مصفوفة' });
+    }
+    plansStore = plans.map((p: any, idx: number) => ({
+      id: String(p.id || `plan_${Date.now()}_${idx}`).trim(),
+      name: String(p.name || 'باقة جديدة').trim().slice(0, 100),
+      priceUsd: Math.max(0, Number(p.priceUsd) || 0),
+      durationDays: Math.max(1, Number(p.durationDays) || 30),
+      durationLabel: String(p.durationLabel || '/ شهر').trim().slice(0, 50),
+      badge: p.badge ? String(p.badge).trim().slice(0, 50) : undefined,
+      features: Array.isArray(p.features) ? p.features.map((f: any) => String(f).trim()).filter(Boolean) : [],
+      isPopular: Boolean(p.isPopular),
+      isReferralFree: Boolean(p.isReferralFree),
+      enabled: p.enabled !== false,
+      icon: p.icon || 'star',
+      colorTheme: p.colorTheme || 'sky'
+    }));
+
+    await saveState();
+    res.json({ ok: true, plans: plansStore });
+  });
+
+  // Add a new single subscription plan (Admin)
+  app.post('/api/platform-config/plans/add', async (req, res) => {
+    const p = req.body || {};
+    if (!p.name || !String(p.name).trim()) {
+      return res.status(400).json({ ok: false, error: 'مسمى الباقة مطلوب' });
+    }
+    const newId = String(p.id || `plan_${Date.now()}`).trim();
+    const newPlan: SubscriptionPlan = {
+      id: newId,
+      name: String(p.name).trim().slice(0, 100),
+      priceUsd: Math.max(0, Number(p.priceUsd) || 0),
+      durationDays: Math.max(1, Number(p.durationDays) || 30),
+      durationLabel: String(p.durationLabel || (p.durationDays ? `${p.durationDays} يوم` : '/ شهر')).trim().slice(0, 50),
+      badge: p.badge ? String(p.badge).trim().slice(0, 50) : undefined,
+      features: Array.isArray(p.features)
+        ? p.features.map((f: any) => String(f).trim()).filter(Boolean)
+        : typeof p.features === 'string'
+        ? p.features.split('\n').map((s: string) => s.trim()).filter(Boolean)
+        : ['إشارات فريم الدقيقة M1', 'دعم فني مباشر'],
+      isPopular: Boolean(p.isPopular),
+      isReferralFree: Boolean(p.isReferralFree),
+      enabled: p.enabled !== false,
+      icon: p.icon || 'star',
+      colorTheme: p.colorTheme || 'sky'
+    };
+
+    plansStore.push(newPlan);
+    await saveState();
+    res.json({ ok: true, plan: newPlan, plans: plansStore });
+  });
+
+  // Edit / Update an existing plan by ID (Admin)
+  app.put('/api/platform-config/plans/:id', async (req, res) => {
+    const { id } = req.params;
+    let idx = plansStore.findIndex(p => p.id === id);
+    if (idx === -1) {
+      idx = plansStore.findIndex(p => p.id === decodeURIComponent(id));
+    }
+
+    const incoming = req.body || {};
+
+    // If ID was not found, check if a plan with the same name exists
+    if (idx === -1 && incoming.name) {
+      const trimmedTargetName = String(incoming.name).trim().toLowerCase();
+      idx = plansStore.findIndex(p => p.name.trim().toLowerCase() === trimmedTargetName);
+    }
+
+    if (idx === -1) {
+      // Create new plan if it did not exist
+      const newPlan: SubscriptionPlan = {
+        id: String(id || `plan_${Date.now()}`).trim(),
+        name: String(incoming.name || 'باقة جديدة').trim().slice(0, 100),
+        priceUsd: Math.max(0, Number(incoming.priceUsd) || 0),
+        durationDays: Math.max(1, Number(incoming.durationDays) || 30),
+        durationLabel: String(incoming.durationLabel || '/ شهر').trim().slice(0, 50),
+        badge: incoming.badge ? String(incoming.badge).trim().slice(0, 50) : undefined,
+        features: Array.isArray(incoming.features)
+          ? incoming.features.map((f: any) => String(f).trim()).filter(Boolean)
+          : ['إشارات فوركس حية'],
+        isPopular: Boolean(incoming.isPopular),
+        isReferralFree: Boolean(incoming.isReferralFree),
+        enabled: incoming.enabled !== false,
+        icon: incoming.icon || 'star',
+        colorTheme: incoming.colorTheme || 'sky'
+      };
+      plansStore.push(newPlan);
+      await saveState();
+      return res.json({ ok: true, plan: newPlan, plans: plansStore });
+    }
+
+    const current = plansStore[idx];
+
+    plansStore[idx] = {
+      ...current,
+      name: incoming.name !== undefined ? String(incoming.name).trim().slice(0, 100) : current.name,
+      priceUsd: incoming.priceUsd !== undefined ? Math.max(0, Number(incoming.priceUsd) || 0) : current.priceUsd,
+      durationDays: incoming.durationDays !== undefined ? Math.max(1, Number(incoming.durationDays) || 30) : current.durationDays,
+      durationLabel: incoming.durationLabel !== undefined ? String(incoming.durationLabel).trim().slice(0, 50) : current.durationLabel,
+      badge: incoming.badge !== undefined ? String(incoming.badge).trim().slice(0, 50) : current.badge,
+      features: Array.isArray(incoming.features)
+        ? incoming.features.map((f: any) => String(f).trim()).filter(Boolean)
+        : typeof incoming.features === 'string'
+        ? incoming.features.split('\n').map((s: string) => s.trim()).filter(Boolean)
+        : current.features,
+      isPopular: incoming.isPopular !== undefined ? Boolean(incoming.isPopular) : current.isPopular,
+      isReferralFree: incoming.isReferralFree !== undefined ? Boolean(incoming.isReferralFree) : current.isReferralFree,
+      enabled: incoming.enabled !== undefined ? Boolean(incoming.enabled) : current.enabled,
+      icon: incoming.icon || current.icon,
+      colorTheme: incoming.colorTheme || current.colorTheme
+    };
+
+    await saveState();
+    res.json({ ok: true, plan: plansStore[idx], plans: plansStore });
+  });
+
+  // Delete a subscription plan by ID (Admin)
+  app.delete('/api/platform-config/plans/:id', async (req, res) => {
+    const { id } = req.params;
+    let idx = plansStore.findIndex(p => p.id === id);
+    if (idx === -1) {
+      idx = plansStore.findIndex(p => p.id === decodeURIComponent(id));
+    }
+    if (idx !== -1) {
+      plansStore.splice(idx, 1);
+      await saveState();
+    }
+    res.json({ ok: true, plans: plansStore });
+  });
+
+  // Reset subscription plans to system defaults (Admin)
+  app.post('/api/platform-config/reset-plans', async (_req, res) => {
+    plansStore = [...INITIAL_SUBSCRIPTION_PLANS];
+    await saveState();
+    res.json({ ok: true, plans: plansStore });
+  });
+
+  // Save / Update Platform Contact & Referral Links (Admin)
+  app.post('/api/platform-config/contact-links', async (req, res) => {
+    const incoming = req.body || {};
+    contactLinksStore = {
+      ...contactLinksStore,
+      quotexReferralLink:
+        incoming.quotexReferralLink !== undefined
+          ? String(incoming.quotexReferralLink).trim()
+          : contactLinksStore.quotexReferralLink,
+      telegramChannelUrl:
+        incoming.telegramChannelUrl !== undefined
+          ? String(incoming.telegramChannelUrl).trim()
+          : contactLinksStore.telegramChannelUrl,
+      telegramChannelUsername:
+        incoming.telegramChannelUsername !== undefined
+          ? String(incoming.telegramChannelUsername).trim()
+          : contactLinksStore.telegramChannelUsername,
+      telegramVipChannelUrl:
+        incoming.telegramVipChannelUrl !== undefined
+          ? String(incoming.telegramVipChannelUrl).trim()
+          : contactLinksStore.telegramVipChannelUrl,
+      telegramSupportUrl:
+        incoming.telegramSupportUrl !== undefined
+          ? String(incoming.telegramSupportUrl).trim()
+          : contactLinksStore.telegramSupportUrl,
+      whatsappSupportNumber:
+        incoming.whatsappSupportNumber !== undefined
+          ? String(incoming.whatsappSupportNumber).trim()
+          : contactLinksStore.whatsappSupportNumber,
+      supportEmail:
+        incoming.supportEmail !== undefined
+          ? String(incoming.supportEmail).trim()
+          : contactLinksStore.supportEmail,
+      contactNotes:
+        incoming.contactNotes !== undefined
+          ? String(incoming.contactNotes).trim().slice(0, 1500)
+          : contactLinksStore.contactNotes
+    };
+
+    // Keep autoPilot.quotexReferralLink in sync
+    if (contactLinksStore.quotexReferralLink) {
+      autoPilot.quotexReferralLink = contactLinksStore.quotexReferralLink;
+    }
+
+    await saveState();
+    res.json({ ok: true, contactLinks: contactLinksStore });
+  });
+
+  // -------------------------------------------------------------
+  // PAYMENTS & PAYMENT METHODS MANAGEMENT ENDPOINTS
+  // -------------------------------------------------------------
+
+  // Get current payment methods and transaction log
+  app.get('/api/payments/config', async (_req, res) => {
+    if (!isCloudStateLoaded) {
+      await loadStateFromCloudAndDisk();
+    }
+    res.json({
+      ok: true,
+      paymentMethods: paymentMethodsStore,
+      paymentTransactions: paymentTransactionsStore
+    });
+  });
+
+  // Save / Update payment methods (Admin)
+  app.post('/api/payments/methods', async (req, res) => {
+    const { paymentMethods } = req.body || {};
+    if (!Array.isArray(paymentMethods)) {
+      return res.status(400).json({ ok: false, error: 'قائمة وسائل الدفع يجب أن تكون مصفوفة' });
+    }
+    paymentMethodsStore = paymentMethods.map((m: any, idx: number) => ({
+      id: String(m.id || `method_${Date.now()}_${idx}`).trim(),
+      name: String(m.name || 'وسيلة دفع').trim().slice(0, 100),
+      category: m.category || 'other',
+      accountNumber: String(m.accountNumber || '').trim().slice(0, 200),
+      accountHolderName: String(m.accountHolderName || '').trim().slice(0, 100),
+      networkOrBank: String(m.networkOrBank || '').trim().slice(0, 100),
+      instructions: String(m.instructions || '').trim().slice(0, 1000),
+      qrCodeUrl: m.qrCodeUrl || '',
+      minAmountUsd: Math.max(0, Number(m.minAmountUsd) || 0),
+      isActive: m.isActive !== false,
+      supportedCurrencies: Array.isArray(m.supportedCurrencies) ? m.supportedCurrencies : ['USD']
+    }));
+    await saveState();
+    res.json({ ok: true, paymentMethods: paymentMethodsStore });
+  });
+
+  // Submit payment receipt (Member or Admin manual entry)
+  app.post('/api/payments/submit-receipt', async (req, res) => {
+    const {
+      subscriberName,
+      subscriberEmail,
+      subscriberPhone,
+      planId,
+      planName,
+      amount,
+      currency,
+      paymentMethodId,
+      paymentMethodName,
+      transactionReference,
+      receiptImageUrl
+    } = req.body || {};
+
+    if (!subscriberName || !String(subscriberName).trim()) {
+      return res.status(400).json({ ok: false, error: 'اسم المشترك مطلوب' });
+    }
+    if (!transactionReference || !String(transactionReference).trim()) {
+      return res.status(400).json({ ok: false, error: 'رقم العملية أو الحوالة مطلوب' });
+    }
+
+    const newTx: PaymentTransactionRecord = {
+      id: `tx-${Date.now()}`,
+      subscriberName: String(subscriberName).trim(),
+      subscriberEmail: subscriberEmail ? String(subscriberEmail).trim() : undefined,
+      subscriberPhone: subscriberPhone ? String(subscriberPhone).trim() : undefined,
+      planId: planId || 'gold_99',
+      planName: planName || 'الباقة الذهبية (VIP)',
+      amount: Math.max(0, Number(amount) || 0),
+      currency: currency || 'USD',
+      paymentMethodId: paymentMethodId || 'usdt_trc20',
+      paymentMethodName: paymentMethodName || 'وسيلة دفع',
+      transactionReference: String(transactionReference).trim(),
+      receiptImageUrl: receiptImageUrl || '',
+      status: 'PENDING',
+      createdAt: new Date().toISOString()
+    };
+
+    paymentTransactionsStore.unshift(newTx);
+    await saveState();
+
+    // Optionally notify admin via Telegram
+    if (autoPilot.botToken && autoPilot.chatId) {
+      try {
+        const adminTgNotice = `💰 طلب دفع وإيصال جديد قيد المراجعة!\n━━━━━━━━━━━━━━\n👤 العضو: ${newTx.subscriberName}\n📦 الخطة: ${newTx.planName} (${newTx.amount} ${newTx.currency})\n💳 الوسيلة: ${newTx.paymentMethodName}\n🔖 رقم المرجع/الحوالة: ${newTx.transactionReference}\n⏰ التاريخ: ${new Date().toLocaleTimeString('ar-EG')}`;
+        await sendTelegramMessage(autoPilot.botToken, autoPilot.chatId, adminTgNotice);
+      } catch (_e) {}
+    }
+
+    res.json({ ok: true, transaction: newTx });
+  });
+
+  // Review transaction (Approve or Reject)
+  app.post('/api/payments/review-transaction', async (req, res) => {
+    const { transactionId, action, notes } = req.body || {};
+    const tx = paymentTransactionsStore.find(t => t.id === transactionId);
+    if (!tx) {
+      return res.status(404).json({ ok: false, error: 'المعاملة غير موجودة' });
+    }
+
+    if (action === 'APPROVE') {
+      tx.status = 'APPROVED';
+      tx.reviewedAt = new Date().toISOString();
+      tx.adminNotes = notes || 'تم التحقق من التحويل وتفعيل الحساب';
+
+      // Find or activate subscriber
+      const matchedSub = subscribersStore.find(
+        s =>
+          (tx.subscriberPhone && s.phone === tx.subscriberPhone) ||
+          (tx.subscriberEmail && s.email === tx.subscriberEmail) ||
+          s.name.trim().toLowerCase() === tx.subscriberName.trim().toLowerCase()
+      );
+
+      const targetPlan = plansStore.find(p => p.id === tx.planId);
+      const planDurationDays = targetPlan ? targetPlan.durationDays : 30;
+      const newExpiry = new Date(Date.now() + planDurationDays * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .slice(0, 10);
+
+      if (matchedSub) {
+        matchedSub.status = 'ACTIVE';
+        matchedSub.robotEnabled = true;
+        matchedSub.expiryDate = newExpiry;
+        matchedSub.robotExpiryDate = newExpiry;
+        matchedSub.planDuration = targetPlan ? targetPlan.durationLabel : `${planDurationDays} يوم`;
+        matchedSub.paymentMethod = tx.paymentMethodName;
+      } else {
+        // Create new active subscriber
+        const newSubId = `sub-${Date.now()}`;
+        const newSub: VipSubscriber = {
+          id: newSubId,
+          name: tx.subscriberName,
+          telegramUsername: tx.subscriberEmail ? `@${tx.subscriberEmail.split('@')[0]}` : '',
+          country: 'مصر',
+          broker: 'Quotex',
+          brokerAccountId: `QX-${Math.floor(100000 + Math.random() * 900000)}`,
+          email: tx.subscriberEmail || '',
+          phone: tx.subscriberPhone || '',
+          planDuration: targetPlan ? targetPlan.durationLabel : `${planDurationDays} يوم`,
+          amountPaid: tx.amount,
+          paymentMethod: tx.paymentMethodName,
+          status: 'ACTIVE',
+          expiryDate: newExpiry,
+          robotExpiryDate: newExpiry,
+          robotEnabled: true,
+          robotDefaultMode: 'AUTO',
+          robotTradeStake: 5,
+          robotApiKey: generateMemberRobotApiKey(newSubId),
+          messages: [
+            {
+              id: `msg-${Date.now()}`,
+              sender: 'admin',
+              text: `مرحباً بك! تم تفعيل اشتراكك بنجاح عبر سداد ${tx.amount} ${tx.currency} (${tx.paymentMethodName}). مفتاح الروبوت الخاص بك هو جاهز الآن.`,
+              createdAt: new Date().toISOString()
+            }
+          ],
+          createdAt: new Date().toISOString()
+        };
+        subscribersStore.unshift(newSub);
+      }
+    } else if (action === 'REJECT') {
+      tx.status = 'REJECTED';
+      tx.reviewedAt = new Date().toISOString();
+      tx.adminNotes = notes || 'تم رفض المعاملة';
+    }
+
+    await saveState();
+    res.json({ ok: true, transaction: tx, subscribers: subscribersStore });
   });
 
   // Phase 3: Comprehensive Performance Analytics, Testing & Audit Endpoint

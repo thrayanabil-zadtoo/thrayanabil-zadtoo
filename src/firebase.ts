@@ -73,6 +73,119 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
 
 export const SYSTEM_STATE_DOC_PATH = 'system_state';
 export const SYSTEM_STATE_DOC_ID = 'zad_main_state_v1';
+export const PLATFORM_PLANS_DOC_ID = 'platform_plans';
+export const PLATFORM_LINKS_DOC_ID = 'platform_contact_links';
+
+let inMemoryCachedPlans: any[] | null = null;
+let inMemoryCachedLinks: any | null = null;
+
+export async function saveCloudPlans(plans: any[]): Promise<boolean> {
+  const fullPath = `${SYSTEM_STATE_DOC_PATH}/${PLATFORM_PLANS_DOC_ID}`;
+  try {
+    if (!Array.isArray(plans)) return false;
+    inMemoryCachedPlans = plans;
+    const nowIso = new Date().toISOString();
+    const serialized = JSON.stringify(plans);
+    // 1. Write dedicated document
+    await setDoc(doc(db, SYSTEM_STATE_DOC_PATH, PLATFORM_PLANS_DOC_ID), {
+      updatedAt: nowIso,
+      payload: serialized,
+    });
+    // 2. Also try to merge into main state if present
+    try {
+      const snap = await getDoc(doc(db, SYSTEM_STATE_DOC_PATH, SYSTEM_STATE_DOC_ID));
+      if (snap.exists()) {
+        const d = snap.data();
+        if (d?.payload) {
+          const mainState = JSON.parse(d.payload);
+          mainState.plans = plans;
+          mainState.stateUpdatedAt = nowIso;
+          await setDoc(doc(db, SYSTEM_STATE_DOC_PATH, SYSTEM_STATE_DOC_ID), {
+            updatedAt: nowIso,
+            payload: JSON.stringify(mainState),
+          });
+        }
+      }
+    } catch (_ignore) {}
+    return true;
+  } catch (error) {
+    console.warn('[Firebase] Could not save plans to cloud:', error);
+    return false;
+  }
+}
+
+export async function loadCloudPlans<T = any[]>(): Promise<T | null> {
+  const fullPath = `${SYSTEM_STATE_DOC_PATH}/${PLATFORM_PLANS_DOC_ID}`;
+  try {
+    // 1. Try dedicated document first
+    const snap = await getDoc(doc(db, SYSTEM_STATE_DOC_PATH, PLATFORM_PLANS_DOC_ID));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data && typeof data.payload === 'string') {
+        const parsed = JSON.parse(data.payload);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          inMemoryCachedPlans = parsed;
+          return parsed as T;
+        }
+      }
+    }
+    // 2. Fallback to main state document
+    const mainSnap = await getDoc(doc(db, SYSTEM_STATE_DOC_PATH, SYSTEM_STATE_DOC_ID));
+    if (mainSnap.exists()) {
+      const mainData = mainSnap.data();
+      if (mainData && typeof mainData.payload === 'string') {
+        const parsedMain = JSON.parse(mainData.payload);
+        if (Array.isArray(parsedMain.plans) && parsedMain.plans.length > 0) {
+          inMemoryCachedPlans = parsedMain.plans;
+          return parsedMain.plans as T;
+        }
+      }
+    }
+    return inMemoryCachedPlans as T | null;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, fullPath);
+    return inMemoryCachedPlans as T | null;
+  }
+}
+
+export async function saveCloudContactLinks(links: any): Promise<boolean> {
+  const fullPath = `${SYSTEM_STATE_DOC_PATH}/${PLATFORM_LINKS_DOC_ID}`;
+  try {
+    if (!links || typeof links !== 'object') return false;
+    inMemoryCachedLinks = links;
+    const nowIso = new Date().toISOString();
+    const serialized = JSON.stringify(links);
+    await setDoc(doc(db, SYSTEM_STATE_DOC_PATH, PLATFORM_LINKS_DOC_ID), {
+      updatedAt: nowIso,
+      payload: serialized,
+    });
+    return true;
+  } catch (error) {
+    console.warn('[Firebase] Could not save links to cloud:', error);
+    return false;
+  }
+}
+
+export async function loadCloudContactLinks<T = any>(): Promise<T | null> {
+  const fullPath = `${SYSTEM_STATE_DOC_PATH}/${PLATFORM_LINKS_DOC_ID}`;
+  try {
+    const snap = await getDoc(doc(db, SYSTEM_STATE_DOC_PATH, PLATFORM_LINKS_DOC_ID));
+    if (snap.exists()) {
+      const data = snap.data();
+      if (data && typeof data.payload === 'string') {
+        const parsed = JSON.parse(data.payload);
+        if (parsed && typeof parsed === 'object') {
+          inMemoryCachedLinks = parsed;
+          return parsed as T;
+        }
+      }
+    }
+    return inMemoryCachedLinks as T | null;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, fullPath);
+    return inMemoryCachedLinks as T | null;
+  }
+}
 
 export async function saveCloudSystemState(payloadObj: any): Promise<boolean> {
   const fullPath = `${SYSTEM_STATE_DOC_PATH}/${SYSTEM_STATE_DOC_ID}`;
@@ -109,6 +222,24 @@ export async function saveCloudSystemState(payloadObj: any): Promise<boolean> {
       }
       sanitizedObj.quickNotes = [];
       sanitizedObj.stateUpdatedAt = nowIso;
+
+      // CRITICAL PRESERVATION: If plans or contactLinks are not passed in this partial update,
+      // preserve them from memory cache or from existing document so they are never wiped!
+      if (!Array.isArray(sanitizedObj.plans) || sanitizedObj.plans.length === 0) {
+        if (inMemoryCachedPlans && inMemoryCachedPlans.length > 0) {
+          sanitizedObj.plans = inMemoryCachedPlans;
+        }
+      } else {
+        inMemoryCachedPlans = sanitizedObj.plans;
+      }
+
+      if (!sanitizedObj.contactLinks) {
+        if (inMemoryCachedLinks) {
+          sanitizedObj.contactLinks = inMemoryCachedLinks;
+        }
+      } else {
+        inMemoryCachedLinks = sanitizedObj.contactLinks;
+      }
     }
     const serialized = JSON.stringify(sanitizedObj);
     if (serialized.length > 495000) return false;
@@ -130,7 +261,14 @@ export async function loadCloudSystemState<T = any>(): Promise<T | null> {
     if (snap.exists()) {
       const data = snap.data();
       if (data && typeof data.payload === 'string') {
-        return JSON.parse(data.payload) as T;
+        const parsed = JSON.parse(data.payload) as any;
+        if (parsed?.plans && Array.isArray(parsed.plans)) {
+          inMemoryCachedPlans = parsed.plans;
+        }
+        if (parsed?.contactLinks) {
+          inMemoryCachedLinks = parsed.contactLinks;
+        }
+        return parsed as T;
       }
     }
     return null;

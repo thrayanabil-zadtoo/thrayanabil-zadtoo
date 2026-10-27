@@ -54,7 +54,7 @@ import {
   DEFAULT_CUSTOM_TEMPLATE,
   FormatterOptions
 } from './utils/signalParser';
-import { loadCloudSystemState, saveCloudSystemState } from './firebase';
+import { loadCloudSystemState, saveCloudSystemState, saveCloudPlans, saveCloudContactLinks } from './firebase';
 import QuotexRobotAdminPage, { QuotexRobotSettings } from './components/QuotexRobotAdminPage';
 import FloatingRobotVisitorBanner from './components/FloatingRobotVisitorBanner';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -66,6 +66,13 @@ import { ZadtooMembershipsPage } from './components/ZadtooMembershipsPage';
 import { ZadtooAdminDashboard } from './components/ZadtooAdminDashboard';
 import { ZadtooAboutContactModal } from './components/ZadtooAboutContactModal';
 import { ZadtooForexNewsPage } from './components/ZadtooForexNewsPage';
+import { ZadtooPlansAndLinksManager } from './components/ZadtooPlansAndLinksManager';
+import {
+  SubscriptionPlan,
+  PlatformContactLinks,
+  INITIAL_SUBSCRIPTION_PLANS,
+  INITIAL_CONTACT_LINKS
+} from './types/platformConfig';
 
 export interface SubscriberMessage {
   id: string;
@@ -358,7 +365,27 @@ export default function App() {
 
   const [visitorFilter, setVisitorFilter] = useState<'ALL' | 'WIN' | 'PENDING'>('ALL');
   const [visitorSimStake, setVisitorSimStake] = useState<number>(5);
-  const [adminSectionTab, setAdminSectionTab] = useState<'all' | 'autopilot' | 'studio' | 'signals' | 'vip'>('all');
+  const [adminSectionTab, setAdminSectionTab] = useState<'all' | 'autopilot' | 'studio' | 'signals' | 'vip' | 'plans'>('all');
+  const [platformPlans, setPlatformPlans] = useState<SubscriptionPlan[]>(() => {
+    try {
+      const saved = localStorage.getItem('zad_platform_plans');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (_e) {}
+    return INITIAL_SUBSCRIPTION_PLANS;
+  });
+  const [platformContactLinks, setPlatformContactLinks] = useState<PlatformContactLinks>(() => {
+    try {
+      const saved = localStorage.getItem('zad_platform_contact_links');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    } catch (_e) {}
+    return INITIAL_CONTACT_LINKS;
+  });
   const [adminSubSearch, setAdminSubSearch] = useState<string>('');
   const [adminSubStatusFilter, setAdminSubStatusFilter] = useState<'ALL' | 'ACTIVE' | 'PENDING' | 'BANNED'>('ALL');
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -612,6 +639,18 @@ export default function App() {
       }
       if (data.dailyStats && Array.isArray(data.dailyStats)) {
         setDailyStats(data.dailyStats);
+      }
+      if (data.plans && Array.isArray(data.plans) && data.plans.length > 0) {
+        setPlatformPlans(data.plans);
+        try {
+          localStorage.setItem('zad_platform_plans', JSON.stringify(data.plans));
+        } catch (_e) {}
+      }
+      if (data.contactLinks) {
+        setPlatformContactLinks(data.contactLinks);
+        try {
+          localStorage.setItem('zad_platform_contact_links', JSON.stringify(data.contactLinks));
+        } catch (_e) {}
       }
       if (data.robotSettings) {
         setRobotSettings(prev => ({
@@ -2543,7 +2582,7 @@ export default function App() {
           onExploreSignals={() => setZadtooTab('signals')}
           onExploreAutoTrade={() => setZadtooTab('autotrade')}
           onExploreNews={() => setZadtooTab('news')}
-          telegramChannelLink="https://t.me/ZadNBFX"
+          telegramChannelLink={platformContactLinks.telegramChannelUrl}
         />
       )}
 
@@ -2579,7 +2618,7 @@ export default function App() {
               : 78
           }
           m1Count={12}
-          telegramLink="https://t.me/ZadNBFX"
+          telegramLink={platformContactLinks.telegramChannelUrl}
         />
       )}
 
@@ -2602,7 +2641,9 @@ export default function App() {
             setRegPlanDuration(planId);
             setShowRegisterModal(true);
           }}
-          telegramLink="https://t.me/ZadNBFX"
+          plans={platformPlans}
+          contactLinks={platformContactLinks}
+          telegramLink={platformContactLinks.telegramChannelUrl}
         />
       )}
 
@@ -2664,6 +2705,18 @@ export default function App() {
               onSaveAutoPilot={handleSaveAutoPilot}
               onAddCustomPair={handleAddCustomPair}
               onRemoveCustomPair={handleRemoveCustomPair}
+              plans={platformPlans}
+              contactLinks={platformContactLinks}
+              onConfigChanged={(newPlans, newLinks) => {
+                setPlatformPlans(newPlans);
+                setPlatformContactLinks(newLinks);
+                try {
+                  localStorage.setItem('zad_platform_plans', JSON.stringify(newPlans));
+                  localStorage.setItem('zad_platform_contact_links', JSON.stringify(newLinks));
+                } catch (_e) {}
+                saveCloudPlans(newPlans).catch(() => {});
+                saveCloudContactLinks(newLinks).catch(() => {});
+              }}
             />
           ) : (
             <div className="max-w-[1240px] mx-auto px-4 pt-4">
@@ -2787,19 +2840,20 @@ export default function App() {
                     { id: 'autopilot', label: '01. القناص والبوتات' },
                     { id: 'studio', label: '02-03. استوديو القالب' },
                     { id: 'signals', label: `04. سجل اليوم (${todaySignals.length})` },
-                    { id: 'vip', label: `05. أعضاء VIP (${subscribers.length})` }
+                    { id: 'vip', label: `05. أعضاء VIP (${subscribers.length})` },
+                    { id: 'plans', label: `06. الباقات والروابط 👑` }
                   ].map((tab) => (
                     <button
                       key={tab.id}
                       type="button"
                       onClick={() =>
                         setAdminSectionTab(
-                          tab.id as 'all' | 'autopilot' | 'studio' | 'signals' | 'vip'
+                          tab.id as 'all' | 'autopilot' | 'studio' | 'signals' | 'vip' | 'plans'
                         )
                       }
                       className={`px-2.5 py-1.5 rounded-md font-bold transition-colors cursor-pointer whitespace-nowrap ${
                         adminSectionTab === tab.id
-                          ? 'bg-emerald-500 text-slate-950'
+                          ? 'bg-amber-400 text-slate-950 font-black'
                           : 'text-slate-400 hover:text-white'
                       }`}
                     >
@@ -5618,6 +5672,26 @@ export default function App() {
                 )}
               </div>
             </section>
+            )}
+
+            {/* SECTION 06: DYNAMIC SUBSCRIPTION PLANS & REFERRAL/CONTACT LINKS */}
+            {(adminSectionTab === 'all' || adminSectionTab === 'plans') && (
+              <section className="p-6 bg-slate-900/90 border border-slate-800 rounded-xl space-y-6">
+                <div className="flex items-center gap-2 pb-3 border-b border-slate-800">
+                  <Crown className="w-5 h-5 text-amber-400" />
+                  <h2 className="text-lg font-bold text-white">
+                    06. إدارة الباقات والمسميات والأسعار وروابط التواصل والإحالة
+                  </h2>
+                </div>
+                <ZadtooPlansAndLinksManager
+                  initialPlans={platformPlans}
+                  initialContactLinks={platformContactLinks}
+                  onConfigChanged={(p, c) => {
+                    setPlatformPlans(p);
+                    setPlatformContactLinks(c);
+                  }}
+                />
+              </section>
             )}
           </div>
         ) : activeView === 'robot' ? (
@@ -9590,7 +9664,8 @@ export default function App() {
       <ZadtooAboutContactModal
         type={aboutContactType}
         onClose={() => setAboutContactType(null)}
-        telegramLink="https://t.me/ZadNBFX"
+        telegramLink={platformContactLinks.telegramChannelUrl}
+        contactLinks={platformContactLinks}
       />
     </div>
   );

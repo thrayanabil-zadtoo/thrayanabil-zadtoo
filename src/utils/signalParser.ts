@@ -10,6 +10,8 @@ export interface ParsedSignal {
   livePrice?: string;
   rsiValue?: number;
   analysisReason?: string;
+  superTrend?: string;
+  fractalPattern?: string;
 }
 
 export interface FormatterOptions {
@@ -27,10 +29,13 @@ export interface FormatterOptions {
 
 export const DEFAULT_CUSTOM_TEMPLATE = `✨ {العنوان} ✨
 ━━━━━━━━━━━━━━
-📊 الزوج: {الزوج}
+📊 الزوج: {الزوج_كامل}
 ⏱ المدة: {المدة}
 ⏰ وقت الدخول: الدقيقة :{الدقيقة} (حسب ساعة جهازك)
 {الاتجاه}
+📈 السعر: {السعر} | مؤشر RSI (9): {RSI}
+🧭 سوبر تريند: {السوبر_تريند}
+📐 الفركتال: {الفركتال}
 ━━━━━━━━━━━━━━
 📢 قناتنا المجانية: @ZadNBFX
 {التوقيع}`;
@@ -82,6 +87,14 @@ export function convertEditedMessageToCustomPattern(
 
   if (parsed.rsiValue !== undefined && pattern.includes(`RSI: ${parsed.rsiValue}`)) {
     pattern = pattern.split(`RSI: ${parsed.rsiValue}`).join('RSI: {RSI}');
+  }
+
+  if (parsed.superTrend && pattern.includes(parsed.superTrend)) {
+    pattern = pattern.split(parsed.superTrend).join('{السوبر_تريند}');
+  }
+
+  if (parsed.fractalPattern && pattern.includes(parsed.fractalPattern)) {
+    pattern = pattern.split(parsed.fractalPattern).join('{الفركتال}');
   }
 
   if (parsed.analysisReason && pattern.includes(parsed.analysisReason)) {
@@ -257,7 +270,7 @@ export function formatSignalMessage(parsed: ParsedSignal, options: FormatterOpti
 
   const liveDetailsLine =
     showAnalysis && parsed.livePrice
-      ? `\n📈 السعر الحالي: ${parsed.livePrice}${parsed.rsiValue !== undefined ? ` | مؤشر RSI: ${parsed.rsiValue}` : ''}`
+      ? `\n📈 السعر: ${parsed.livePrice}${parsed.rsiValue !== undefined ? ` | مؤشر RSI (9): ${parsed.rsiValue}` : ''}${parsed.superTrend ? `\n🧭 سوبر تريند: ${parsed.superTrend}` : ''}${parsed.fractalPattern ? `\n📐 الفركتال: ${parsed.fractalPattern}` : ''}`
       : '';
 
   const reasonLine =
@@ -279,6 +292,8 @@ export function formatSignalMessage(parsed: ParsedSignal, options: FormatterOpti
       .replace(/\{الاتجاه_مختصر\}/g, directionShort)
       .replace(/\{السعر\}/g, parsed.livePrice || '')
       .replace(/\{RSI\}/g, parsed.rsiValue !== undefined ? String(parsed.rsiValue) : '')
+      .replace(/\{السوبر_تريند\}/g, parsed.superTrend || '')
+      .replace(/\{الفركتال\}/g, parsed.fractalPattern || '')
       .replace(/\{السبب\}/g, parsed.analysisReason || '')
       .replace(/\{التوقيع\}/g, options.channelSignature || '');
   } else if (options.templateStyle === 'elegant') {

@@ -389,16 +389,23 @@ export default function QuotexRobotAdminPage({
         playRobotAlertSound('open');
         setSimAutoTradeStatus('TRADE_OPENED');
         setSimAlertBanner(
-          `🚀 حان وقت الصفقة (${targetMin})! فتح الروبوت صفقة ${
+          `🚀 تم فتح صفقة ${
             targetDir === 'CALL' ? 'صعود CALL 🟢' : 'هبوط PUT 🔴'
-          } تلقائياً على ${targetPair} بقيمة $${widgetStakeUsd} (0 مضاعفات)`
+          } تلقائياً على ${targetPair} بقيمة $${widgetStakeUsd} — الصفقة جارية الآن طوال فترة فتحها!`
         );
-        setSimCountdownSec(0);
-        // بعد انتهاء الصفقة: لا تظهر الصفقة المنتهية بل تعود فوراً لحالة انتظار إشارة بنقاط متحركة
-        setTimeout(() => {
-          setSimAutoTradeStatus('IDLE');
-          setSimAlertBanner(null);
-        }, 5000);
+        setSimCountdownSec(60);
+        let s = 60;
+        const tick = setInterval(() => {
+          s -= 6;
+          if (s <= 0) {
+            clearInterval(tick);
+            setSimAutoTradeStatus('IDLE');
+            setSimAlertBanner(null);
+            setSimCountdownSec(0);
+          } else {
+            setSimCountdownSec(s);
+          }
+        }, 1000);
       } else {
         setSimAlertBanner(
           `✋ الوضع اليدوي مفعل: الزوج (${targetPair}) والصلاحية جاهزان — اضغط زر الصعود أو الهبوط للتنفيذ`
@@ -1222,7 +1229,32 @@ export default function QuotexRobotAdminPage({
                           </span>
                         </div>
 
-                        {latestSignal && latestSignal.status === 'PENDING' ? (
+                        {simAutoTradeStatus === 'TRADE_OPENED' ? (
+                          <div className="p-3 bg-gradient-to-br from-emerald-950 via-[#022c22] to-slate-900 border-2 border-emerald-500 rounded-xl space-y-2 text-center shadow-[0_0_20px_rgba(16,185,129,0.35)]">
+                            <div className="flex items-center justify-between">
+                              <span className="text-emerald-300 font-extrabold text-xs flex items-center gap-1.5">
+                                <span className="text-base animate-pulse">⚡</span>
+                                <span>الصفقة جارية الآن في المنصة</span>
+                              </span>
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                M1 (60 ثانية)
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between bg-black/40 px-2.5 py-1 rounded-lg text-[11px]">
+                              <span className="text-slate-400">🎯 الزوج: <b className="text-sky-400 font-mono">{simQuotexPair}</b></span>
+                              <span className="text-slate-300">الصلاحية: <b>60 ثانية</b></span>
+                            </div>
+                            <div className="p-2 bg-[#022c22] border border-emerald-500/50 rounded-lg">
+                              <div className="text-[10.5px] text-emerald-200">⏳ متبقي على انتهاء الصفقة:</div>
+                              <div className="text-base font-black font-mono-num text-amber-300">
+                                {simCountdownSec > 0 ? `${simCountdownSec} ثانية` : 'الصفقة مفتوحة (جارية الآن)'}
+                              </div>
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              📊 الصفقة مفتوحة في حسابك — بانتظار إغلاق الشمعة بالثانية
+                            </div>
+                          </div>
+                        ) : latestSignal && latestSignal.status === 'PENDING' ? (
                           <div className="space-y-1.5 pt-1">
                             <div className="flex items-center justify-between">
                               <div>
@@ -1233,7 +1265,7 @@ export default function QuotexRobotAdminPage({
                                   </span>
                                 </div>
                                 <div className="text-[10px] text-slate-400">
-                                  الصلاحية: M1 (دقيقة واحدة) | الدخول: {latestSignal.entryTime}
+                                  نقطة الدخول: ثانية :00 (افتتاح الشمعة) | الصلاحية: 60 ثانية
                                 </div>
                               </div>
                               <span
@@ -1248,7 +1280,7 @@ export default function QuotexRobotAdminPage({
                             </div>
 
                             <div className="text-[10.5px] font-bold text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 rounded-md py-1 text-center">
-                              🎯 إشارة مؤكدة على ({latestSignal.asset}) — جاهز للتنفيذ ({widgetMode === 'AUTO' ? 'آلياً بالثانية' : 'يدوياً'})
+                              🎯 إشارة مؤكدة على ({latestSignal.asset}) — جاهز للتنفيذ ({widgetMode === 'AUTO' ? 'آلياً' : 'يدوياً'}) عند ثانية :00
                             </div>
                           </div>
                         ) : !isGlobalMarketOpen ? (
@@ -1260,10 +1292,15 @@ export default function QuotexRobotAdminPage({
                             <p className="text-[10px] text-slate-400">السوق العالمي في عطلة أسبوعية حالياً</p>
                           </div>
                         ) : (
-                          <div className="p-3 bg-[#09121d] rounded-xl border border-slate-800 text-xs text-slate-300 flex items-center justify-center">
-                            <div className="flex items-center gap-2 text-sky-300 font-bold text-sm">
-                              <span>📡</span>
-                              <span>بانتظار إشارة...</span>
+                          <div className="p-3 bg-[#09121d] rounded-xl border border-amber-500/40 text-xs text-slate-300 space-y-1.5 text-center">
+                            <div className="flex items-center justify-center gap-2 text-amber-300 font-bold text-sm">
+                              <span>⏸️</span>
+                              <span>وضع الانتظار (WAIT)</span>
+                            </div>
+                            <p className="text-[10px] text-slate-400">جاري مسح السوق للشمعة القادمة — لن يتم تكرار الإشارة فوراً</p>
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#061b2d] border border-sky-500/40 text-[11px] font-mono-num text-sky-300">
+                              <span>⏳ اكتمال الشمعة:</span>
+                              <b className="text-sky-400 font-bold">{60 - (new Date().getSeconds())} ثانية</b>
                             </div>
                           </div>
                         )}
