@@ -550,9 +550,18 @@ export default function App() {
     totalAutoSent: 0,
     lastError: null,
     marketOpenStatus: true,
-    pairSelectionMode: 'fixed_single',
-    primaryFixedPair: 'EUR/JPY',
-    allowedPairs: ['EUR/JPY'],
+    pairSelectionMode: ((localStorage.getItem('tg_pair_selection_mode') as any) || 'custom_list'),
+    primaryFixedPair: localStorage.getItem('tg_primary_fixed_pair') || 'EUR/JPY',
+    allowedPairs: (() => {
+      try {
+        const stored = localStorage.getItem('tg_allowed_pairs');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch (_e) {}
+      return ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'];
+    })(),
     customPairsList: ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP']
   });
   const [newCustomPairInput, setNewCustomPairInput] = useState<string>('');
@@ -686,6 +695,15 @@ export default function App() {
         if (typeof data.autopilot.oneGaleEnabled === 'boolean') {
           localStorage.setItem('tg_one_gale_enabled', String(data.autopilot.oneGaleEnabled));
         }
+        if (data.autopilot.pairSelectionMode) {
+          localStorage.setItem('tg_pair_selection_mode', data.autopilot.pairSelectionMode);
+        }
+        if (data.autopilot.primaryFixedPair) {
+          localStorage.setItem('tg_primary_fixed_pair', data.autopilot.primaryFixedPair);
+        }
+        if (Array.isArray(data.autopilot.allowedPairs) && data.autopilot.allowedPairs.length > 0) {
+          localStorage.setItem('tg_allowed_pairs', JSON.stringify(data.autopilot.allowedPairs));
+        }
 
         const incomingQxLink = data.autopilot.quotexReferralLink;
         const resolvedQxLink =
@@ -696,6 +714,9 @@ export default function App() {
         setAutoPilot(prev => ({
           ...prev,
           ...data.autopilot,
+          pairSelectionMode: data.autopilot.pairSelectionMode || prev.pairSelectionMode || 'custom_list',
+          primaryFixedPair: data.autopilot.primaryFixedPair || prev.primaryFixedPair || 'EUR/JPY',
+          allowedPairs: Array.isArray(data.autopilot.allowedPairs) && data.autopilot.allowedPairs.length > 0 ? data.autopilot.allowedPairs : prev.allowedPairs,
           quotexReferralLink: resolvedQxLink,
           botToken: resolvedToken || prev.botToken,
           chatId: resolvedChat || prev.chatId,
@@ -1461,6 +1482,15 @@ export default function App() {
     }
     if (merged.resultNotificationStyle !== undefined) {
       safeSet('tg_result_notification_style', merged.resultNotificationStyle);
+    }
+    if (merged.pairSelectionMode !== undefined) {
+      safeSet('tg_pair_selection_mode', merged.pairSelectionMode);
+    }
+    if (merged.primaryFixedPair !== undefined) {
+      safeSet('tg_primary_fixed_pair', merged.primaryFixedPair);
+    }
+    if (Array.isArray(merged.allowedPairs) && merged.allowedPairs.length > 0) {
+      safeSet('tg_allowed_pairs', JSON.stringify(merged.allowedPairs));
     }
 
     try {
@@ -3845,9 +3875,21 @@ export default function App() {
                     <label className="text-xs font-bold text-slate-200">
                       قائمة الأزواج المتاحة (حدد الأزواج التي تريد تفعيلها، أو أضف زوجاً جديداً):
                     </label>
-                    <span className="text-[11px] text-slate-400">
-                      المفعلة: {(autoPilot.allowedPairs || []).length} زوج
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleSaveAutoPilot({
+                          allowedPairs: ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'],
+                          pairSelectionMode: 'custom_list'
+                        })}
+                        className="px-2.5 py-1 bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 border border-emerald-500/50 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1 shadow-xs"
+                      >
+                        <span>⚡ تفعيل الـ 6 أزواج الأساسية</span>
+                      </button>
+                      <span className="text-[11px] text-slate-400">
+                        المفعلة: {(autoPilot.allowedPairs || []).length} زوج
+                      </span>
+                    </div>
                   </div>
 
                   {/* List of pairs with toggle checkbox and delete button */}
@@ -3874,7 +3916,10 @@ export default function App() {
                                 const next = e.target.checked
                                   ? [...current, pair]
                                   : current.filter(p => p !== pair);
-                                handleSaveAutoPilot({ allowedPairs: next.length > 0 ? next : [pair] });
+                                handleSaveAutoPilot({
+                                  allowedPairs: next.length > 0 ? next : [pair],
+                                  pairSelectionMode: 'custom_list'
+                                });
                               }}
                               className="accent-emerald-500 rounded"
                             />

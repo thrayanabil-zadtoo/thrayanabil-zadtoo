@@ -1,6 +1,107 @@
 {
-  "stateUpdatedAt": "2026-10-27T08:31:06.585Z",
-  "signals": [],
+  "stateUpdatedAt": "2026-10-28T07:55:14.223Z",
+  "signals": [
+    {
+      "id": "sig-1793173920",
+      "asset": "EUR/JPY",
+      "isOtc": false,
+      "direction": "CALL",
+      "timeframe": "1 دقيقة (M1)",
+      "entryMinute": "52",
+      "entryTime": ":52",
+      "targetEntryTimestamp": 1793173920,
+      "payout": "السوق العالمي",
+      "livePrice": "175.536",
+      "rsiValue": 31,
+      "analysisReason": "أقوى فرصة متاحة حالياً في السوق العالمي (RSI 31 - ميل صعودي)",
+      "entryPriceNumeric": 175.53599548339844,
+      "qualityScore": 80,
+      "reversalPattern": "🔴 ارتداد من خط اتجاه هابط مائل (Trendline Resistance) عند 175.579",
+      "supportResistanceText": "🔴 ارتداد من خط اتجاه هابط مائل (Trendline Resistance) عند 175.579",
+      "confluenceText": "سوبر تريند انقلاب هابط (أحمر)",
+      "formattedMessage": "✨ نَبض التداول | السوق العالمي ✨\n━━━━━━━━━━━━━━\n📊 الزوج: EUR/JPY (السوق العالمي 🌍)\n⏱ المدة: 1 دقيقة (M1)\n⏰ وقت الدخول: الدقيقة :52 (حسب ساعة جهازك)\n🟢 الاتجاه: صعود (شراء ⬆️)\n📈 السعر: 175.536 | مؤشر RSI (9): 31\n🧭 سوبر تريند: 🔴 هابط (175.60321)\n📐 الفركتال: لا يوجد نموذج فركتال نشط\n🧱 الدعم والمقاومة: 🔴 ارتداد من خط اتجاه هابط مائل (Trendline Resistance) عند 175.579\n🎯 سبب الدخول: أقوى فرصة متاحة حالياً في السوق العالمي (RSI 31 - ميل صعودي)\n━━━━━━━━━━━━━━\n📢 قناتنا المجانية: @ZadNBFX\n💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n✅ ربح",
+      "status": "WIN",
+      "createdAt": "2026-10-28T07:51:25.179Z",
+      "resultSent": true,
+      "autoSent": true,
+      "telegramMessageId": 1849
+    },
+    {
+      "id": "sig-1793173020",
+      "asset": "USD/CAD",
+      "isOtc": false,
+      "direction": "CALL",
+      "timeframe": "1 دقيقة (M1)",
+      "entryMinute": "37",
+      "entryTime": ":37",
+      "targetEntryTimestamp": 1793173020,
+      "payout": "السوق العالمي",
+      "livePrice": "1.40575",
+      "rsiValue": 44.5,
+      "analysisReason": "🟢 ارتداد من خط اتجاه صاعد مائل (Trendline Support) عند 1.40590 [شرط أساسي محقق ✅] + توافق (2 من 3 مؤشرات: سوبر تريند صاعد (أخضر) + ميل صعودي RSI(44.5))",
+      "entryPriceNumeric": 1.405750036239624,
+      "qualityScore": 80,
+      "reversalPattern": "🟢 ارتداد من خط اتجاه صاعد مائل (Trendline Support) عند 1.40590",
+      "supportResistanceText": "🟢 ارتداد من خط اتجاه صاعد مائل (Trendline Support) عند 1.40590",
+      "confluenceText": "سوبر تريند صاعد (أخضر) + ميل صعودي RSI(44.5)",
+      "formattedMessage": "✨ نَبض التداول | السوق العالمي ✨\n━━━━━━━━━━━━━━\n📊 الزوج: USD/CAD (السوق العالمي 🌍)\n⏱ المدة: 1 دقيقة (M1)\n⏰ وقت الدخول: الدقيقة :37 (حسب ساعة جهازك)\n🟢 الاتجاه: صعود (شراء ⬆️)\n📈 السعر: 1.40575 | مؤشر RSI (9): 44.5\n🧭 سوبر تريند: 🟢 صاعد (1.40539)\n📐 الفركتال: لا يوجد نموذج فركتال نشط\n🧱 الدعم والمقاومة: 🟢 ارتداد من خط اتجاه صاعد مائل (Trendline Support) عند 1.40590\n🎯 سبب الدخول: 🟢 ارتداد من خط اتجاه صاعد مائل (Trendline Support) عند 1.40590 [شرط أساسي محقق ✅] + توافق (2 من 3 مؤشرات: سوبر تريند صاعد (أخضر) + ميل صعودي RSI(44.5))\n━━━━━━━━━━━━━━\n📢 قناتنا المجانية: @ZadNBFX\n💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n✅ ربح",
+      "status": "WIN",
+      "createdAt": "2026-10-28T07:35:55.124Z",
+      "resultSent": true,
+      "autoSent": true,
+      "telegramMessageId": 1846
+    },
+    {
+      "id": "sig-1793172060",
+      "asset": "EUR/JPY",
+      "isOtc": false,
+      "direction": "PUT",
+      "timeframe": "1 دقيقة (M1)",
+      "entryMinute": "21",
+      "entryTime": ":21",
+      "targetEntryTimestamp": 1793172060,
+      "payout": "السوق العالمي",
+      "livePrice": "175.598",
+      "rsiValue": 64.1,
+      "analysisReason": "أقوى فرصة متاحة حالياً في السوق العالمي (RSI 64.1 - ميل هبوطي)",
+      "entryPriceNumeric": 175.59800720214844,
+      "qualityScore": 80,
+      "reversalPattern": "🟢 ارتداد من خط اتجاه صاعد مائل (Trendline Support) عند 175.574",
+      "supportResistanceText": "🟢 ارتداد من خط اتجاه صاعد مائل (Trendline Support) عند 175.574",
+      "confluenceText": "ميل هبوطي RSI(64.1)",
+      "formattedMessage": "✨ نَبض التداول | السوق العالمي ✨\n━━━━━━━━━━━━━━\n📊 الزوج: EUR/JPY (السوق العالمي 🌍)\n⏱ المدة: 1 دقيقة (M1)\n⏰ وقت الدخول: الدقيقة :21 (حسب ساعة جهازك)\n🔴 الاتجاه: هبوط (بيع ⬇️)\n📈 السعر: 175.598 | مؤشر RSI (9): 64.1\n🧭 سوبر تريند: 🟢 صاعد (175.53581)\n📐 الفركتال: لا يوجد نموذج فركتال نشط\n🧱 الدعم والمقاومة: 🟢 ارتداد من خط اتجاه صاعد مائل (Trendline Support) عند 175.574\n🎯 سبب الدخول: أقوى فرصة متاحة حالياً في السوق العالمي (RSI 64.1 - ميل هبوطي)\n━━━━━━━━━━━━━━\n📢 قناتنا المجانية: @ZadNBFX\n💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n❌",
+      "status": "LOSS",
+      "createdAt": "2026-10-28T07:20:28.729Z",
+      "resultSent": true,
+      "autoSent": true,
+      "telegramMessageId": 1844
+    },
+    {
+      "id": "sig-1793170860",
+      "asset": "EUR/JPY",
+      "isOtc": false,
+      "direction": "PUT",
+      "timeframe": "1 دقيقة (M1)",
+      "entryMinute": "01",
+      "entryTime": ":01",
+      "targetEntryTimestamp": 1793170860,
+      "payout": "السوق العالمي",
+      "livePrice": "175.545",
+      "rsiValue": 57.5,
+      "analysisReason": "أقوى فرصة متاحة حالياً في السوق العالمي (RSI 57.5 - ميل هبوطي)",
+      "entryPriceNumeric": 175.5449981689453,
+      "qualityScore": 80,
+      "reversalPattern": "🟢 ارتداد من خط اتجاه صاعد مائل (Trendline Support) عند 175.512",
+      "supportResistanceText": "🟢 ارتداد من خط اتجاه صاعد مائل (Trendline Support) عند 175.512",
+      "confluenceText": "سوبر تريند هابط (أحمر) + ميل هبوطي RSI(57.5)",
+      "formattedMessage": "✨ نَبض التداول | السوق العالمي ✨\n━━━━━━━━━━━━━━\n📊 الزوج: EUR/JPY (السوق العالمي 🌍)\n⏱ المدة: 1 دقيقة (M1)\n⏰ وقت الدخول: الدقيقة :01 (حسب ساعة جهازك)\n🔴 الاتجاه: هبوط (بيع ⬇️)\n📈 السعر: 175.545 | مؤشر RSI (9): 57.5\n🧭 سوبر تريند: 🔴 هابط (175.56595)\n📐 الفركتال: لا يوجد نموذج فركتال نشط\n🧱 الدعم والمقاومة: 🟢 ارتداد من خط اتجاه صاعد مائل (Trendline Support) عند 175.512\n🎯 سبب الدخول: أقوى فرصة متاحة حالياً في السوق العالمي (RSI 57.5 - ميل هبوطي)\n━━━━━━━━━━━━━━\n📢 قناتنا المجانية: @ZadNBFX\n💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n✅ ربح",
+      "status": "WIN",
+      "createdAt": "2026-10-28T07:00:21.943Z",
+      "resultSent": true,
+      "autoSent": true,
+      "telegramMessageId": 1842
+    }
+  ],
   "settings": {
     "sourceChannel": "LIVE_GLOBAL_FOREX",
     "channelTitle": "نَبض التداول | السوق العالمي",
@@ -26,7 +127,7 @@
     ]
   },
   "autopilot": {
-    "enabled": false,
+    "enabled": true,
     "freeBotEnabled": true,
     "botToken": "8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U",
     "chatId": "@ZadNBFX",
@@ -65,16 +166,21 @@
     "autoWinNotification": true,
     "resultNotificationStyle": "emoji_size",
     "autoDailyReportEnabled": true,
-    "lastDailyReportSentDate": "",
-    "lastRunAt": null,
-    "nextRunAt": null,
-    "totalAutoSent": 0,
+    "lastDailyReportSentDate": "2026-10-27",
+    "lastRunAt": "2026-10-28T07:51:25.279Z",
+    "nextRunAt": "2026-10-28T08:06:25.279Z",
+    "totalAutoSent": 4,
     "lastError": null,
     "marketOpenStatus": true,
-    "pairSelectionMode": "fixed_single",
+    "pairSelectionMode": "custom_list",
     "primaryFixedPair": "EUR/JPY",
     "allowedPairs": [
-      "EUR/JPY"
+      "EUR/JPY",
+      "EUR/USD",
+      "GBP/USD",
+      "USD/JPY",
+      "AUD/USD",
+      "USD/CAD"
     ],
     "customPairsList": [
       "EUR/JPY",
@@ -87,8 +193,8 @@
       "USD/CAD",
       "EUR/GBP"
     ],
-    "lastResetEgyptDate": "2026-10-27",
-    "currentEgyptHour": 11,
+    "lastResetEgyptDate": "2026-10-28",
+    "currentEgyptHour": 10,
     "isFreeBotWithinSchedule": true
   },
   "robotSettings": {
@@ -122,13 +228,22 @@
   ],
   "dailyStats": [
     {
-      "date": "2026-10-27",
-      "directWins": 2,
+      "date": "2026-10-28",
+      "directWins": 3,
       "gale1Wins": 0,
       "losses": 1,
       "draws": 0,
       "manualOverride": false,
-      "updatedAt": "2026-10-27T08:07:26.931Z"
+      "updatedAt": "2026-10-28T07:53:19.678Z"
+    },
+    {
+      "date": "2026-10-27",
+      "directWins": 10,
+      "gale1Wins": 0,
+      "losses": 9,
+      "draws": 0,
+      "manualOverride": false,
+      "updatedAt": "2026-10-27T14:54:47.420Z"
     },
     {
       "date": "2026-10-26",
@@ -262,9 +377,10 @@
         "action": "BUY",
         "entryStrategy": "شراء مع اختراق مستويات المقاومة الفورية وتأكيد سلبية الدولار الأمريكي"
       },
-      "isBroadcasted": false,
+      "isBroadcasted": true,
       "createdAt": "2026-10-27T07:39:00.053Z",
-      "updatedAt": "2026-10-27T07:39:00.053Z"
+      "updatedAt": "2026-10-27T07:39:00.053Z",
+      "broadcastedAt": "2026-10-28T07:39:12.332Z"
     },
     {
       "id": "news-us-cpi",
@@ -346,7 +462,7 @@
     },
     {
       "id": "news-gbp-pmi",
-      "title": "مؤشر مديري المشتريات للقطاع التصنيعي البريطاني (UK Manufacturing PMI)",
+      "title": "مؤشر مديري المشتريات للقطاع التصنيعي البريطاني (UK Manufacturing PMI) [معدل]",
       "currency": "GBP",
       "impact": "medium",
       "category": "النشاط الاقتصادي",
@@ -357,8 +473,8 @@
       "timeMecca": "12:30",
       "targetEpochMs": 1793093400000,
       "previous": "51.5",
-      "forecast": "50.9",
-      "actual": "",
+      "forecast": "2.5%",
+      "actual": "2.4%",
       "expectedImpact": "currency_bullish",
       "expectedMoveSummary": "استمرار المؤشر فوق مستوى 50 نقطة يعزز قوة الجنيه الإسترليني ويدعم صعوده أمام الدولار والين.",
       "recommendation": {
@@ -366,9 +482,11 @@
         "action": "BUY",
         "entryStrategy": "شراء الإسترليني/دولار مع ارتداد السعر من دعم شارت الدقيقة"
       },
-      "isBroadcasted": false,
+      "isBroadcasted": true,
       "createdAt": "2026-10-27T07:39:00.053Z",
-      "updatedAt": "2026-10-27T07:39:00.053Z"
+      "updatedAt": "2026-10-28T07:55:13.784Z",
+      "isExpired": true,
+      "broadcastedAt": "2026-10-28T07:55:14.223Z"
     },
     {
       "id": "news-us-retail",
@@ -603,8 +721,8 @@
       "paymentMethodName": "USDT (TRC-20) المحفظة المشفرة",
       "transactionReference": "0x8f2d4e8c1b3a5f7e9a0d2c4b6e8f0a2c4e6b8d0e",
       "status": "APPROVED",
-      "createdAt": "2026-10-27T02:30:51.839Z",
-      "reviewedAt": "2026-10-27T03:30:51.839Z",
+      "createdAt": "2026-10-28T01:54:55.977Z",
+      "reviewedAt": "2026-10-28T02:54:55.977Z",
       "adminNotes": "تم التحقق من شبكة ترون وتفعيل الخطة والروبوت"
     },
     {
@@ -619,8 +737,8 @@
       "paymentMethodName": "فودافون كاش والمحافظ الإلكترونية",
       "transactionReference": "VF-CASH-7829104",
       "status": "PENDING",
-      "createdAt": "2026-10-27T08:00:51.839Z"
+      "createdAt": "2026-10-28T07:24:55.977Z"
     }
   ],
-  "lastDispatchedEpochMinute": 1793086500
+  "lastDispatchedEpochMinute": 1793173920
 }

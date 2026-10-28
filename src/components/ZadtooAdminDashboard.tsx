@@ -25,7 +25,13 @@ import {
   ExternalLink,
   Target,
   Trash2,
-  Crown
+  Crown,
+  Play,
+  Pause,
+  RefreshCw,
+  Activity,
+  MessageSquare,
+  AlertCircle
 } from 'lucide-react';
 import { ZadtooLogo } from './ZadtooNavbar';
 import { getPairFlags } from './ZadtooSignalsPage';
@@ -139,14 +145,40 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
     setTimeout(() => setBroadcastSuccessMessage(''), 4000);
   };
 
+  const PRIMARY_6_PAIRS = ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'];
+
   const handleSelectMode = async (mode: 'fixed_single' | 'custom_list' | 'all_global') => {
     if (!onSaveAutoPilot) return;
     setIsSavingPair(true);
     try {
-      await onSaveAutoPilot({ pairSelectionMode: mode });
-      const label = mode === 'fixed_single' ? `الزوج الثابت (${fixedPair})` : mode === 'custom_list' ? 'قائمة الأزواج المخصصة' : 'مسح كل أزواج السوق';
+      const payload: Partial<AutoPilotConfig> = { pairSelectionMode: mode };
+      if (mode === 'custom_list') {
+        payload.allowedPairs = allowedPairs.length > 1 ? allowedPairs : PRIMARY_6_PAIRS;
+      }
+      await onSaveAutoPilot(payload);
+      const label =
+        mode === 'fixed_single'
+          ? `الزوج الثابت (${fixedPair})`
+          : mode === 'custom_list'
+          ? `قائمة الأزواج المخصصة (${payload.allowedPairs?.length || allowedPairs.length} أزواج)`
+          : 'مسح كل أزواج السوق';
       setBroadcastSuccessMessage(`✅ تم تفعيل نمط: ${label}`);
       setTimeout(() => setBroadcastSuccessMessage(''), 4000);
+    } finally {
+      setIsSavingPair(false);
+    }
+  };
+
+  const handleActivatePrimary6Pairs = async () => {
+    if (!onSaveAutoPilot) return;
+    setIsSavingPair(true);
+    try {
+      await onSaveAutoPilot({
+        allowedPairs: PRIMARY_6_PAIRS,
+        pairSelectionMode: 'custom_list'
+      });
+      setBroadcastSuccessMessage('⚡ تم تفعيل وتثبيت الـ 6 أزواج الأساسية بنجاح: (EUR/JPY, EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CAD)!');
+      setTimeout(() => setBroadcastSuccessMessage(''), 5000);
     } finally {
       setIsSavingPair(false);
     }
@@ -177,7 +209,7 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
     setIsSavingPair(true);
     try {
       await onSaveAutoPilot({ allowedPairs: next, pairSelectionMode: 'custom_list' });
-      setBroadcastSuccessMessage(`✅ تم تحديث قائمة الأزواج المصرح بها (${next.length} أزواج)`);
+      setBroadcastSuccessMessage(`✅ تم تحديث قائمة الأزواج المصرح بها (${next.length} أزواج: ${next.join(', ')})`);
       setTimeout(() => setBroadcastSuccessMessage(''), 4000);
     } finally {
       setIsSavingPair(false);
@@ -201,6 +233,82 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
       } finally {
         setIsSavingPair(false);
       }
+    }
+  };
+
+  const [isTogglingAutopilot, setIsTogglingAutopilot] = useState(false);
+  const [isTriggeringInstant, setIsTriggeringInstant] = useState(false);
+  const [isTestingTelegram, setIsTestingTelegram] = useState(false);
+  const [telegramStatusMessage, setTelegramStatusMessage] = useState<string | null>(null);
+
+  const isBotActive = Boolean(autoPilot?.enabled);
+
+  const handleToggleAutopilot = async () => {
+    if (!onSaveAutoPilot) return;
+    setIsTogglingAutopilot(true);
+    const nextState = !isBotActive;
+    try {
+      await onSaveAutoPilot({ enabled: nextState });
+      setBroadcastSuccessMessage(
+        nextState
+          ? '🟢 تم تشغيل البوت التلقائي بنجاح! يتم الآن مسح السوق وإرسال الإشارات تلقائياً إلى القناة @ZadNBFX.'
+          : '⏸️ تم إيقاف البوت التلقائي مؤقتاً. لن يتم إرسال صفقات تلقائية حتى إعادة التشغيل.'
+      );
+      setTimeout(() => setBroadcastSuccessMessage(''), 5000);
+    } catch (err: any) {
+      setBroadcastSuccessMessage(`❌ حدث خطأ أثناء تعديل حالة البوت: ${err?.message || ''}`);
+    } finally {
+      setIsTogglingAutopilot(false);
+    }
+  };
+
+  const handleTriggerInstant = async () => {
+    setIsTriggeringInstant(true);
+    try {
+      const res = await fetch('/api/autopilot/trigger-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preferredPair: fixedPair })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        const sig = data.signal;
+        setBroadcastSuccessMessage(
+          `⚡ تم بث إشارة فورية بنجاح إلى القناة (@ZadNBFX)! الزوج: ${sig?.asset || fixedPair} | الاتجاه: ${sig?.direction === 'CALL' ? 'شراء 🟢' : 'بيع 🔴'} (رسالة تليجرام #${sig?.telegramMessageId || ''})`
+        );
+        if (sig) {
+          setRecentSignals((prev) => [
+            { asset: sig.asset, direction: sig.direction, time: sig.entryTime || 'الآن' },
+            ...prev.slice(0, 4)
+          ]);
+        }
+      } else {
+        setBroadcastSuccessMessage(`⚠️ تعذر البث: ${data.error || 'خطأ غير معروف'}`);
+      }
+    } catch (err: any) {
+      setBroadcastSuccessMessage(`❌ خطأ في الاتصال بالسيرفر: ${err?.message || ''}`);
+    } finally {
+      setIsTriggeringInstant(false);
+      setTimeout(() => setBroadcastSuccessMessage(''), 6000);
+    }
+  };
+
+  const handleTestTelegram = async () => {
+    setIsTestingTelegram(true);
+    setTelegramStatusMessage(null);
+    try {
+      const res = await fetch('/api/telegram/test-connection', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        setTelegramStatusMessage(`✅ الاتصال بالقناة سليم وموثق بنسبة 100%! (@ZadNBFX - رسالة فحص #${data.messageId || ''})`);
+      } else {
+        setTelegramStatusMessage(`❌ فشل الاتصال: ${data.error || data.description || 'تأكد من صلاحيات البوت في القناة'}`);
+      }
+    } catch (err: any) {
+      setTelegramStatusMessage(`❌ خطأ أثناء فحص التليجرام: ${err?.message || ''}`);
+    } finally {
+      setIsTestingTelegram(false);
+      setTimeout(() => setTelegramStatusMessage(null), 8000);
     }
   };
 
@@ -406,6 +514,28 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end">
+            {/* Quick Autopilot Toggle in Header */}
+            <button
+              type="button"
+              onClick={handleToggleAutopilot}
+              disabled={isTogglingAutopilot}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-black transition-all cursor-pointer ${
+                isBotActive
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100 shadow-xs'
+                  : 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+              }`}
+              title="انقر لتشغيل أو إيقاف إرسال الإشارات تلقائياً"
+            >
+              {isTogglingAutopilot ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              ) : isBotActive ? (
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+              ) : (
+                <Pause className="w-3 h-3 text-amber-600" />
+              )}
+              <span>{isBotActive ? '🟢 البوت: شغال' : '⏸️ البوت: متوقف'}</span>
+            </button>
+
             <button
               type="button"
               onClick={() => setActiveAdminNav(activeAdminNav === 'payments' ? 'overview' : 'payments')}
@@ -492,6 +622,143 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
           </div>
         ) : (
           <>
+        {/* DEDICATED LIVE AUTOPILOT & TELEGRAM CONTROL CENTER */}
+        <div className={`rounded-2xl p-5 border shadow-xs transition-all space-y-4 ${
+          isBotActive
+            ? 'bg-gradient-to-r from-emerald-500/10 via-sky-500/5 to-white border-emerald-300'
+            : 'bg-gradient-to-r from-amber-500/10 via-slate-50 to-white border-amber-300'
+        }`}>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/60 pb-3">
+            <div className="flex items-center gap-3">
+              <div className={`w-10 h-10 rounded-2xl flex items-center justify-center font-bold text-lg shadow-xs ${
+                isBotActive ? 'bg-emerald-600 text-white animate-pulse' : 'bg-amber-600 text-white'
+              }`}>
+                {isBotActive ? <Zap className="w-5 h-5" /> : <Pause className="w-5 h-5" />}
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-base font-black text-slate-900">
+                    مركز التحكم المباشر بالبوت التلقائي وقناة التليجرام
+                  </h2>
+                  <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-black ${
+                    isBotActive ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-amber-100 text-amber-800 border border-amber-300'
+                  }`}>
+                    {isBotActive ? '🟢 الإرسال التلقائي: شغال (مفعّل)' : '⏸️ الإرسال التلقائي: متوقف مؤقتاً'}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  القناة المستهدفة: <strong className="text-sky-700">@ZadNBFX</strong> | فريم التداول: <strong className="text-slate-800">M1 (1 دقيقة بدون مضاعفات)</strong> | الفاصل الزمني: <strong className="text-slate-800">كل 15 دقيقة</strong>
+                </p>
+              </div>
+            </div>
+
+            {/* Quick Actions in Header of Card */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={handleToggleAutopilot}
+                disabled={isTogglingAutopilot}
+                className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer shadow-xs ${
+                  isBotActive
+                    ? 'bg-amber-500 hover:bg-amber-600 text-slate-950'
+                    : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                }`}
+              >
+                {isTogglingAutopilot ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : isBotActive ? (
+                  <Pause className="w-4 h-4" />
+                ) : (
+                  <Play className="w-4 h-4" />
+                )}
+                <span>{isBotActive ? 'إيقاف البوت مؤقتاً' : 'تشغيل البوت الآن'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleTriggerInstant}
+                disabled={isTriggeringInstant}
+                className="flex items-center gap-2 px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white text-xs font-black rounded-xl transition-all shadow-xs cursor-pointer disabled:opacity-60"
+              >
+                {isTriggeringInstant ? (
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
+                <span>⚡ بث إشارة فورية للقناة الآن</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleTestTelegram}
+                disabled={isTestingTelegram}
+                className="flex items-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-xs font-bold rounded-xl transition-all cursor-pointer disabled:opacity-60"
+              >
+                {isTestingTelegram ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Radio className="w-3.5 h-3.5 text-sky-600" />
+                )}
+                <span>فحص اتصال القناة</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Telegram Diagnostic Status Feedback */}
+          {telegramStatusMessage && (
+            <div className="p-3 bg-sky-50 text-sky-900 border border-sky-200 rounded-xl text-xs font-bold flex items-center justify-between">
+              <span>{telegramStatusMessage}</span>
+              <button
+                type="button"
+                onClick={() => setTelegramStatusMessage(null)}
+                className="text-slate-400 hover:text-slate-700 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {/* 4 Informational Status Badges */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <div className="bg-white/90 backdrop-blur-xs p-3 rounded-xl border border-slate-200 space-y-1">
+              <span className="text-slate-400 block font-bold text-[11px]">ساعات العمل المعتمدة</span>
+              <div className="font-extrabold text-slate-900 font-mono-num">10:00 ص - 06:00 م</div>
+              <span className="text-[10px] text-slate-500 block">توقيت جمهورية مصر العربية</span>
+            </div>
+
+            <div className="bg-white/90 backdrop-blur-xs p-3 rounded-xl border border-slate-200 space-y-1">
+              <span className="text-slate-400 block font-bold text-[11px]">التوقيت الحالي والجدول</span>
+              <div className="font-extrabold text-emerald-700 flex items-center gap-1 font-mono-num">
+                <Clock className="w-3.5 h-3.5 text-emerald-600" />
+                <span>الساعة {autoPilot?.currentEgyptHour ?? 12}:00 (القاهرة)</span>
+              </div>
+              <span className="text-[10px] text-emerald-600 font-bold block">
+                {autoPilot?.isFreeBotWithinSchedule ? 'ضمن فترة العمل النشطة ✅' : 'خارج فترة العمل المحددة'}
+              </span>
+            </div>
+
+            <div className="bg-white/90 backdrop-blur-xs p-3 rounded-xl border border-slate-200 space-y-1">
+              <span className="text-slate-400 block font-bold text-[11px]">الفاصل الزمني وجودة الإشارة</span>
+              <div className="font-extrabold text-slate-900 font-mono-num">
+                كل {autoPilot?.intervalMinutes || 15} دقيقة
+              </div>
+              <span className="text-[10px] text-sky-700 font-bold block">
+                حد أدنى للجودة {autoPilot?.minQualityScore || 75}% (صفقات قوية فقط)
+              </span>
+            </div>
+
+            <div className="bg-white/90 backdrop-blur-xs p-3 rounded-xl border border-slate-200 space-y-1">
+              <span className="text-slate-400 block font-bold text-[11px]">الإشارة المجدولة القادمة</span>
+              <div className="font-extrabold text-slate-900 font-mono-num">
+                {autoPilot?.nextRunAt ? new Date(autoPilot.nextRunAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : 'جاهز للرصد فوراً'}
+              </div>
+              <span className="text-[10px] text-slate-500 block">
+                إجمالي الإشارات المرسلة: <strong className="text-slate-800">{autoPilot?.totalAutoSent || 0}</strong>
+              </span>
+            </div>
+          </div>
+        </div>
+
         {/* DEDICATED SECTION: Trading Pair Control for Signals & Robot */}
         <div className="bg-white rounded-2xl p-5 border border-slate-200/80 shadow-2xs space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
@@ -617,9 +884,21 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               <label className="text-xs font-bold text-slate-800">
                 الأزواج المتاحة في النظام (اضغط لتفعيل/تعطيل الزوج في الروبوت):
               </label>
-              <span className="text-[11px] text-slate-400">
-                المفعلة: {allowedPairs.length} من {customPairs.length}
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={isSavingPair}
+                  onClick={handleActivatePrimary6Pairs}
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
+                  title="تفعيل الأزواج الستة الأساسية فوراً: EUR/JPY, EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CAD"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  <span>⚡ تفعيل الـ 6 أزواج الأساسية دفعة واحدة</span>
+                </button>
+                <span className="text-[11px] text-slate-500 font-bold bg-white px-2 py-1 rounded-lg border border-slate-200">
+                  المفعلة: {allowedPairs.length} من {customPairs.length}
+                </span>
+              </div>
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -702,14 +981,14 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               <div>
                 <div className="flex items-center gap-2">
                   <h2 className="text-sm font-black text-white">
-                    استراتيجية التداول المعتمدة (Quotex Triple Confluence Strategy)
+                    استراتيجية التداول المعتمدة (S/R Core + 2 of 3 Confluence)
                   </h2>
                   <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-mono-num font-bold">
-                    فريم M1 مباشر
+                    فريم M1 مباشر (بدون مضاعفات)
                   </span>
                 </div>
                 <p className="text-xs text-slate-400">
-                  تم ضبط الرادار السحابي والبوت بالكامل وفقاً لمنظومة المؤشرات الثلاثية لشاشة منصة Quotex
+                  القاعدة الذهبية: <strong className="text-amber-300">مؤشر الدعم والمقاومة شرط أساسي إلزامي 100%</strong> + توافق مؤشرين على الأقل من المؤشرات الثلاثة المتبقية (سوبر تريند، فركتال، RSI)
                 </p>
               </div>
             </div>
@@ -721,13 +1000,32 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer"
             >
               <FileText className="w-3.5 h-3.5 text-amber-400" />
-              <span>عرض ملف الاستراتيجية (strategy.txt)</span>
+              <span>عرض وثيقة الاستراتيجية (strategy.txt)</span>
               <ExternalLink className="w-3 h-3 text-slate-400" />
             </a>
           </div>
 
-          {/* 3 Indicators Breakdown Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {/* 4 Indicators Breakdown Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+            {/* 0. SUPPORT & RESISTANCE (MANDATORY CORE) */}
+            <div className="p-3.5 bg-gradient-to-br from-amber-950/40 via-slate-950/80 to-slate-900 rounded-xl border-2 border-amber-500/50 space-y-2 relative shadow-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-mono-num font-black text-xs text-amber-300">
+                  🧱 الدعم والمقاومة (S/R)
+                </span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500 text-slate-950 font-black animate-pulse">
+                  شرط أساسي 100%
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-200 leading-relaxed">
+                لا تظهر أي إشارة بدون ارتداد مؤكد من خط دعم (للشراء CALL) أو خط مقاومة (للبيع PUT): أفقية، خطوط اتجاه مائلة، قنوات، أو تبادل الأدوار بعد الاختراق.
+              </p>
+              <div className="text-[10px] text-amber-300 font-mono-num flex items-center justify-between pt-1 border-t border-amber-500/30 font-bold">
+                <span>ارتداد دعم: شراء 🟢</span>
+                <span>ارتداد مقاومة: بيع 🔴</span>
+              </div>
+            </div>
+
             {/* 1. SuperTrend (10, 3) */}
             <div className="p-3.5 bg-slate-950/60 rounded-xl border border-emerald-500/30 space-y-2">
               <div className="flex items-center justify-between">
@@ -735,11 +1033,11 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
                   1. SUPERTREND (10, 3)
                 </span>
                 <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-bold">
-                  الاتجاه والانقلاب
+                  داعم (الاتجاه)
                 </span>
               </div>
               <p className="text-[11px] text-slate-300 leading-relaxed">
-                مؤشر الاتجاه المعتمد (ATR 10, Multiplier 3): خط أخضر أسفل الشموع للصعود وخط أحمر أعلاها للهبوط، مع رصد دقيق لانقلاب الاتجاه (Trend Flip).
+                مؤشر الاتجاه المعتمد (ATR 10, Multiplier 3): خط أخضر أسفل الشموع للصعود وخط أحمر أعلاها للهبوط، مع رصد دقيق لانقلاب الاتجاه اللحظي.
               </p>
               <div className="text-[10px] text-slate-400 font-mono-num flex items-center justify-between pt-1 border-t border-slate-800">
                 <span>الخط الأخضر: شراء 🟢</span>
@@ -754,11 +1052,11 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
                   2. FRACTAL (Period = 5)
                 </span>
                 <span className="text-[10px] px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-bold">
-                  دعوم ومقاومات
+                  داعم (القمم والقيعان)
                 </span>
               </div>
               <p className="text-[11px] text-slate-300 leading-relaxed">
-                مؤشر الفركتالز الكلاسيكي (5 شموع): رصد قيعان الانعكاس وقمم المقاومة بأسهم واضحة، مع تأكيد رفض السعر للمستويات الحرجة (Pivots).
+                مؤشر الفركتالز الكلاسيكي (5 شموع): رصد قيعان الانعكاس وقمم المقاومة بأسهم واضحة وتأكيد شمعة الرفض اللحظية (Pin Bar / ابتلاع).
               </p>
               <div className="text-[10px] text-slate-400 font-mono-num flex items-center justify-between pt-1 border-t border-slate-800">
                 <span>سهم سفلي: دعم قاع ▲</span>
@@ -767,21 +1065,21 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
             </div>
 
             {/* 3. RSI (9, 70, 30) */}
-            <div className="p-3.5 bg-slate-950/60 rounded-xl border border-amber-500/30 space-y-2">
+            <div className="p-3.5 bg-slate-950/60 rounded-xl border border-purple-500/30 space-y-2">
               <div className="flex items-center justify-between">
-                <span className="font-mono-num font-black text-xs text-amber-400">
+                <span className="font-mono-num font-black text-xs text-purple-400">
                   3. RSI (9) [70 / 30]
                 </span>
-                <span className="text-[10px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold">
-                  الزخم السريع M1
+                <span className="text-[10px] px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 font-bold">
+                  داعم (الزخم M1)
                 </span>
               </div>
               <p className="text-[11px] text-slate-300 leading-relaxed">
-                مؤشر القوة النسبية بفترة 9 شموع سريعة لفريم الدقيقة: تشبع بيعي عند &lt;= 30 وتشبع شرائي عند &gt;= 70 لاقتناص نقطة الدخول اللحظية.
+                مؤشر القوة النسبية بفترة 9 شموع سريعة لفريم الدقيقة: تشبع بيعي عند &lt;= 35 وتشبع شرائي عند &gt;= 65 مع اختراق خط 50 لتأكيد الزخم.
               </p>
               <div className="text-[10px] text-slate-400 font-mono-num flex items-center justify-between pt-1 border-t border-slate-800">
-                <span>تشبع بيعي: &lt;= 30 🟢</span>
-                <span>تشبع شرائي: &gt;= 70 🔴</span>
+                <span>تشبع بيعي: &lt;= 35 🟢</span>
+                <span>تشبع شرائي: &gt;= 65 🔴</span>
               </div>
             </div>
           </div>

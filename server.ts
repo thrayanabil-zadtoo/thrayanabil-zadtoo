@@ -74,6 +74,8 @@ export interface SignalItem {
   qualityScore?: number;
   reversalPattern?: string;
   sma10Value?: number;
+  supportResistanceText?: string;
+  confluenceText?: string;
   formattedMessage: string;
   rawOriginal?: string;
   status: 'PENDING' | 'WIN' | 'WIN_GALE1' | 'LOSS' | 'DRAW';
@@ -113,6 +115,23 @@ export interface LivePairSnapshot {
     type: 'BULLISH_LOW' | 'BEARISH_HIGH' | 'NONE';
     price?: number;
     description: string;
+  };
+  supportResistance?: {
+    isConfirmed: boolean;
+    levelType: 'SUPPORT' | 'RESISTANCE' | 'NEUTRAL';
+    kind: 'HORIZONTAL' | 'TRENDLINE' | 'CHANNEL' | 'ROLE_REVERSAL' | 'MULTIPLE' | 'NONE';
+    levelPrice?: number;
+    touchesCount: number;
+    description: string;
+  };
+  indicatorConfluence?: {
+    srConfirmed: boolean;
+    rsiMatched: boolean;
+    superTrendMatched: boolean;
+    fractalMatched: boolean;
+    supportingCount: number;
+    isSignalValid: boolean;
+    summary: string;
   };
 }
 
@@ -338,9 +357,9 @@ const defaultAutoPilot: AutoPilotConfig = {
   totalAutoSent: 0,
   lastError: null,
   marketOpenStatus: true,
-  pairSelectionMode: 'fixed_single',
+  pairSelectionMode: 'custom_list',
   primaryFixedPair: 'EUR/JPY',
-  allowedPairs: ['EUR/JPY'],
+  allowedPairs: ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'],
   customPairsList: ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP']
 };
 
@@ -752,7 +771,15 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       newsFilterEnabled: parsed.autopilot.newsFilterEnabled !== false,
       assetCooldownMinutes: Math.max(5, Number(parsed.autopilot.assetCooldownMinutes || autoPilot.assetCooldownMinutes || 20)),
       minQualityScore: Number(parsed.autopilot.minQualityScore || autoPilot.minQualityScore || 65),
-      resultNotificationStyle: parsed.autopilot.resultNotificationStyle || autoPilot.resultNotificationStyle || 'emoji_size'
+      resultNotificationStyle: parsed.autopilot.resultNotificationStyle || autoPilot.resultNotificationStyle || 'emoji_size',
+      pairSelectionMode: parsed.autopilot.pairSelectionMode || autoPilot.pairSelectionMode || 'custom_list',
+      primaryFixedPair: parsed.autopilot.primaryFixedPair || autoPilot.primaryFixedPair || 'EUR/JPY',
+      allowedPairs: Array.isArray(parsed.autopilot.allowedPairs) && parsed.autopilot.allowedPairs.length > 0
+        ? parsed.autopilot.allowedPairs
+        : (autoPilot.allowedPairs || ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD']),
+      customPairsList: Array.isArray(parsed.autopilot.customPairsList) && parsed.autopilot.customPairsList.length > 0
+        ? parsed.autopilot.customPairsList
+        : (autoPilot.customPairsList || ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP'])
     };
   }
   if (parsed.forexNews && Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0) {
@@ -1335,6 +1362,248 @@ export function calculateWilliamsFractals(
   };
 }
 
+export interface SupportResistanceAnalysis {
+  isConfirmed: boolean;
+  levelType: 'SUPPORT' | 'RESISTANCE' | 'NEUTRAL';
+  kind: 'HORIZONTAL' | 'TRENDLINE' | 'CHANNEL' | 'ROLE_REVERSAL' | 'MULTIPLE' | 'NONE';
+  levelPrice?: number;
+  touchesCount: number;
+  description: string;
+  isTestingSupport: boolean;
+  isTestingResistance: boolean;
+}
+
+/**
+ * Calculates comprehensive Support & Resistance (S/R) levels matching all 6 forex patterns:
+ * 1. Horizontal Support / Resistance (الخطوط الأفقية المستقيمة)
+ * 2. Trendline Support / Resistance (خطوط الاتجاه المائلة)
+ * 3. Price Channels (القنوات السعرية المتوازية)
+ * 4. Multiple Touch Support / Resistance (مستويات القمم والقيعان المتعددة)
+ * 5. Role Reversal after Breakout (تبادل الأدوار: مقاومة مخترقة تصبح دعماً، دعم مكسور يصبح مقاومة)
+ */
+export function calculateSupportAndResistance(
+  candles: { open: number; high: number; low: number; close: number }[],
+  isJpy = false
+): SupportResistanceAnalysis {
+  if (candles.length < 10) {
+    return {
+      isConfirmed: false,
+      levelType: 'NEUTRAL',
+      kind: 'NONE',
+      touchesCount: 0,
+      description: 'بيانات غير كافية لحساب مستويات الدعم والمقاومة',
+      isTestingSupport: false,
+      isTestingResistance: false
+    };
+  }
+
+  const decimals = isJpy ? 3 : 5;
+  const lastCandle = candles[candles.length - 1];
+  const prevCandle = candles[candles.length - 2] || lastCandle;
+  const currentPrice = lastCandle.close;
+  const currentRange = Math.max(0.00001, lastCandle.high - lastCandle.low);
+  const tolerance = isJpy ? 0.040 : 0.00040;
+
+  // 1. Find all swing high peaks and swing low troughs in recent history
+  const swingHighs: { index: number; price: number }[] = [];
+  const swingLows: { index: number; price: number }[] = [];
+
+  for (let i = 2; i < candles.length - 2; i++) {
+    const c = candles[i];
+    if (
+      c.high >= candles[i - 1].high &&
+      c.high >= candles[i - 2].high &&
+      c.high >= candles[i + 1].high &&
+      c.high >= candles[i + 2].high
+    ) {
+      swingHighs.push({ index: i, price: c.high });
+    }
+
+    if (
+      c.low <= candles[i - 1].low &&
+      c.low <= candles[i - 2].low &&
+      c.low <= candles[i + 1].low &&
+      c.low <= candles[i + 2].low
+    ) {
+      swingLows.push({ index: i, price: c.low });
+    }
+  }
+
+  // 2. Identify Horizontal Support Levels (Clusters of Lows & Major Pivots)
+  let bestSupportPrice: number | undefined;
+  let supportTouches = 0;
+
+  for (const sw of swingLows) {
+    const touches = candles.filter(c => Math.abs(c.low - sw.price) <= tolerance).length;
+    if (touches >= supportTouches) {
+      supportTouches = touches;
+      bestSupportPrice = sw.price;
+    }
+  }
+
+  if (!bestSupportPrice && swingLows.length > 0) {
+    bestSupportPrice = swingLows[swingLows.length - 1].price;
+    supportTouches = 1;
+  }
+
+  // 3. Identify Horizontal Resistance Levels (Clusters of Highs & Major Pivots)
+  let bestResistancePrice: number | undefined;
+  let resistanceTouches = 0;
+
+  for (const sw of swingHighs) {
+    const touches = candles.filter(c => Math.abs(c.high - sw.price) <= tolerance).length;
+    if (touches >= resistanceTouches) {
+      resistanceTouches = touches;
+      bestResistancePrice = sw.price;
+    }
+  }
+
+  if (!bestResistancePrice && swingHighs.length > 0) {
+    bestResistancePrice = swingHighs[swingHighs.length - 1].price;
+    resistanceTouches = 1;
+  }
+
+  // 4. Test Trendline Support (Ascending slope connecting recent 2 swing lows)
+  let isTrendlineSupport = false;
+  let trendlineSupportPrice: number | undefined;
+  if (swingLows.length >= 2) {
+    const p1 = swingLows[swingLows.length - 2];
+    const p2 = swingLows[swingLows.length - 1];
+    if (p2.index > p1.index && p2.price >= p1.price) {
+      const slope = (p2.price - p1.price) / (p2.index - p1.index);
+      const proj = p2.price + slope * (candles.length - 1 - p2.index);
+      if (Math.abs(lastCandle.low - proj) <= tolerance * 1.5 || (lastCandle.low <= proj && currentPrice >= proj)) {
+        isTrendlineSupport = true;
+        trendlineSupportPrice = proj;
+      }
+    }
+  }
+
+  // 5. Test Trendline Resistance (Descending slope connecting recent 2 swing highs)
+  let isTrendlineResistance = false;
+  let trendlineResistancePrice: number | undefined;
+  if (swingHighs.length >= 2) {
+    const p1 = swingHighs[swingHighs.length - 2];
+    const p2 = swingHighs[swingHighs.length - 1];
+    if (p2.index > p1.index && p2.price <= p1.price) {
+      const slope = (p2.price - p1.price) / (p2.index - p1.index);
+      const proj = p2.price + slope * (candles.length - 1 - p2.index);
+      if (Math.abs(lastCandle.high - proj) <= tolerance * 1.5 || (lastCandle.high >= proj && currentPrice <= proj)) {
+        isTrendlineResistance = true;
+        trendlineResistancePrice = proj;
+      }
+    }
+  }
+
+  // 6. Test Role Reversal (Pattern 5 in image: Broken resistance becoming support, or broken support becoming resistance)
+  let isRoleReversalSupport = false;
+  let isRoleReversalResistance = false;
+  let roleReversalPrice: number | undefined;
+
+  // Resistance turned into support: price broke above prior swing high, now testing it from above
+  if (bestResistancePrice && currentPrice >= bestResistancePrice && lastCandle.low <= bestResistancePrice + tolerance) {
+    isRoleReversalSupport = true;
+    roleReversalPrice = bestResistancePrice;
+  }
+
+  // Support turned into resistance: price broke below prior swing low, now testing it from below
+  if (bestSupportPrice && currentPrice <= bestSupportPrice && lastCandle.high >= bestSupportPrice - tolerance) {
+    isRoleReversalResistance = true;
+    roleReversalPrice = bestSupportPrice;
+  }
+
+  // Evaluate Support Testing & Confirmation (for CALL)
+  const isTestingSupport = Boolean(
+    (bestSupportPrice && (
+      Math.abs(lastCandle.low - bestSupportPrice) <= tolerance ||
+      (lastCandle.low <= bestSupportPrice && currentPrice >= bestSupportPrice) ||
+      (lastCandle.close >= lastCandle.open && Math.abs(currentPrice - bestSupportPrice) <= tolerance * 1.5)
+    )) ||
+    isTrendlineSupport ||
+    isRoleReversalSupport
+  );
+
+  // Evaluate Resistance Testing & Confirmation (for PUT)
+  const isTestingResistance = Boolean(
+    (bestResistancePrice && (
+      Math.abs(lastCandle.high - bestResistancePrice) <= tolerance ||
+      (lastCandle.high >= bestResistancePrice && currentPrice <= bestResistancePrice) ||
+      (lastCandle.close <= lastCandle.open && Math.abs(currentPrice - bestResistancePrice) <= tolerance * 1.5)
+    )) ||
+    isTrendlineResistance ||
+    isRoleReversalResistance
+  );
+
+  // Decide confirmed state and detailed Arabic description
+  if (isTestingSupport) {
+    const finalPrice = roleReversalPrice || trendlineSupportPrice || bestSupportPrice || currentPrice;
+    const kind = isRoleReversalSupport
+      ? 'ROLE_REVERSAL'
+      : isTrendlineSupport
+      ? 'TRENDLINE'
+      : supportTouches > 2
+      ? 'MULTIPLE'
+      : 'HORIZONTAL';
+    const kindLabel = isRoleReversalSupport
+      ? 'مقاومة سابقة مخترقة تحولت لدعم (تبادل أدوار)'
+      : isTrendlineSupport
+      ? 'خط اتجاه صاعد مائل (Trendline Support)'
+      : supportTouches > 2
+      ? `منطقة قيعان متعددة (${supportTouches} ارتدادات)`
+      : 'خط دعم أفقي مستقيم';
+
+    return {
+      isConfirmed: true,
+      levelType: 'SUPPORT',
+      kind,
+      levelPrice: Number(finalPrice.toFixed(decimals)),
+      touchesCount: Math.max(1, supportTouches),
+      description: `🟢 ارتداد من ${kindLabel} عند ${finalPrice.toFixed(decimals)}`,
+      isTestingSupport: true,
+      isTestingResistance: false
+    };
+  }
+
+  if (isTestingResistance) {
+    const finalPrice = roleReversalPrice || trendlineResistancePrice || bestResistancePrice || currentPrice;
+    const kind = isRoleReversalResistance
+      ? 'ROLE_REVERSAL'
+      : isTrendlineResistance
+      ? 'TRENDLINE'
+      : resistanceTouches > 2
+      ? 'MULTIPLE'
+      : 'HORIZONTAL';
+    const kindLabel = isRoleReversalResistance
+      ? 'دعم سابق مكسور تحول لمقاومة (تبادل أدوار)'
+      : isTrendlineResistance
+      ? 'خط اتجاه هابط مائل (Trendline Resistance)'
+      : resistanceTouches > 2
+      ? `منطقة قمم متعددة (${resistanceTouches} ارتدادات)`
+      : 'خط مقاومة أفقي مستقيم';
+
+    return {
+      isConfirmed: true,
+      levelType: 'RESISTANCE',
+      kind,
+      levelPrice: Number(finalPrice.toFixed(decimals)),
+      touchesCount: Math.max(1, resistanceTouches),
+      description: `🔴 ارتداد من ${kindLabel} عند ${finalPrice.toFixed(decimals)}`,
+      isTestingSupport: false,
+      isTestingResistance: true
+    };
+  }
+
+  return {
+    isConfirmed: false,
+    levelType: 'NEUTRAL',
+    kind: 'NONE',
+    touchesCount: 0,
+    description: 'في منطقة توازن (لا يوجد ملامسة لدعم أو مقاومة واضحة)',
+    isTestingSupport: false,
+    isTestingResistance: false
+  };
+}
+
 /**
  * Calculates Wilder's 9-period RSI from an array of close prices (Matching Quotex chart RSI 9).
  */
@@ -1498,6 +1767,11 @@ async function scanRealGlobalForexMarket(
       // ========================================================
       const rsi = calculateRSI(closes.slice(-35), 9);
 
+      // ========================================================
+      // 4. SUPPORT & RESISTANCE (S/R) - MANDATORY PRIMARY CONDITION
+      // ========================================================
+      const srAnalysis = calculateSupportAndResistance(validCandles, isJpy);
+
       // Phase 2 Filter: Abnormal Volatility / News Spike Guard (ATR-15)
       const recent15 = validCandles.slice(-16, -1);
       const avgRange15 = recent15.length > 0
@@ -1528,128 +1802,82 @@ async function scanRealGlobalForexMarket(
       const isBearishRejection = (lastCandle.high - currentPrice) >= currentRange * 0.45 && currentPrice < lastCandle.open;
 
       let signalReady: 'CALL' | 'PUT' | null = null;
-      let reason = 'في منطقة التوازن (انتظار توافق السوبر تريند 10,3 والفركتال و RSI 9)';
+      let reason = 'في منطقة توازن سعري (بانتظار ارتداد من دعم أو مقاومة واكتمال المؤشرات)';
       let trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = superTrend.trend;
-      let reversalPattern = fractal.description;
+      let reversalPattern = srAnalysis.description;
       let qualityScore = 50;
 
-      // Confluence Checks for CALL (🟢 شراء / صعود):
-      // 1. SuperTrend is Bullish (Green) OR just flipped Bullish
-      // 2. Fractal low formed/tested OR Bullish hammer/engulfing
-      // 3. RSI 9 in oversold zone (<= 35) OR bouncing from 30 / crossing 50 up
-      const isStBullish = superTrend.trend === 'BULLISH';
-      const isStFlipBullish = superTrend.flippedThisCandle && superTrend.trend === 'BULLISH';
-      const isFractalBullish = fractal.lastFractalType === 'BULLISH_LOW' || fractal.isTestingSupport || isBullishPinBar || isBullishEngulfing || isBullishRebound;
-      const isRsiOversold = rsi <= 35; // Oversold near 30
-      const isRsiCrossingUp = rsi >= 45 && rsi <= 60 && closes[closes.length - 1] > closes[closes.length - 2];
+      // =========================================================================
+      // RULE: Support & Resistance is MANDATORY + AT LEAST 2 OF 3 OTHER INDICATORS
+      // 1. Mandatory S/R Check:
+      //    CALL: Must test/bounce off Support (Horizontal, Trendline, or Role Reversal)
+      //    PUT: Must test/reject off Resistance (Horizontal, Trendline, or Role Reversal)
+      // 2. Remaining 3 Indicators:
+      //    - Indicator A: SuperTrend (10, 3)
+      //    - Indicator B: Fractal (5)
+      //    - Indicator C: RSI (9)
+      // =========================================================================
 
-      // Confluence Checks for PUT (🔴 بيع / هبوط):
-      // 1. SuperTrend is Bearish (Red) OR just flipped Bearish
-      // 2. Fractal high formed/tested OR Bearish shooting star/engulfing
-      // 3. RSI 9 in overbought zone (>= 65) OR rejecting from 70 / crossing 50 down
-      const isStBearish = superTrend.trend === 'BEARISH';
-      const isStFlipBearish = superTrend.flippedThisCandle && superTrend.trend === 'BEARISH';
-      const isFractalBearish = fractal.lastFractalType === 'BEARISH_HIGH' || fractal.isTestingResistance || isBearishPinBar || isBearishEngulfing || isBearishRejection;
-      const isRsiOverbought = rsi >= 65; // Overbought near 70
-      const isRsiCrossingDown = rsi <= 55 && rsi >= 40 && closes[closes.length - 1] < closes[closes.length - 2];
+      // CALL Evaluation:
+      const isCallSrMandatory = srAnalysis.isConfirmed && srAnalysis.levelType === 'SUPPORT' && srAnalysis.isTestingSupport;
+
+      const isStCall = superTrend.trend === 'BULLISH' || superTrend.flippedThisCandle;
+      const stCallLabel = superTrend.flippedThisCandle ? 'سوبر تريند انقلاب صاعد (أخضر)' : 'سوبر تريند صاعد (أخضر)';
+
+      const isFractalCall = fractal.lastFractalType === 'BULLISH_LOW' || fractal.isTestingSupport || isBullishPinBar || isBullishEngulfing || isBullishRebound;
+      const fractalCallLabel = fractal.lastFractalType === 'BULLISH_LOW' ? fractal.description : isBullishPinBar ? 'شمعة مطرقة صاعدة' : isBullishEngulfing ? 'ابتلاع صعودي مؤكد' : 'ارتداد فركتال صاعد';
+
+      const isRsiCall = rsi <= 38 || (rsi <= 45 && rsi >= 30) || (rsi >= 45 && rsi <= 60 && closes[closes.length - 1] > closes[closes.length - 2]);
+      const rsiCallLabel = rsi <= 35 ? `تشبع بيعي RSI(${rsi})` : `ميل صعودي RSI(${rsi})`;
+
+      const callMatches: string[] = [];
+      if (isStCall) callMatches.push(stCallLabel);
+      if (isFractalCall) callMatches.push(fractalCallLabel);
+      if (isRsiCall) callMatches.push(rsiCallLabel);
+      const isCallValid = isCallSrMandatory && callMatches.length >= 2;
+
+      // PUT Evaluation:
+      const isPutSrMandatory = srAnalysis.isConfirmed && srAnalysis.levelType === 'RESISTANCE' && srAnalysis.isTestingResistance;
+
+      const isStPut = superTrend.trend === 'BEARISH' || superTrend.flippedThisCandle;
+      const stPutLabel = superTrend.flippedThisCandle ? 'سوبر تريند انقلاب هابط (أحمر)' : 'سوبر تريند هابط (أحمر)';
+
+      const isFractalPut = fractal.lastFractalType === 'BEARISH_HIGH' || fractal.isTestingResistance || isBearishPinBar || isBearishEngulfing || isBearishRejection;
+      const fractalPutLabel = fractal.lastFractalType === 'BEARISH_HIGH' ? fractal.description : isBearishPinBar ? 'شمعة شهاب هابطة' : isBearishEngulfing ? 'ابتلاع هبوطي مؤكد' : 'انعكاس فركتال هابط';
+
+      const isRsiPut = rsi >= 62 || (rsi >= 55 && rsi <= 70) || (rsi <= 55 && rsi >= 40 && closes[closes.length - 1] < closes[closes.length - 2]);
+      const rsiPutLabel = rsi >= 65 ? `تشبع شرائي RSI(${rsi})` : `ميل هبوطي RSI(${rsi})`;
+
+      const putMatches: string[] = [];
+      if (isStPut) putMatches.push(stPutLabel);
+      if (isFractalPut) putMatches.push(fractalPutLabel);
+      if (isRsiPut) putMatches.push(rsiPutLabel);
+      const isPutValid = isPutSrMandatory && putMatches.length >= 2;
 
       if (isNewsSpike) {
         reason = `⚠️ تم حجب الزوج مؤقتاً: شمعة تقلبات خبر حادة (${(currentRange / (avgRange15 || 0.0001)).toFixed(1)}x المعدل)`;
-      } else if (isRsiOversold || (isStBullish && isFractalBullish) || isStFlipBullish) {
-        // Evaluate CALL
-        let cqs = 0;
-        // 1. SuperTrend Score (max 35)
-        if (isStFlipBullish) {
-          cqs += 35;
-        } else if (isStBullish) {
-          cqs += 30;
-        } else if (currentPrice >= superTrend.lowerBand) {
-          cqs += 15;
-        }
-
-        // 2. Fractal & Candlestick Score (max 35)
-        if (fractal.lastFractalType === 'BULLISH_LOW') {
-          cqs += 35;
-          reversalPattern = `ارتداد فركتال من القاع ودعم ${fractal.recentBullishLow || formattedPrice}`;
-        } else if (fractal.isTestingSupport) {
-          cqs += 30;
-          reversalPattern = `اختبار دعم فركتال ${fractal.recentBullishLow || formattedPrice}`;
-        } else if (isBullishPinBar) {
-          cqs += 25;
-          reversalPattern = `مطرقة ارتدادية (ذيل ${(lowerWickRatio * 100).toFixed(0)}%)`;
-        } else if (isBullishEngulfing) {
-          cqs += 25;
-          reversalPattern = 'نموذج ابتلاع صعودي مؤكد';
-        } else if (isBullishRebound) {
-          cqs += 20;
-          reversalPattern = 'ارتداد زخم صاعد من القاع';
-        }
-
-        // 3. RSI 9 Score (max 30)
-        if (rsi <= 25) {
-          cqs += 30;
-        } else if (rsi <= 32) {
-          cqs += 25;
-        } else if (rsi <= 40) {
-          cqs += 20;
-        } else if (isRsiCrossingUp) {
-          cqs += 15;
-        }
-
-        qualityScore = Math.min(100, cqs);
-        if (qualityScore >= 65) {
-          signalReady = 'CALL';
-          trend = 'BULLISH';
-          const stText = isStBullish ? 'سوبر تريند صاعد (أخضر)' : 'انقلاب سوبر تريند صاعد';
-          reason = `${stText} + ${reversalPattern} + RSI(9) ${rsi} (جودة ${qualityScore}%)`;
-        }
-      } else if (isRsiOverbought || (isStBearish && isFractalBearish) || isStFlipBearish) {
-        // Evaluate PUT
-        let cqs = 0;
-        // 1. SuperTrend Score (max 35)
-        if (isStFlipBearish) {
-          cqs += 35;
-        } else if (isStBearish) {
-          cqs += 30;
-        } else if (currentPrice <= superTrend.upperBand) {
-          cqs += 15;
-        }
-
-        // 2. Fractal & Candlestick Score (max 35)
-        if (fractal.lastFractalType === 'BEARISH_HIGH') {
-          cqs += 35;
-          reversalPattern = `انعكاس فركتال من القمة ومقاومة ${fractal.recentBearishHigh || formattedPrice}`;
-        } else if (fractal.isTestingResistance) {
-          cqs += 30;
-          reversalPattern = `اختبار مقاومة فركتال ${fractal.recentBearishHigh || formattedPrice}`;
-        } else if (isBearishPinBar) {
-          cqs += 25;
-          reversalPattern = `شهاب انعكاسي (ذيل ${(upperWickRatio * 100).toFixed(0)}%)`;
-        } else if (isBearishEngulfing) {
-          cqs += 25;
-          reversalPattern = 'نموذج ابتلاع هبوطي مؤكد';
-        } else if (isBearishRejection) {
-          cqs += 20;
-          reversalPattern = 'انعكاس زخم هابط من القمة';
-        }
-
-        // 3. RSI 9 Score (max 30)
-        if (rsi >= 75) {
-          cqs += 30;
-        } else if (rsi >= 68) {
-          cqs += 25;
-        } else if (rsi >= 60) {
-          cqs += 20;
-        } else if (isRsiCrossingDown) {
-          cqs += 15;
-        }
-
-        qualityScore = Math.min(100, cqs);
-        if (qualityScore >= 65) {
-          signalReady = 'PUT';
-          trend = 'BEARISH';
-          const stText = isStBearish ? 'سوبر تريند هابط (أحمر)' : 'انقلاب سوبر تريند هابط';
-          reason = `${stText} + ${reversalPattern} + RSI(9) ${rsi} (جودة ${qualityScore}%)`;
+        signalReady = null;
+      } else if (isCallValid) {
+        signalReady = 'CALL';
+        trend = 'BULLISH';
+        // Base 40 pts for mandatory S/R confirmation + 20 pts per matching indicator (80% to 100%)
+        qualityScore = Math.min(100, 40 + callMatches.length * 20);
+        reversalPattern = srAnalysis.description;
+        reason = `${srAnalysis.description} [شرط أساسي محقق ✅] + توافق (${callMatches.length} من 3 مؤشرات: ${callMatches.join(' + ')})`;
+      } else if (isPutValid) {
+        signalReady = 'PUT';
+        trend = 'BEARISH';
+        qualityScore = Math.min(100, 40 + putMatches.length * 20);
+        reversalPattern = srAnalysis.description;
+        reason = `${srAnalysis.description} [شرط أساسي محقق ✅] + توافق (${putMatches.length} من 3 مؤشرات: ${putMatches.join(' + ')})`;
+      } else {
+        signalReady = null;
+        if (!srAnalysis.isConfirmed) {
+          reason = 'في منطقة توازن سعري — شرط الدعم والمقاومة الأساسي غير متحقق حالياً';
+        } else if (srAnalysis.levelType === 'SUPPORT') {
+          reason = `${srAnalysis.description} ولكن توافق مؤشر واحد فقط (${callMatches.length} من 3 مؤشرات — المطلوب 2 من 3)`;
+        } else if (srAnalysis.levelType === 'RESISTANCE') {
+          reason = `${srAnalysis.description} ولكن توافق مؤشر واحد فقط (${putMatches.length} من 3 مؤشرات — المطلوب 2 من 3)`;
         }
       }
 
@@ -1674,6 +1902,23 @@ async function scanRealGlobalForexMarket(
           type: fractal.lastFractalType,
           price: fractal.lastFractalType === 'BULLISH_LOW' ? fractal.recentBullishLow : fractal.recentBearishHigh,
           description: fractal.description
+        },
+        supportResistance: {
+          isConfirmed: srAnalysis.isConfirmed,
+          levelType: srAnalysis.levelType,
+          kind: srAnalysis.kind,
+          levelPrice: srAnalysis.levelPrice,
+          touchesCount: srAnalysis.touchesCount,
+          description: srAnalysis.description
+        },
+        indicatorConfluence: {
+          srConfirmed: srAnalysis.isConfirmed,
+          rsiMatched: signalReady === 'CALL' ? isRsiCall : isRsiPut,
+          superTrendMatched: signalReady === 'CALL' ? isStCall : isStPut,
+          fractalMatched: signalReady === 'CALL' ? isFractalCall : isFractalPut,
+          supportingCount: signalReady === 'CALL' ? callMatches.length : signalReady === 'PUT' ? putMatches.length : 0,
+          isSignalValid: signalReady !== null,
+          summary: signalReady === 'CALL' ? callMatches.join(' + ') : putMatches.join(' + ')
         },
         wickRatio: signalReady === 'CALL' ? lowerWickRatio : upperWickRatio,
         isNewsSpike,
@@ -1760,12 +2005,22 @@ async function sendTelegramMessage(botToken: string, chatId: string, text: strin
     payload.reply_to_message_id = replyToMessageId;
   }
 
-  const tgRes = await fetch(`https://api.telegram.org/bot${botToken.trim()}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  return (await tgRes.json()) as any;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+  try {
+    const tgRes = await fetch(`https://api.telegram.org/bot${botToken.trim()}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    return (await tgRes.json()) as any;
+  } catch (err: any) {
+    console.warn('[sendTelegramMessage Error]', err);
+    return { ok: false, description: err?.message || 'خطأ في الاتصال بسيرفرات التليجرام' };
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 /**
@@ -2392,6 +2647,7 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
     rsiValue: candidate.rsi,
     superTrend: superTrendLabel,
     fractalPattern: fractalLabel,
+    supportResistance: candidate.supportResistance?.description || (direction === 'CALL' ? '🟢 ارتداد من خط الدعم [شرط أساسي محقق ✅]' : '🔴 ارتداد من خط المقاومة [شرط أساسي محقق ✅]'),
     analysisReason: candidate.reason
   };
 
@@ -2415,6 +2671,8 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
     qualityScore: candidate.qualityScore,
     reversalPattern: candidate.reversalPattern,
     sma10Value: candidate.sma10,
+    supportResistanceText: candidate.supportResistance?.description,
+    confluenceText: candidate.indicatorConfluence?.summary,
     formattedMessage,
     status: 'PENDING',
     createdAt: new Date().toISOString(),
@@ -4206,9 +4464,9 @@ async function startServer() {
       assetCooldownMinutes: incoming.assetCooldownMinutes !== undefined ? Math.max(5, Number(incoming.assetCooldownMinutes)) : autoPilot.assetCooldownMinutes,
       minQualityScore: incoming.minQualityScore !== undefined ? Number(incoming.minQualityScore) : autoPilot.minQualityScore,
       intervalMinutes: Math.max(5, Number(incoming.intervalMinutes ?? autoPilot.intervalMinutes)),
-      pairSelectionMode: incoming.pairSelectionMode || autoPilot.pairSelectionMode || 'fixed_single',
+      pairSelectionMode: incoming.pairSelectionMode || autoPilot.pairSelectionMode || 'custom_list',
       primaryFixedPair: incoming.primaryFixedPair ? String(incoming.primaryFixedPair).toUpperCase().trim() : (autoPilot.primaryFixedPair || 'EUR/JPY'),
-      allowedPairs: Array.isArray(incoming.allowedPairs) && incoming.allowedPairs.length > 0 ? incoming.allowedPairs : (autoPilot.allowedPairs || ['EUR/JPY']),
+      allowedPairs: Array.isArray(incoming.allowedPairs) && incoming.allowedPairs.length > 0 ? incoming.allowedPairs : (autoPilot.allowedPairs || ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD']),
       customPairsList: Array.isArray(incoming.customPairsList) && incoming.customPairsList.length > 0 ? incoming.customPairsList : (autoPilot.customPairsList || ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP'])
     };
 
@@ -4514,15 +4772,17 @@ async function startServer() {
 
   // Update news item (Admin)
   app.put('/api/forex-news/:id', async (req, res) => {
-    const { id } = req.params;
-    const idx = forexNewsStore.findIndex(n => n.id === id);
+    const rawId = String(req.params?.id || '');
+    const cleanId = decodeURIComponent(rawId);
+    const idx = forexNewsStore.findIndex(n => n.id === cleanId || n.id === rawId);
     if (idx === -1) {
-      return res.status(404).json({ ok: false, error: 'الخبر غير موجود' });
+      return res.status(404).json({ ok: false, error: 'الخبر المطلوب تعديله غير موجود في السيرفر' });
     }
+    const existing = forexNewsStore[idx];
     forexNewsStore[idx] = {
-      ...forexNewsStore[idx],
+      ...existing,
       ...req.body,
-      id,
+      id: existing.id,
       updatedAt: new Date().toISOString()
     };
     await saveState();
@@ -4531,8 +4791,9 @@ async function startServer() {
 
   // Delete news item (Admin)
   app.delete('/api/forex-news/:id', async (req, res) => {
-    const { id } = req.params;
-    const idx = forexNewsStore.findIndex(n => n.id === id);
+    const rawId = String(req.params?.id || '');
+    const cleanId = decodeURIComponent(rawId);
+    const idx = forexNewsStore.findIndex(n => n.id === cleanId || n.id === rawId);
     if (idx !== -1) {
       forexNewsStore.splice(idx, 1);
       await saveState();
@@ -4549,10 +4810,11 @@ async function startServer() {
 
   // Broadcast news as recommendation to Telegram (Admin)
   app.post('/api/forex-news/:id/broadcast', async (req, res) => {
-    const { id } = req.params;
-    const item = forexNewsStore.find(n => n.id === id);
+    const rawId = String(req.params?.id || '');
+    const cleanId = decodeURIComponent(rawId);
+    const item = forexNewsStore.find(n => n.id === cleanId || n.id === rawId);
     if (!item) {
-      return res.status(404).json({ ok: false, error: 'الخبر غير موجود' });
+      return res.status(404).json({ ok: false, error: 'الخبر المطلوب نشره غير موجود في السيرفر' });
     }
 
     const impactBadge = item.impact === 'high' ? '🔴 عالي الأهمية (High Impact) 🔥' : item.impact === 'medium' ? '🟡 متوسط الأهمية' : '🟢 منخفض الأهمية';

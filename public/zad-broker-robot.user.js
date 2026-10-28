@@ -1539,13 +1539,14 @@
     }
   }
 
-  // تحويل الشارت تلقائياً إلى زوج الإشارة بالنقر على التبويب المفتوح في المنصة إن وجد (كإجراء تيسيري)
+  // تحويل الشارت تلقائياً إلى زوج الإشارة بالنقر على التبويب المفتوح في المنصة (من بين الأزواج المفتوحة كـ 6 أزواج مثلاً)
   function switchToBrokerAsset(targetAsset) {
     if (!targetAsset) return false;
     try {
       const cleanTarget = targetAsset.toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
+      if (!cleanTarget) return false;
       
-      // إذا كان الشارت الحالي معروضاً عليه نفس الزوج بالفعل فلا داعي للمس أي أزرار إطلاقاً
+      // 1. إذا كان الشارت الحالي معروضاً عليه نفس الزوج بالفعل فلا داعي للمس أي أزرار
       const current = detectCurrentBrokerAsset();
       if (current) {
         const cleanCurrent = current.toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
@@ -1554,26 +1555,60 @@
         }
       }
 
-      // فحص فقط التبويبات المفتوحة مسبقاً في شريط التبويبات العلوي (دون فتح أي قوائم منسدلة)
+      // 2. دالة محاكاة نقر الماوس الواقعي المتوافقة مع أطر عمل منصات التداول الحديثة (React / Vue)
+      function simulateRealisticClick(elem) {
+        if (!elem) return;
+        try {
+          const opts = { bubbles: true, cancelable: true, view: window };
+          elem.dispatchEvent(new MouseEvent('pointerdown', opts));
+          elem.dispatchEvent(new MouseEvent('mousedown', opts));
+          elem.dispatchEvent(new MouseEvent('pointerup', opts));
+          elem.dispatchEvent(new MouseEvent('mouseup', opts));
+          elem.dispatchEvent(new MouseEvent('click', opts));
+          if (typeof elem.click === 'function') elem.click();
+        } catch(e) {
+          try { elem.click(); } catch(err) {}
+        }
+      }
+
+      // 3. فحص كافة التبويبات المفتوحة في شريط التبويبات العلوي في المنصة (Quotex, PocketOption, etc.)
       const tabSelectors = [
         ".tab-item",
         ".tabs__item",
         ".tabs-item",
         "[class*='tab-item']",
-        "[class*='tabs__item']"
+        "[class*='tabs__item']",
+        "[data-test*='tab']",
+        ".header-sub__tabs .tab-item",
+        ".header-sub__tabs > div",
+        ".assets-item",
+        ".nav-tabs .nav-item"
       ];
+
       for (let s = 0; s < tabSelectors.length; s++) {
         const tabs = document.querySelectorAll(tabSelectors[s]);
         for (let i = 0; i < tabs.length; i++) {
           const tab = tabs[i];
           if (tab.closest('.header__user, .usermenu, #zad-universal-floating-robot')) continue;
-          const text = (tab.innerText || "").toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
-          if (text.includes(cleanTarget) && typeof tab.click === "function") {
-            tab.click();
+          
+          const text = (tab.innerText || tab.textContent || "").toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
+          // مطابقة اسم العملة (مثل EURJPY أو EUR/JPY)
+          const isMatch = text.includes(cleanTarget) || (cleanTarget.length >= 6 && text.includes(cleanTarget.slice(0, 6)));
+          if (isMatch) {
+            const clickable = tab.querySelector('.tab-item__link, .tab-item__name, .tab-item__symbol, a, button') || tab;
+            simulateRealisticClick(clickable);
+            console.log("%c[روبوت ZAD FX] 🎯 تم اكتشاف الزوج في التبويبات العلوية والتحويل تلقائياً إلى شارت: " + targetAsset, "color:#10b981;font-weight:bold;font-size:12px;");
+            
+            const actElem = document.getElementById("zad-robot-action");
+            if (actElem) {
+              actElem.innerText = `🎯 تم تحويل الشارت تلقائياً إلى الزوج المطلوب (${targetAsset})`;
+            }
             return true;
           }
         }
       }
+
+      console.log("%c[روبوت ZAD FX] ℹ️ الزوج (" + targetAsset + ") ليس مفتوحاً حالياً في شريط التبويبات العلوي بالمنصة", "color:#f59e0b;font-weight:bold;");
     } catch(e) {
       console.error("[ZAD Robot] Auto switch chart error:", e);
     }

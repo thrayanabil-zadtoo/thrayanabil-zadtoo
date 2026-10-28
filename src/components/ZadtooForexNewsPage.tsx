@@ -51,6 +51,9 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
   // Edit/Add Modal states
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [editingItem, setEditingItem] = useState<ForexNewsItem | null>(null);
+  const [isSavingNews, setIsSavingNews] = useState<boolean>(false);
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [autoPublishTelegram, setAutoPublishTelegram] = useState<boolean>(true);
   const [formData, setFormData] = useState<Partial<ForexNewsItem>>({
     title: '',
     currency: 'USD',
@@ -128,15 +131,19 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
     setBroadcastingId(item.id);
     setBroadcastFeedback(null);
     try {
-      const res = await fetch(`/api/forex-news/${item.id}/broadcast`, {
-        method: 'POST'
+      const res = await fetch(`/api/forex-news/${encodeURIComponent(item.id)}/broadcast`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        }
       });
-      const data = await res.json();
-      if (data.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
         setBroadcastFeedback({
           id: item.id,
           success: true,
-          msg: 'تم نشر توصية الخبر بنجاح على التليجرام! 📢'
+          msg: '✅ تم نشر توصية الخبر بنجاح على التليجرام! 📢'
         });
         setNews(prev =>
           prev.map(n =>
@@ -147,25 +154,35 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
         setBroadcastFeedback({
           id: item.id,
           success: false,
-          msg: data.error || 'فشل إرسال التوصية، يرجى فحص إعدادات البوت'
+          msg: data.error || (res.status === 404 ? 'الخبر غير موجود في السيرفر' : 'فشل إرسال التوصية، يرجى فحص إعدادات البوت')
         });
       }
     } catch (err: any) {
+      console.error('Broadcast error:', err);
+      const isFetchErr = err?.name === 'TypeError' || String(err?.message || '').toLowerCase().includes('fetch');
       setBroadcastFeedback({
         id: item.id,
         success: false,
-        msg: err.message || 'خطأ في الاتصال'
+        msg: isFetchErr
+          ? 'تعذر الاتصال بالخادم لنشر الخبر، يرجى التحقق من اتصال الإنترنت أو التأكد من إعدادات توكن البوت في لوحة التحكم.'
+          : (err?.message || 'خطأ في الاتصال بالسيرفر')
       });
     } finally {
       setBroadcastingId(null);
-      setTimeout(() => setBroadcastFeedback(null), 6000);
+      setTimeout(() => setBroadcastFeedback(null), 8000);
     }
   };
 
   // Handle Save / Create news item
   const handleSaveModal = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formData.title || !formData.currency) return;
+    if (!formData.title?.trim() || !formData.currency?.trim()) {
+      setModalError('يرجى ملء عنوان الخبر والعملة المتأثرة كحقول إجبارية.');
+      return;
+    }
+
+    setIsSavingNews(true);
+    setModalError(null);
 
     // Calculate approximate targetEpochMs from eventDate and timeGmt
     let calculatedEpochMs = Date.now() + 3600000;
@@ -182,37 +199,72 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
 
     const payload = {
       ...formData,
+      title: formData.title.trim(),
+      currency: formData.currency.trim().toUpperCase(),
       targetEpochMs: calculatedEpochMs
     };
 
     try {
+      let savedItem: ForexNewsItem | null = null;
+      const isEditing = Boolean(editingItem);
+
       if (editingItem) {
         // Update
-        const res = await fetch(`/api/forex-news/${editingItem.id}`, {
+        const res = await fetch(`/api/forex-news/${encodeURIComponent(editingItem.id)}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
           body: JSON.stringify(payload)
         });
-        if (res.ok) {
-          const data = await res.json();
-          setNews(prev => prev.map(n => (n.id === editingItem.id ? data.item : n)));
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || `فشل حفظ التعديلات في السيرفر (رمز: ${res.status})`);
         }
+        savedItem = data.item;
+        setNews(prev => prev.map(n => (n.id === editingItem.id ? data.item : n)));
       } else {
         // Create
         const res = await fetch('/api/forex-news', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
           body: JSON.stringify(payload)
         });
-        if (res.ok) {
-          const data = await res.json();
-          setNews(prev => [data.item, ...prev]);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) {
+          throw new Error(data.error || `فشل إضافة الخبر في السيرفر (رمز: ${res.status})`);
         }
+        savedItem = data.item;
+        setNews(prev => [data.item, ...prev]);
       }
+
       setIsModalOpen(false);
       setEditingItem(null);
-    } catch (err) {
-      console.error(err);
+
+      if (autoPublishTelegram && savedItem) {
+        await handleBroadcast(savedItem);
+      } else {
+        setBroadcastFeedback({
+          id: savedItem ? savedItem.id : 'saved',
+          success: true,
+          msg: isEditing ? '✅ تم حفظ وتحديث بيانات الخبر بنجاح في السيرفر والأجندة!' : '✅ تم إضافة وحفظ الخبر العاجل بنجاح في الأجندة الاقتصادية!'
+        });
+        setTimeout(() => setBroadcastFeedback(null), 7000);
+      }
+    } catch (err: any) {
+      console.error('Save news error:', err);
+      const isFetchErr = err?.name === 'TypeError' || String(err?.message || '').toLowerCase().includes('fetch');
+      setModalError(
+        isFetchErr
+          ? 'تعذر الاتصال بالخادم لحفظ الخبر. يرجى التحقق من اتصال الإنترنت والمحاولة مرة أخرى.'
+          : (err?.message || 'حدث خطأ أثناء حفظ الخبر.')
+      );
+    } finally {
+      setIsSavingNews(false);
     }
   };
 
@@ -221,9 +273,18 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
     if (!isAdmin) return;
     if (!window.confirm('هل أنت متأكد من حذف هذا الخبر؟')) return;
     try {
-      const res = await fetch(`/api/forex-news/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/forex-news/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { 'Accept': 'application/json' }
+      });
       if (res.ok) {
         setNews(prev => prev.filter(n => n.id !== id));
+        setBroadcastFeedback({
+          id,
+          success: true,
+          msg: '✅ تم حذف الخبر بنجاح من الأجندة.'
+        });
+        setTimeout(() => setBroadcastFeedback(null), 5000);
       }
     } catch (err) {
       console.error(err);
@@ -235,10 +296,19 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
     if (!isAdmin) return;
     if (!window.confirm('هل تريد إعادة تعيين الأجندة وتحميل الأخبار الأسبوعية القياسية المحدثة؟')) return;
     try {
-      const res = await fetch('/api/forex-news/seed-weekly', { method: 'POST' });
+      const res = await fetch('/api/forex-news/seed-weekly', {
+        method: 'POST',
+        headers: { 'Accept': 'application/json' }
+      });
       if (res.ok) {
         const data = await res.json();
         setNews(data.news);
+        setBroadcastFeedback({
+          id: 'seed',
+          success: true,
+          msg: '✅ تمت إعادة تعيين الأجندة وتحميل جدول الأخبار الأسبوعية بنجاح!'
+        });
+        setTimeout(() => setBroadcastFeedback(null), 5000);
       }
     } catch (err) {
       console.error(err);
@@ -248,6 +318,8 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
   // Open modal for editing
   const openEditModal = (item: ForexNewsItem) => {
     setEditingItem(item);
+    setModalError(null);
+    setAutoPublishTelegram(false);
     setFormData({
       title: item.title,
       currency: item.currency,
@@ -275,6 +347,8 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
   // Open modal for new item
   const openAddModal = () => {
     setEditingItem(null);
+    setModalError(null);
+    setAutoPublishTelegram(true);
     setFormData({
       title: '',
       currency: 'USD',
@@ -940,6 +1014,13 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
             </div>
 
             <form onSubmit={handleSaveModal} className="space-y-4 text-xs">
+              {modalError && (
+                <div className="p-3 bg-rose-950/90 border border-rose-500 rounded-xl text-rose-200 text-xs font-bold flex items-center gap-2 animate-shake">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-400" />
+                  <span>{modalError}</span>
+                </div>
+              )}
+
               {/* Title */}
               <div>
                 <label className="block text-slate-300 font-semibold mb-1">
@@ -1194,20 +1275,54 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
                 </div>
               </div>
 
+              {/* Direct Telegram Broadcast Checkbox */}
+              <label className="flex items-center gap-2 cursor-pointer bg-slate-950 p-3 rounded-xl border border-slate-800 hover:border-slate-700 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={autoPublishTelegram}
+                  onChange={e => setAutoPublishTelegram(e.target.checked)}
+                  className="w-4 h-4 accent-rose-500 rounded cursor-pointer"
+                />
+                <div className="text-right">
+                  <span className="text-xs font-bold text-slate-200 block">
+                    📢 بث ونشر توصية هذا الخبر مباشرة إلى قناة التليجرام (@ZadNBFX) بعد الحفظ فوراً
+                  </span>
+                  <span className="text-[10px] text-slate-500 block">
+                    سيتم إرسال التحليل، التوقيت، وزوج التوصية المختار إلى المشتركين فور اعتماد الحفظ
+                  </span>
+                </div>
+              </label>
+
               {/* Action Buttons */}
               <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-800">
                 <button
                   type="button"
+                  disabled={isSavingNews}
                   onClick={() => setIsModalOpen(false)}
-                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl cursor-pointer"
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 rounded-xl cursor-pointer transition-colors"
                 >
                   إلغاء
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-xl cursor-pointer shadow-md shadow-rose-600/30"
+                  disabled={isSavingNews}
+                  className="px-5 py-2.5 bg-rose-600 hover:bg-rose-500 disabled:opacity-60 text-white font-bold rounded-xl cursor-pointer shadow-md shadow-rose-600/30 flex items-center gap-2 transition-all"
                 >
-                  {editingItem ? 'حفظ التعديلات' : 'إضافة ونشر الخبر'}
+                  {isSavingNews ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>جاري الحفظ والتنفيذ...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>
+                        {editingItem
+                          ? (autoPublishTelegram ? 'حفظ التعديلات وبثها للتليجرام 📢' : 'حفظ التعديلات')
+                          : (autoPublishTelegram ? 'إضافة ونشر الخبر الآن 🚀' : 'إضافة وحفظ الخبر')}
+                      </span>
+                    </>
+                  )}
                 </button>
               </div>
             </form>

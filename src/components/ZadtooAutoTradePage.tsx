@@ -186,15 +186,16 @@ export const ZadtooAutoTradePage: React.FC<ZadtooAutoTradePageProps> = ({
               </h2>
 
               <p className="text-sm sm:text-base text-slate-600 leading-relaxed">
-                نظام التداول الآلي في ZAD FX مبرمج وفقاً لاستراتيجية المؤشرات الثلاثية المعتمدة لشاشة Quotex: (SuperTrend 10, 3 + Williams Fractal 5 + RSI 9, 70, 30) لتنفيذ الصفقات على فريم الدقيقة (M1) بأعلى دقة وتوافق فني وبدون أي مضاعفات.
+                نظام التداول الآلي في ZAD FX مبرمج وفقاً لاستراتيجية الدعم والمقاومة الإلزامية (S/R) مع توافق مؤشرين على الأقل من: (SuperTrend 10, 3 + Williams Fractal 5 + RSI 9, 70, 30) لتنفيذ الصفقات على فريم الدقيقة (M1) بأعلى دقة وتوافق فني وبدون أي مضاعفات.
               </p>
 
               {/* Indicators Badge */}
               <div className="inline-flex flex-wrap items-center gap-1.5 p-2 bg-slate-900 text-white rounded-xl text-xs font-mono-num font-bold">
                 <span className="text-amber-400 font-sans text-[11px] font-black">المؤشرات:</span>
+                <span className="px-2 py-0.5 rounded bg-amber-500/30 text-amber-300 border border-amber-500/50 font-black">🧱 دعم ومقاومة (أساسي 100%)</span>
                 <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">SUPERTREND 10 3</span>
                 <span className="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30">FRACTAL 5</span>
-                <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">RSI 9 [70/30]</span>
+                <span className="px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">RSI 9 [70/30]</span>
               </div>
 
               {/* 3 Badges matching Screen 3 */}

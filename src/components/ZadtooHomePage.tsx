@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   TrendingUp,
+  TrendingDown,
   Cpu,
   Send,
   Users,
@@ -15,6 +16,7 @@ import {
   Newspaper,
   Flame
 } from 'lucide-react';
+import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS } from '../types/forexNews';
 
 interface ZadtooHomePageProps {
   onStartNow: () => void;
@@ -32,6 +34,94 @@ export const ZadtooHomePage: React.FC<ZadtooHomePageProps> = ({
   telegramChannelLink = 'https://t.me/ZadNBFX'
 }) => {
   const [showVideoModal, setShowVideoModal] = useState(false);
+  const [newsList, setNewsList] = useState<ForexNewsItem[]>(INITIAL_WEEKLY_FOREX_NEWS);
+  const [nowMs, setNowMs] = useState<number>(Date.now());
+
+  // Real-time ticking clock for countdown
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Fetch live news schedule from server
+  useEffect(() => {
+    fetch('/api/forex-news')
+      .then(res => res.json())
+      .then(data => {
+        if (data.ok && Array.isArray(data.news) && data.news.length > 0) {
+          setNewsList(data.news);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  // Compute the live/upcoming active news item for today and subsequent days
+  const activeNewsItem = useMemo(() => {
+    if (!newsList || newsList.length === 0) return null;
+
+    // Today's date string in local browser time: YYYY-MM-DD
+    const todayStr = new Date(nowMs).toISOString().split('T')[0];
+
+    // 1. First priority: items scheduled for today
+    const todayItems = newsList.filter(n => n.eventDate === todayStr);
+
+    // Look for an upcoming event today (not expired yet)
+    const upcomingToday = todayItems.find(n => n.targetEpochMs > nowMs);
+    if (upcomingToday) return upcomingToday;
+
+    // If all events today concluded, check if the last one concluded recently
+    const lastToday = todayItems[todayItems.length - 1];
+    if (lastToday) {
+      // If there's an upcoming event within the next 24 hours, show that; otherwise show today's finished event
+      const nextUpcoming = newsList.find(n => n.targetEpochMs > nowMs);
+      if (nextUpcoming && nextUpcoming.targetEpochMs - nowMs < 24 * 3600 * 1000) {
+        return nextUpcoming;
+      }
+      return lastToday;
+    }
+
+    // 2. Otherwise: next upcoming event in the weekly calendar
+    const nextUpcoming = newsList.find(n => n.targetEpochMs > nowMs);
+    if (nextUpcoming) return nextUpcoming;
+
+    // 3. Fallback to first item with recommendation
+    return newsList.find(n => n.recommendation) || newsList[0];
+  }, [newsList, nowMs]);
+
+  // Compute countdown and status for the active news item
+  const countdownInfo = useMemo(() => {
+    if (!activeNewsItem) return null;
+    const diff = activeNewsItem.targetEpochMs - nowMs;
+    const isExpired = diff <= 0;
+
+    if (isExpired) {
+      return {
+        isExpired: true,
+        badgeText: 'منتهي',
+        badgeColor: 'bg-slate-700/80 text-slate-300 border-slate-600',
+        timerText: 'تم الصدور'
+      };
+    }
+
+    const totalSeconds = Math.floor(diff / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+
+    const formattedTime =
+      hours > 0
+        ? `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+        : `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+
+    return {
+      isExpired: false,
+      badgeText: 'قادم',
+      badgeColor: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 animate-pulse',
+      timerText: formattedTime
+    };
+  }, [activeNewsItem, nowMs]);
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-800">
@@ -91,6 +181,84 @@ export const ZadtooHomePage: React.FC<ZadtooHomePageProps> = ({
                   <span>شاهد الفيديو</span>
                 </button>
               </div>
+
+              {/* Sleek Breaking News Recommendation Ticker Strip */}
+              {activeNewsItem && (
+                <div
+                  onClick={onExploreNews}
+                  role="button"
+                  tabIndex={0}
+                  className="w-full mt-2 p-2 sm:px-3.5 sm:py-2.5 bg-gradient-to-r from-slate-950 via-slate-900 to-[#0F172A] border border-rose-500/40 hover:border-rose-400 rounded-xl shadow-md transition-all cursor-pointer group hover:scale-[1.01] active:scale-[0.99] select-none text-right"
+                  title="انقر لعرض تفاصيل الخبر والتوصية والمفكرة الاقتصادية الكاملة"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    {/* Right side: Breaking badge + Recommendation Pair & Action */}
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[11px] font-black shrink-0">
+                        <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping" />
+                        <span>توصية الخبر الحي ⚡</span>
+                      </span>
+
+                      {/* The recommendation pair & direction */}
+                      {activeNewsItem.recommendation ? (
+                        <div className="flex items-center gap-1.5 font-bold">
+                          <span className="text-white font-black font-mono-num text-xs sm:text-sm">
+                            {activeNewsItem.recommendation.pair}
+                          </span>
+                          {activeNewsItem.recommendation.action === 'BUY' ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[11px] font-black shadow-xs">
+                              <TrendingUp className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>صعود (BUY) 🟢</span>
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-500/20 border border-rose-500/40 text-rose-300 text-[11px] font-black shadow-xs">
+                              <TrendingDown className="w-3.5 h-3.5 text-rose-400" />
+                              <span>هبوط (SELL) 🔴</span>
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-white font-bold text-xs truncate max-w-[200px]">
+                          {activeNewsItem.title}
+                        </span>
+                      )}
+
+                      {/* News Event brief title */}
+                      <span className="hidden sm:inline-block text-[11px] text-slate-400 font-medium truncate max-w-[190px]">
+                        ({activeNewsItem.title})
+                      </span>
+                    </div>
+
+                    {/* Left side: GMT Time + Status Badge (قادم / منتهي) + Live Countdown */}
+                    <div className="flex items-center gap-2 font-mono-num shrink-0 mr-auto">
+                      {/* GMT Time */}
+                      <span className="flex items-center gap-1 text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded-md font-bold">
+                        <Clock className="w-3 h-3 text-amber-400" />
+                        <span>{activeNewsItem.timeGmt} GMT</span>
+                      </span>
+
+                      {/* Status Badge: قادم or منتهي */}
+                      {countdownInfo && (
+                        <span className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold border ${countdownInfo.badgeColor}`}>
+                          {countdownInfo.badgeText}
+                        </span>
+                      )}
+
+                      {/* Live Countdown Timer based on local clock */}
+                      {countdownInfo && (
+                        <div className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-800/90 border border-slate-700 text-white font-black text-xs">
+                          {!countdownInfo.isExpired && <span className="text-slate-400 text-[10px]">متبقي:</span>}
+                          <span className={countdownInfo.isExpired ? 'text-slate-400 text-[11px]' : 'text-emerald-400 font-bold'}>
+                            {countdownInfo.timerText}
+                          </span>
+                        </div>
+                      )}
+
+                      <ArrowLeft className="w-3.5 h-3.5 text-slate-400 group-hover:text-rose-400 group-hover:-translate-x-0.5 transition-transform" />
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="flex items-center justify-center lg:justify-start gap-4 text-xs text-slate-500 pt-2 font-medium">
                 <span className="flex items-center gap-1 text-emerald-700">

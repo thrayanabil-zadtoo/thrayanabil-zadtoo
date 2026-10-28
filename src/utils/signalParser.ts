@@ -12,6 +12,7 @@ export interface ParsedSignal {
   analysisReason?: string;
   superTrend?: string;
   fractalPattern?: string;
+  supportResistance?: string;
 }
 
 export interface FormatterOptions {
@@ -36,6 +37,7 @@ export const DEFAULT_CUSTOM_TEMPLATE = `✨ {العنوان} ✨
 📈 السعر: {السعر} | مؤشر RSI (9): {RSI}
 🧭 سوبر تريند: {السوبر_تريند}
 📐 الفركتال: {الفركتال}
+🧱 الدعم والمقاومة: {الدعم_والمقاومة}
 ━━━━━━━━━━━━━━
 📢 قناتنا المجانية: @ZadNBFX
 {التوقيع}`;
@@ -270,7 +272,7 @@ export function formatSignalMessage(parsed: ParsedSignal, options: FormatterOpti
 
   const liveDetailsLine =
     showAnalysis && parsed.livePrice
-      ? `\n📈 السعر: ${parsed.livePrice}${parsed.rsiValue !== undefined ? ` | مؤشر RSI (9): ${parsed.rsiValue}` : ''}${parsed.superTrend ? `\n🧭 سوبر تريند: ${parsed.superTrend}` : ''}${parsed.fractalPattern ? `\n📐 الفركتال: ${parsed.fractalPattern}` : ''}`
+      ? `\n📈 السعر: ${parsed.livePrice}${parsed.rsiValue !== undefined ? ` | مؤشر RSI (9): ${parsed.rsiValue}` : ''}${parsed.superTrend ? `\n🧭 سوبر تريند: ${parsed.superTrend}` : ''}${parsed.fractalPattern ? `\n📐 الفركتال: ${parsed.fractalPattern}` : ''}${parsed.supportResistance ? `\n🧱 الدعم والمقاومة: ${parsed.supportResistance}` : ''}`
       : '';
 
   const reasonLine =
@@ -294,6 +296,7 @@ export function formatSignalMessage(parsed: ParsedSignal, options: FormatterOpti
       .replace(/\{RSI\}/g, parsed.rsiValue !== undefined ? String(parsed.rsiValue) : '')
       .replace(/\{السوبر_تريند\}/g, parsed.superTrend || '')
       .replace(/\{الفركتال\}/g, parsed.fractalPattern || '')
+      .replace(/\{الدعم_والمقاومة\}/g, parsed.supportResistance || '')
       .replace(/\{السبب\}/g, parsed.analysisReason || '')
       .replace(/\{التوقيع\}/g, options.channelSignature || '');
   } else if (options.templateStyle === 'elegant') {
