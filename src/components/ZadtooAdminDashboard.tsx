@@ -37,6 +37,7 @@ import { ZadtooLogo } from './ZadtooNavbar';
 import { getPairFlags } from './ZadtooSignalsPage';
 import { ZadtooPlansAndLinksManager } from './ZadtooPlansAndLinksManager';
 import { ZadtooPaymentsManager } from './ZadtooPaymentsManager';
+import { ZadtooAdminLiveBroadcast } from './ZadtooAdminLiveBroadcast';
 import type { SubscriptionPlan, PlatformContactLinks } from '../types/platformConfig';
 import type { AutoPilotConfig } from '../App';
 
@@ -80,7 +81,7 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
   onConfigChanged
 }) => {
   const [activeAdminNav, setActiveAdminNav] = useState<
-    'overview' | 'pairs' | 'signals' | 'users' | 'subs' | 'reports' | 'settings' | 'plans_links' | 'payments'
+    'overview' | 'pairs' | 'signals' | 'users' | 'subs' | 'reports' | 'settings' | 'plans_links' | 'payments' | 'admin_live'
   >('overview');
 
   const [showAddSignalModal, setShowAddSignalModal] = useState(false);
@@ -461,6 +462,28 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               <span>الإعدادات المتقدمة</span>
             </button>
 
+            {/* البث الحي للمشرف - قسم مخصص للبث الفوري وإشارات المشرف */}
+            <button
+              type="button"
+              onClick={() => setActiveAdminNav('admin_live')}
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl transition-all cursor-pointer text-right ${
+                activeAdminNav === 'admin_live'
+                  ? 'bg-rose-50 text-rose-800 font-black border-2 border-rose-400 shadow-xs'
+                  : 'text-slate-700 hover:bg-rose-50/70 hover:text-rose-900 border border-transparent'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="relative">
+                  <Radio className="w-4 h-4 text-rose-600" />
+                  <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+                </div>
+                <span className="font-extrabold">البث الحي للمشرف</span>
+              </div>
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 font-black">
+                LIVE 🔴
+              </span>
+            </button>
+
             {onOpenRobotAdmin && (
               <button
                 type="button"
@@ -556,6 +579,19 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
 
             <button
               type="button"
+              onClick={() => setActiveAdminNav(activeAdminNav === 'admin_live' ? 'overview' : 'admin_live')}
+              className={`flex items-center gap-1.5 px-3 py-2 font-black text-xs rounded-xl shadow-xs transition-colors cursor-pointer ${
+                activeAdminNav === 'admin_live'
+                  ? 'bg-rose-700 text-white ring-2 ring-rose-400'
+                  : 'bg-rose-600 hover:bg-rose-500 text-white'
+              }`}
+            >
+              <Radio className="w-3.5 h-3.5 animate-pulse" />
+              <span>{activeAdminNav === 'admin_live' ? '← العودة للرئيسية' : '🔴 البث الحي للمشرف'}</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setShowAddSignalModal(true)}
               className="hidden sm:flex items-center gap-1.5 px-3 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
             >
@@ -618,6 +654,29 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               initialPlans={plans}
               initialContactLinks={contactLinks}
               onConfigChanged={onConfigChanged}
+            />
+          </div>
+        ) : activeAdminNav === 'admin_live' ? (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between bg-rose-50 border border-rose-200 p-3.5 rounded-2xl">
+              <div className="flex items-center gap-2">
+                <Radio className="w-5 h-5 text-rose-600 shrink-0 animate-pulse" />
+                <span className="text-xs sm:text-sm font-black text-rose-950">
+                  قسم البث الحي للمشرف — إرسال الإشارات المباشرة للبوتات والروبوت العائم وصناديق المباركة
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveAdminNav('overview')}
+                className="px-3.5 py-1.5 bg-white hover:bg-rose-100/60 text-rose-900 text-xs font-bold rounded-xl border border-rose-300 transition-colors cursor-pointer"
+              >
+                ← العودة إلى لوحة التحكم الرئيسية
+              </button>
+            </div>
+
+            <ZadtooAdminLiveBroadcast
+              autoPilot={autoPilot}
+              onNavigateHome={() => setActiveAdminNav('overview')}
             />
           </div>
         ) : (
@@ -718,43 +777,70 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
             </div>
           )}
 
-          {/* 4 Informational Status Badges */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-            <div className="bg-white/90 backdrop-blur-xs p-3 rounded-xl border border-slate-200 space-y-1">
-              <span className="text-slate-400 block font-bold text-[11px]">ساعات العمل المعتمدة</span>
-              <div className="font-extrabold text-slate-900 font-mono-num">10:00 ص - 06:00 م</div>
-              <span className="text-[10px] text-slate-500 block">توقيت جمهورية مصر العربية</span>
+          {/* 4 Informational Status Badges reflecting the 4 Core Bot Rules */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+            {/* Rule 1: Free Bot 70% - 75% Target */}
+            <div className="bg-white/95 backdrop-blur-xs p-3.5 rounded-xl border border-emerald-200 space-y-1 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500 font-bold text-[11px]">1. بوت القناة العامة</span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-emerald-100 text-emerald-800">
+                  🎯 هدف 70% - 75%
+                </span>
+              </div>
+              <div className="font-black text-slate-900 text-xs">
+                إغلاق عند نسبة 70% حتى 75%
+              </div>
+              <p className="text-[10px] text-slate-500 leading-tight">
+                إغلاق فوري للبث وإرسال التقرير النهائي والمباركة لجميع من شارك وتداول معنا بالفوز.
+              </p>
             </div>
 
-            <div className="bg-white/90 backdrop-blur-xs p-3 rounded-xl border border-slate-200 space-y-1">
-              <span className="text-slate-400 block font-bold text-[11px]">التوقيت الحالي والجدول</span>
-              <div className="font-extrabold text-emerald-700 flex items-center gap-1 font-mono-num">
-                <Clock className="w-3.5 h-3.5 text-emerald-600" />
-                <span>الساعة {autoPilot?.currentEgyptHour ?? 12}:00 (القاهرة)</span>
+            {/* Rule 2: VIP Bot Schedule */}
+            <div className="bg-white/95 backdrop-blur-xs p-3.5 rounded-xl border border-sky-200 space-y-1 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500 font-bold text-[11px]">2. بوت قناة VIP الخاصة</span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-sky-100 text-sky-800">
+                  👑 10 ص - 6 م
+                </span>
               </div>
-              <span className="text-[10px] text-emerald-600 font-bold block">
-                {autoPilot?.isFreeBotWithinSchedule ? 'ضمن فترة العمل النشطة ✅' : 'خارج فترة العمل المحددة'}
-              </span>
+              <div className="font-black text-slate-900 text-xs font-mono-num">
+                10:00 صباحاً — 06:00 مساءً
+              </div>
+              <p className="text-[10px] text-slate-500 leading-tight">
+                يعمل يومياً بتوقيت القاهرة <strong className="text-sky-700">دون التقيد بعدد الربح والخسارة</strong>.
+              </p>
             </div>
 
-            <div className="bg-white/90 backdrop-blur-xs p-3 rounded-xl border border-slate-200 space-y-1">
-              <span className="text-slate-400 block font-bold text-[11px]">الفاصل الزمني وجودة الإشارة</span>
-              <div className="font-extrabold text-slate-900 font-mono-num">
-                كل {autoPilot?.intervalMinutes || 15} دقيقة
+            {/* Rule 3: Floating Broker Robot Schedule */}
+            <div className="bg-white/95 backdrop-blur-xs p-3.5 rounded-xl border border-amber-200 space-y-1 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500 font-bold text-[11px]">3. الروبوت العائم للمنصات</span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-900">
+                  🤖 10 ص - 6 م
+                </span>
               </div>
-              <span className="text-[10px] text-sky-700 font-bold block">
-                حد أدنى للجودة {autoPilot?.minQualityScore || 75}% (صفقات قوية فقط)
-              </span>
+              <div className="font-black text-slate-900 text-xs font-mono-num">
+                استقبال من 10:00 ص إلى 06:00 م
+              </div>
+              <p className="text-[10px] text-slate-500 leading-tight">
+                يتلقى الإشارات اللحظية وينفذها بالثانية مباشرة على منصة كيوتكس وبروكرز.
+              </p>
             </div>
 
-            <div className="bg-white/90 backdrop-blur-xs p-3 rounded-xl border border-slate-200 space-y-1">
-              <span className="text-slate-400 block font-bold text-[11px]">الإشارة المجدولة القادمة</span>
-              <div className="font-extrabold text-slate-900 font-mono-num">
-                {autoPilot?.nextRunAt ? new Date(autoPilot.nextRunAt).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }) : 'جاهز للرصد فوراً'}
+            {/* Rule 4: 10-Minute Warmup Scanning Delay */}
+            <div className="bg-white/95 backdrop-blur-xs p-3.5 rounded-xl border border-purple-200 space-y-1 shadow-2xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500 font-bold text-[11px]">4. فحص وإحماء السوق</span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-purple-100 text-purple-800">
+                  ⏳ 10 دقائق
+                </span>
               </div>
-              <span className="text-[10px] text-slate-500 block">
-                إجمالي الإشارات المرسلة: <strong className="text-slate-800">{autoPilot?.totalAutoSent || 0}</strong>
-              </span>
+              <div className="font-black text-slate-900 text-xs font-mono-num">
+                تأخير 10 دقائق عند الانطلاق
+              </div>
+              <p className="text-[10px] text-slate-500 leading-tight">
+                مسح سيولة وتحليل عميق للسوق قبل بث أي إشارة (عند 10:00 ص أو بدء البوت).
+              </p>
             </div>
           </div>
         </div>
@@ -1324,6 +1410,15 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               >
                 <Crown className="w-4 h-4 text-slate-950" />
                 <span>إدارة وتعديل الباقات والروابط</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveAdminNav('admin_live')}
+                className="w-full py-2 px-3 bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white font-black rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 shadow-xs"
+              >
+                <Radio className="w-4 h-4 text-white animate-pulse" />
+                <span>🔴 البث الحي للمشرف (الإشارات والمباركة)</span>
               </button>
             </div>
           </div>

@@ -42,7 +42,9 @@ import {
   Image as ImageIcon,
   Sparkles,
   Sliders,
-  BarChart2
+  BarChart2,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import {
   parseRawQuotexSignal,
@@ -67,6 +69,7 @@ import { ZadtooAdminDashboard } from './components/ZadtooAdminDashboard';
 import { ZadtooAboutContactModal } from './components/ZadtooAboutContactModal';
 import { ZadtooForexNewsPage } from './components/ZadtooForexNewsPage';
 import { ZadtooPlansAndLinksManager } from './components/ZadtooPlansAndLinksManager';
+import { ZadtooAdminLiveBroadcast } from './components/ZadtooAdminLiveBroadcast';
 import {
   SubscriptionPlan,
   PlatformContactLinks,
@@ -365,7 +368,7 @@ export default function App() {
 
   const [visitorFilter, setVisitorFilter] = useState<'ALL' | 'WIN' | 'PENDING'>('ALL');
   const [visitorSimStake, setVisitorSimStake] = useState<number>(5);
-  const [adminSectionTab, setAdminSectionTab] = useState<'all' | 'autopilot' | 'studio' | 'signals' | 'vip' | 'plans'>('all');
+  const [adminSectionTab, setAdminSectionTab] = useState<'all' | 'autopilot' | 'studio' | 'signals' | 'vip' | 'plans' | 'admin_live'>('all');
   const [platformPlans, setPlatformPlans] = useState<SubscriptionPlan[]>(() => {
     try {
       const saved = localStorage.getItem('zad_platform_plans');
@@ -569,6 +572,15 @@ export default function App() {
   const lastAutoPilotSaveRef = React.useRef<number>(0);
   const [freeBotIconsSavedBadge, setFreeBotIconsSavedBadge] = useState<boolean>(false);
   const [vipBotIconsSavedBadge, setVipBotIconsSavedBadge] = useState<boolean>(false);
+  const [showVipToken, setShowVipToken] = useState<boolean>(false);
+  const [vipCredsSavedBadge, setVipCredsSavedBadge] = useState<boolean>(false);
+  const [isTestingVipTelegram, setIsTestingVipTelegram] = useState<boolean>(false);
+  const [vipTelegramTestResult, setVipTelegramTestResult] = useState<{
+    ok: boolean;
+    message: string;
+    botUsername?: string;
+    chatTitle?: string;
+  } | null>(null);
   const [isSendingDailyReport, setIsSendingDailyReport] = useState<boolean>(false);
   const [dailyReportSendStatus, setDailyReportSendStatus] = useState<{
     type: 'idle' | 'success' | 'error';
@@ -684,8 +696,15 @@ export default function App() {
         const resolvedToken = data.autopilot.botToken || savedLocalToken;
         const resolvedChat = data.autopilot.chatId || savedLocalChat || '@ZadNBFX';
 
+        const savedLocalVipToken = localStorage.getItem('tg_vip_bot_token') || '';
+        const savedLocalVipChat = localStorage.getItem('tg_vip_chat_id') || '';
+        const resolvedVipToken = data.autopilot.vipBotToken || savedLocalVipToken;
+        const resolvedVipChat = data.autopilot.vipChatId || savedLocalVipChat;
+
         if (resolvedToken) localStorage.setItem('tg_bot_token', resolvedToken);
         if (resolvedChat) localStorage.setItem('tg_chat_id', resolvedChat);
+        if (resolvedVipToken) localStorage.setItem('tg_vip_bot_token', resolvedVipToken);
+        if (resolvedVipChat) localStorage.setItem('tg_vip_chat_id', resolvedVipChat);
         if (data.autopilot.freeStartHourEgypt !== undefined) {
           localStorage.setItem('tg_free_start_hour', String(data.autopilot.freeStartHourEgypt));
         }
@@ -720,6 +739,8 @@ export default function App() {
           quotexReferralLink: resolvedQxLink,
           botToken: resolvedToken || prev.botToken,
           chatId: resolvedChat || prev.chatId,
+          vipBotToken: resolvedVipToken || prev.vipBotToken,
+          vipChatId: resolvedVipChat || prev.vipChatId,
           freeWinImageUrl: data.autopilot.freeWinImageUrl !== undefined ? data.autopilot.freeWinImageUrl : (prev.freeWinImageUrl || ''),
           freeWinGale1ImageUrl: data.autopilot.freeWinGale1ImageUrl !== undefined ? data.autopilot.freeWinGale1ImageUrl : (prev.freeWinGale1ImageUrl || ''),
           freeLossImageUrl: data.autopilot.freeLossImageUrl !== undefined ? data.autopilot.freeLossImageUrl : (prev.freeLossImageUrl || ''),
@@ -728,7 +749,7 @@ export default function App() {
           vipLossImageUrl: data.autopilot.vipLossImageUrl !== undefined ? data.autopilot.vipLossImageUrl : (prev.vipLossImageUrl || '')
         }));
 
-        // If browser had a token in localStorage that the server didn't have yet, push it to server & Cloud Firestore immediately
+        // If browser had a token in localStorage that the server didn't have yet, push it to server immediately
         if (!data.autopilot.botToken && savedLocalToken) {
           fetch('/api/autopilot', {
             method: 'POST',
@@ -737,6 +758,17 @@ export default function App() {
               ...data.autopilot,
               botToken: savedLocalToken,
               chatId: resolvedChat
+            })
+          }).catch(() => {});
+        }
+        if (!data.autopilot.vipBotToken && savedLocalVipToken) {
+          fetch('/api/autopilot', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              ...data.autopilot,
+              vipBotToken: savedLocalVipToken,
+              vipChatId: resolvedVipChat
             })
           }).catch(() => {});
         }
@@ -1526,8 +1558,8 @@ export default function App() {
         console.warn('Optional secondary cloud sync notice:', cloudErr);
       }
 
-      const startH = updatedAutopilot.freeStartHourEgypt ?? 9;
-      const endH = updatedAutopilot.freeEndHourEgypt ?? 21;
+      const startH = updatedAutopilot.freeStartHourEgypt ?? 10;
+      const endH = updatedAutopilot.freeEndHourEgypt ?? 18;
       const startLabel = startH === 0 ? '12 ص' : startH < 12 ? `${startH} صباحاً` : startH === 12 ? '12 ظهراً' : `${startH - 12} مساءً`;
       const endLabel = endH === 0 ? '12 ص' : endH < 12 ? `${endH} صباحاً` : endH === 12 ? '12 ظهراً' : `${endH - 12} مساءً`;
       const galeLabel = updatedAutopilot.oneGaleEnabled === true ? 'مضاعفة واحدة مفعّلة' : 'بدون مضاعفات (متوقف)';
@@ -1556,6 +1588,40 @@ export default function App() {
       setTimeout(() => setPublishStatus({ type: 'idle' }), 5000);
     } finally {
       setIsSavingAutoPilot(false);
+    }
+  };
+
+  // Test VIP Telegram Bot Connection & Send Test Message
+  const handleTestVipTelegram = async () => {
+    setIsTestingVipTelegram(true);
+    setVipTelegramTestResult(null);
+    try {
+      const res = await fetch('/api/telegram/test-vip-connection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'vip' })
+      });
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        setVipTelegramTestResult({
+          ok: true,
+          message: data.message || 'تم إرسال رسالة فحص حية بنجاح إلى القناة!',
+          botUsername: data.botUsername,
+          chatTitle: data.chatTitle
+        });
+      } else {
+        setVipTelegramTestResult({
+          ok: false,
+          message: data.error || 'فشل الاتصال ببوت VIP'
+        });
+      }
+    } catch (err: any) {
+      setVipTelegramTestResult({
+        ok: false,
+        message: `خطأ في الاتصال بالسيرفر: ${err.message}`
+      });
+    } finally {
+      setIsTestingVipTelegram(false);
     }
   };
 
@@ -1902,10 +1968,10 @@ export default function App() {
       const hourPart = parts.find(p => p.type === 'hour')?.value;
       const h = parseInt(hourPart || '0', 10);
       const egyptH = h === 24 ? 0 : isNaN(h) ? (d.getUTCHours() + 2) % 24 : h;
-      return egyptH >= 9 && egyptH < 21;
+      return egyptH >= 10 && egyptH < 18;
     } catch (_e) {
       const h = (d.getUTCHours() + 2) % 24;
-      return h >= 9 && h < 21;
+      return h >= 10 && h < 18;
     }
   };
 
@@ -1936,12 +2002,12 @@ export default function App() {
   // Comprehensive End-of-Day Final Trading Report (تقرير نهاية يوم التداول بناءً على الساعة النهائية في البوت)
   const endOfDayReportData = useMemo(() => {
     const todayEgypt = getEgyptDateString(deviceNow);
-    const startH = Number(autoPilot.freeStartHourEgypt ?? 9);
-    const endH = Number(autoPilot.freeEndHourEgypt ?? 21);
+    const startH = Number(autoPilot.freeStartHourEgypt ?? 10);
+    const endH = Number(autoPilot.freeEndHourEgypt ?? 18);
     const currentH = Number(autoPilot.currentEgyptHour ?? deviceNow.getHours());
     const isAfterClose =
       autoPilot.freeScheduleEnabled === false
-        ? currentH >= 21
+        ? currentH >= 18
         : autoPilot.isFreeBotWithinSchedule === false;
 
     const liveDirectWins = todaySignals.filter(s => s.status === 'WIN').length;
@@ -2871,14 +2937,15 @@ export default function App() {
                     { id: 'studio', label: '02-03. استوديو القالب' },
                     { id: 'signals', label: `04. سجل اليوم (${todaySignals.length})` },
                     { id: 'vip', label: `05. أعضاء VIP (${subscribers.length})` },
-                    { id: 'plans', label: `06. الباقات والروابط 👑` }
+                    { id: 'plans', label: `06. الباقات والروابط 👑` },
+                    { id: 'admin_live', label: '🔴 07. البث الحي للمشرف' }
                   ].map((tab) => (
                     <button
                       key={tab.id}
                       type="button"
                       onClick={() =>
                         setAdminSectionTab(
-                          tab.id as 'all' | 'autopilot' | 'studio' | 'signals' | 'vip' | 'plans'
+                          tab.id as 'all' | 'autopilot' | 'studio' | 'signals' | 'vip' | 'plans' | 'admin_live'
                         )
                       }
                       className={`px-2.5 py-1.5 rounded-md font-bold transition-colors cursor-pointer whitespace-nowrap ${
@@ -3073,7 +3140,7 @@ export default function App() {
                               يبدأ الإرسال الساعة (بتوقيت مصر)
                             </label>
                             <select
-                              value={autoPilot.freeStartHourEgypt ?? 9}
+                              value={autoPilot.freeStartHourEgypt ?? 10}
                               onChange={(e) =>
                                 handleSaveAutoPilot({ freeStartHourEgypt: Number(e.target.value) })
                               }
@@ -3092,7 +3159,7 @@ export default function App() {
                               يتوقف الإرسال الساعة (بتوقيت مصر)
                             </label>
                             <select
-                              value={autoPilot.freeEndHourEgypt ?? 21}
+                              value={autoPilot.freeEndHourEgypt ?? 18}
                               onChange={(e) =>
                                 handleSaveAutoPilot({ freeEndHourEgypt: Number(e.target.value) })
                               }
@@ -3112,14 +3179,14 @@ export default function App() {
                           <div className="flex items-center justify-between text-[10px] text-slate-400">
                             <span>المخطط البصري لساعات عمل البوت المجاني (24 ساعة - توقيت القاهرة):</span>
                             <span className="font-mono-num text-emerald-400 font-bold">
-                              {String(autoPilot.freeStartHourEgypt ?? 9).padStart(2, '0')}:00 ←{' '}
-                              {String(autoPilot.freeEndHourEgypt ?? 21).padStart(2, '0')}:00
+                              {String(autoPilot.freeStartHourEgypt ?? 10).padStart(2, '0')}:00 ←{' '}
+                              {String(autoPilot.freeEndHourEgypt ?? 18).padStart(2, '0')}:00
                             </span>
                           </div>
                           <div className="grid grid-cols-24 gap-0.5 h-3 rounded overflow-hidden bg-slate-900 p-0.5">
                             {Array.from({ length: 24 }, (_, h) => {
-                              const startH = autoPilot.freeStartHourEgypt ?? 9;
-                              const endH = autoPilot.freeEndHourEgypt ?? 21;
+                              const startH = autoPilot.freeStartHourEgypt ?? 10;
+                              const endH = autoPilot.freeEndHourEgypt ?? 18;
                               const isActiveHour =
                                 startH <= endH
                                   ? h >= startH && h < endH
@@ -3163,13 +3230,13 @@ export default function App() {
                               className="accent-emerald-500 w-4 h-4 rounded"
                             />
                             <span>
-                              📊 إرسال <strong>التقرير النهائي لليوم</strong> تلقائياً للقناة عند حلول ساعة الإغلاق ({String(autoPilot.freeEndHourEgypt ?? 21).padStart(2, '0')}:00)
+                              📊 إرسال <strong>التقرير النهائي لليوم</strong> تلقائياً للقناة عند حلول ساعة الإغلاق ({String(autoPilot.freeEndHourEgypt ?? 18).padStart(2, '0')}:00)
                             </span>
                           </label>
                           <span className="text-[10px] font-mono-num px-2 py-0.5 rounded bg-slate-900 text-emerald-300 border border-emerald-500/30">
                             {autoPilot.lastDailyReportSentDate === endOfDayReportData.todayEgypt
                               ? '✅ أُرسل تقرير اليوم'
-                              : `⏰ مجدول للساعة ${String(autoPilot.freeEndHourEgypt ?? 21).padStart(2, '0')}:00`}
+                              : `⏰ مجدول للساعة ${String(autoPilot.freeEndHourEgypt ?? 18).padStart(2, '0')}:00`}
                           </span>
                         </div>
                       </div>
@@ -3494,37 +3561,131 @@ export default function App() {
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1">
-                        توكن بوت VIP (أو اتركه فارغاً لاستخدام نفس البوت)
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-slate-300">
+                          توكن بوت VIP (Bot Token)
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setShowVipToken(!showVipToken)}
+                          className="text-[11px] text-amber-400 hover:text-amber-300 flex items-center gap-1 cursor-pointer"
+                        >
+                          {showVipToken ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                          <span>{showVipToken ? 'إخفاء' : 'إظهار التوكن'}</span>
+                        </button>
+                      </div>
                       <input
-                        type="password"
+                        type={showVipToken ? 'text' : 'password'}
                         value={autoPilot.vipBotToken || ''}
-                        onChange={(e) => setAutoPilot(prev => ({ ...prev, vipBotToken: e.target.value }))}
-                        onBlur={() => handleSaveAutoPilot({ vipBotToken: autoPilot.vipBotToken })}
-                        placeholder="توكن بوت VIP (اختياري)..."
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setAutoPilot(prev => ({ ...prev, vipBotToken: val }));
+                          try { localStorage.setItem('tg_vip_bot_token', val); } catch(_) {}
+                        }}
+                        onBlur={(e) => {
+                          const val = e.target.value;
+                          handleSaveAutoPilot({ vipBotToken: val });
+                        }}
+                        placeholder="8814918920:AAGeXm..."
                         dir="ltr"
                         className="w-full px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 font-mono-num"
                       />
                     </div>
                     <div>
-                      <label className="block text-xs font-medium text-slate-300 mb-1">
-                        معرف قناة VIP في تليجرام (Chat ID)
-                      </label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="block text-xs font-medium text-slate-300">
+                          معرف قناة VIP في تليجرام (Chat ID)
+                        </label>
+                        <span className="text-[10px] text-slate-500">معرف أو رقم القناة</span>
+                      </div>
                       <input
                         type="text"
                         value={autoPilot.vipChatId || ''}
-                        onChange={(e) => setAutoPilot(prev => ({ ...prev, vipChatId: e.target.value }))}
-                        onBlur={() => handleSaveAutoPilot({ vipChatId: autoPilot.vipChatId })}
-                        placeholder="@YourVipChannel أو -100123456789"
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setAutoPilot(prev => ({ ...prev, vipChatId: val }));
+                          try { localStorage.setItem('tg_vip_chat_id', val); } catch(_) {}
+                        }}
+                        onBlur={(e) => {
+                          const val = e.target.value;
+                          handleSaveAutoPilot({ vipChatId: val });
+                        }}
+                        placeholder="@YourVipChannel أو -1004323890544"
                         dir="ltr"
                         className="w-full px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 font-mono-num"
                       />
                     </div>
                   </div>
 
+                  {/* Actions for VIP Bot Credentials: Save Button & Test Connection Button */}
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const token = (autoPilot.vipBotToken || '').trim();
+                        const chat = (autoPilot.vipChatId || '').trim();
+                        try {
+                          localStorage.setItem('tg_vip_bot_token', token);
+                          localStorage.setItem('tg_vip_chat_id', chat);
+                        } catch (_) {}
+                        await handleSaveAutoPilot({
+                          vipBotToken: token,
+                          vipChatId: chat,
+                          vipEnabled: true
+                        });
+                        setVipCredsSavedBadge(true);
+                        setTimeout(() => setVipCredsSavedBadge(false), 4000);
+                      }}
+                      disabled={isSavingAutoPilot}
+                      className="px-3.5 py-2 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 active:scale-95 text-slate-950 font-extrabold text-xs rounded-lg transition-all flex items-center gap-1.5 shadow-md shadow-amber-500/20 cursor-pointer disabled:opacity-50"
+                    >
+                      <Check className="w-3.5 h-3.5" />
+                      <span>{vipCredsSavedBadge ? '✓ تم حفظ وتثبيت بيانات VIP بالسيرفر' : '💾 حفظ وتثبيت توكن وقناة VIP'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleTestVipTelegram}
+                      disabled={isTestingVipTelegram}
+                      className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 active:scale-95 text-amber-300 border border-amber-500/40 font-bold text-xs rounded-lg transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>{isTestingVipTelegram ? '⏳ جاري فحص الاتصال وإرسال رسالة...' : '🧪 فحص اتصال بوت VIP وإرسال رسالة الآن'}</span>
+                    </button>
+                  </div>
+
+                  {/* Live Feedback for VIP Bot Test */}
+                  {vipTelegramTestResult && (
+                    <div
+                      className={`p-3 rounded-lg border text-xs flex items-start gap-2 ${
+                        vipTelegramTestResult.ok
+                          ? 'bg-emerald-950/40 border-emerald-500/50 text-emerald-200'
+                          : 'bg-rose-950/40 border-rose-500/50 text-rose-200'
+                      }`}
+                    >
+                      {vipTelegramTestResult.ok ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                      )}
+                      <div className="space-y-1">
+                        <div className="font-bold">
+                          {vipTelegramTestResult.ok
+                            ? '✅ اتصال بوت VIP ناجح ومؤكد بالكامل!'
+                            : '❌ تعذر إرسال رسالة الفحص لبوت VIP'}
+                        </div>
+                        <div>{vipTelegramTestResult.message}</div>
+                        {vipTelegramTestResult.botUsername && (
+                          <div className="text-[11px] opacity-90 font-mono-num">
+                            🤖 اسم البوت: @{vipTelegramTestResult.botUsername} | 📡 القناة: {vipTelegramTestResult.chatTitle || autoPilot.vipChatId}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   <div className="p-3 bg-amber-950/20 border border-amber-500/20 rounded-lg text-[11px] text-amber-200/90 leading-relaxed">
-                    👑 <strong>ميزة البوت المزدوج:</strong> عندما تقتنص الخوارزمية فرصة قوية، يتم إرسالها فوراً إلى <strong>قناة VIP (24 ساعة)</strong>، وفي نفس اللحظة يتم إرسالها إلى <strong>القناة المجانية</strong> إذا كانت الساعة الحالية في مصر ضمن ساعات العمل المحددة أعلاه.
+                    👑 <strong>ميزة البوت المزدوج:</strong> عندما تقتنص الخوارزمية فرصة قوية، يتم إرسالها فوراً إلى <strong>قناة VIP (يعمل 10 ص - 6 م بتوقيت مصر)</strong>، وفي نفس اللحظة يتم إرسالها إلى <strong>القناة المجانية</strong> طالما لم يتحقق شرط الهدف (70% - 75%).
                   </div>
 
                   {/* Custom Win & Loss Icons + Image Upload for Bot 2 (VIP 24/7 Bot) */}
@@ -5735,6 +5896,16 @@ export default function App() {
                     setPlatformPlans(p);
                     setPlatformContactLinks(c);
                   }}
+                />
+              </section>
+            )}
+
+            {/* SECTION 07: ADMIN LIVE BROADCAST */}
+            {(adminSectionTab === 'all' || adminSectionTab === 'admin_live') && (
+              <section className="space-y-4">
+                <ZadtooAdminLiveBroadcast
+                  autoPilot={autoPilot}
+                  onRefreshSignals={fetchSignals}
                 />
               </section>
             )}

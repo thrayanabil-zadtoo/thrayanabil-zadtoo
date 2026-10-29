@@ -902,22 +902,38 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
                     <div className="md:col-span-5 p-3 rounded-xl bg-slate-900/60 border border-slate-800/80 space-y-2">
                       <div className="text-[11px] font-semibold text-slate-400 flex items-center gap-1">
                         <TrendingUp className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>البيانات الرقمية للخبر:</span>
+                        <span>
+                          {item.category === 'المؤتمرات الصحفية' || (!item.previous && !item.forecast)
+                            ? 'طبيعة وتصنيف الحدث:'
+                            : 'البيانات الرقمية للخبر:'}
+                        </span>
                       </div>
-                      <div className="grid grid-cols-3 gap-2 text-center pt-1">
-                        <div className="p-1.5 rounded-lg bg-slate-950/60 border border-slate-800">
-                          <div className="text-[10px] text-slate-500">السابق</div>
-                          <div className="font-mono font-bold text-slate-300 mt-0.5">{item.previous || '-'}</div>
+                      {item.category === 'المؤتمرات الصحفية' || (!item.previous && !item.forecast) ? (
+                        <div className="p-2.5 rounded-lg bg-slate-950/80 border border-cyan-500/30 text-right space-y-1">
+                          <div className="flex items-center gap-1.5 text-cyan-300 font-bold text-xs">
+                            <span>🎙️</span>
+                            <span>مؤتمر صحفي وخطاب مباشر</span>
+                          </div>
+                          <div className="text-[11px] text-slate-400 leading-relaxed">
+                            بيان إعلامي مباشر وتصريحات صحفية للبنك المركزي (لا توجد أرقام إحصائية مسبقة). التأثير يتبع نبرة الخطاب فوراً.
+                          </div>
                         </div>
-                        <div className="p-1.5 rounded-lg bg-slate-950/60 border border-cyan-500/30">
-                          <div className="text-[10px] text-cyan-400">التوقع</div>
-                          <div className="font-mono font-bold text-cyan-300 mt-0.5">{item.forecast || '-'}</div>
+                      ) : (
+                        <div className="grid grid-cols-3 gap-2 text-center pt-1">
+                          <div className="p-1.5 rounded-lg bg-slate-950/60 border border-slate-800">
+                            <div className="text-[10px] text-slate-500">السابق</div>
+                            <div className="font-mono font-bold text-slate-300 mt-0.5">{item.previous || '-'}</div>
+                          </div>
+                          <div className="p-1.5 rounded-lg bg-slate-950/60 border border-cyan-500/30">
+                            <div className="text-[10px] text-cyan-400">التوقع</div>
+                            <div className="font-mono font-bold text-cyan-300 mt-0.5">{item.forecast || '-'}</div>
+                          </div>
+                          <div className="p-1.5 rounded-lg bg-slate-950/60 border border-emerald-500/30">
+                            <div className="text-[10px] text-emerald-400">الفعلي</div>
+                            <div className="font-mono font-bold text-emerald-300 mt-0.5">{item.actual || 'قيد الانتظار'}</div>
+                          </div>
                         </div>
-                        <div className="p-1.5 rounded-lg bg-slate-950/60 border border-emerald-500/30">
-                          <div className="text-[10px] text-emerald-400">الفعلي</div>
-                          <div className="font-mono font-bold text-emerald-300 mt-0.5">{item.actual || 'قيد الانتظار'}</div>
-                        </div>
-                      </div>
+                      )}
                     </div>
 
                     {/* Movement Forecast: USD Rise or Fall & Market Impact */}

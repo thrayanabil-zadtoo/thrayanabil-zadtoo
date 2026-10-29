@@ -255,139 +255,139 @@
       posCss = "top:75px;left:75px;right:auto;bottom:auto;";
     }
   }
-  widget.style.cssText = "position:fixed !important;" + posCss + "z-index:2147483647 !important;width:295px;background:#0B0F17 !important;border:1.5px solid #10b981 !important;border-radius:14px !important;color:#f8fafc !important;font-family:system-ui,-apple-system,sans-serif !important;box-shadow:0 15px 35px rgba(0,0,0,0.85) !important;padding:12px !important;user-select:none !important;font-size:12px !important;transition:border-color 0.3s, box-shadow 0.3s;display:block !important;visibility:visible !important;opacity:1 !important;pointer-events:auto !important;";
+  widget.style.cssText = "position:fixed !important;" + posCss + "z-index:2147483647 !important;width:245px;background:#0B0F17 !important;border:1.5px solid #10b981 !important;border-radius:12px !important;color:#f8fafc !important;font-family:system-ui,-apple-system,sans-serif !important;box-shadow:0 12px 28px rgba(0,0,0,0.85) !important;padding:7px !important;user-select:none !important;font-size:10.5px !important;transition:border-color 0.3s, box-shadow 0.3s;display:block !important;visibility:visible !important;opacity:1 !important;pointer-events:auto !important;";
   widget.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #1e293b;padding-bottom:8px;margin-bottom:8px;cursor:move;" id="zad-robot-header">
-      <div style="display:flex;align-items:center;gap:6px;">
-        <span style="width:9px;height:9px;border-radius:50%;background:#10b981;box-shadow:0 0 6px #10b981;display:inline-block;" id="zad-status-dot"></span>
-        <strong style="font-size:12px;color:#fff;">روبوت ZAD FX</strong>
-        <span style="font-size:10px;color:#38bdf8;background:#0c4a6e;padding:1px 5px;border-radius:4px;">${brokerName}</span>
-      </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #1e293b;padding-bottom:5px;margin-bottom:5px;cursor:move;" id="zad-robot-header">
       <div style="display:flex;align-items:center;gap:4px;">
-        <button id="zad-info-btn" style="background:#1e293b;color:#38bdf8;border:1px solid #334155;border-radius:6px;padding:1px 5px;font-size:10.5px;font-weight:bold;cursor:pointer;" title="معلومات وتطوير">ℹ️ info</button>
-        <button id="zad-quran-btn" style="background:#064e3b;color:#6ee7b7;border:1px solid #059669;border-radius:6px;padding:1px 5px;font-size:10.5px;font-weight:bold;cursor:pointer;display:flex;align-items:center;gap:2px;" title="استماع للقرآن الكريم — الشيخ ماهر المعيقلي">🎧 قرآن</button>
-        <button id="zad-close-btn" style="background:transparent;border:none;color:#94a3b8;font-size:13px;font-weight:bold;cursor:pointer;padding:0 3px;line-height:1;" title="إغلاق">✕</button>
+        <span style="width:7px;height:7px;border-radius:50%;background:#10b981;box-shadow:0 0 6px #10b981;display:inline-block;" id="zad-status-dot"></span>
+        <strong style="font-size:11px;color:#fff;">روبوت ZAD FX</strong>
+        <span style="font-size:8.5px;color:#38bdf8;background:#0c4a6e;padding:1px 4px;border-radius:3px;">${brokerName}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:3px;">
+        <button id="zad-info-btn" style="background:#1e293b;color:#38bdf8;border:1px solid #334155;border-radius:4px;padding:1px 4px;font-size:9px;font-weight:bold;cursor:pointer;" title="معلومات وتطوير">ℹ️ info</button>
+        <button id="zad-quran-btn" style="background:#064e3b;color:#6ee7b7;border:1px solid #059669;border-radius:4px;padding:1px 4px;font-size:9px;font-weight:bold;cursor:pointer;display:flex;align-items:center;gap:2px;" title="استماع للقرآن الكريم — الشيخ ماهر المعيقلي">🎧 قرآن</button>
+        <button id="zad-close-btn" style="background:transparent;border:none;color:#94a3b8;font-size:12px;font-weight:bold;cursor:pointer;padding:0 2px;line-height:1;" title="إغلاق">✕</button>
       </div>
     </div>
 
     <!-- نافذة معلومات المبرمج والموقع والقناة الرسمية -->
-    <div id="zad-info-panel" style="display:none;background:#0F172A;border:1px solid #38bdf8;border-radius:10px;padding:8px;margin-bottom:8px;font-size:11px;line-height:1.6;color:#e2e8f0;">
-      <div style="font-weight:bold;color:#38bdf8;margin-bottom:4px;display:flex;justify-content:space-between;">
+    <div id="zad-info-panel" style="display:none;background:#0F172A;border:1px solid #38bdf8;border-radius:8px;padding:6px;margin-bottom:5px;font-size:9.5px;line-height:1.5;color:#e2e8f0;">
+      <div style="font-weight:bold;color:#38bdf8;margin-bottom:3px;display:flex;justify-content:space-between;">
         <span>ℹ️ معلومات الروبوت</span>
         <span id="zad-close-info" style="cursor:pointer;color:#94a3b8;">✕</span>
       </div>
       <div>🌐 الموقع: <a href="https://fx.zadtoo.com" target="_blank" style="color:#10b981;text-decoration:none;font-weight:bold;">fx.zadtoo.com</a></div>
-      <div>📢 القناة الرسمية: <a href="https://t.me/ZadNBFX" target="_blank" style="color:#38bdf8;text-decoration:none;font-weight:bold;">ZAD FX @ZadNBFX</a></div>
-      <div style="color:#fbbf24;font-size:10.5px;margin-top:2px;border-top:1px dashed #334155;padding-top:2px;">👨‍💻 إعداد وبرمجة: <b>Nabil Barakat</b></div>
+      <div>📢 القناة: <a href="https://t.me/ZadNBFX" target="_blank" style="color:#38bdf8;text-decoration:none;font-weight:bold;">ZAD FX @ZadNBFX</a></div>
+      <div style="color:#fbbf24;font-size:9px;margin-top:2px;border-top:1px dashed #334155;padding-top:2px;">👨‍💻 برمجة: <b>Nabil Barakat</b></div>
     </div>
 
     <!-- شريط العضو وتعديل المفتاح/رقم الحساب -->
-    <div style="font-size:10.5px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;color:#cbd5e1;background:#0f172a;padding:5px 8px;border-radius:6px;border:1px solid #1e293b;">
-      <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:175px;">
+    <div style="font-size:9.5px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;color:#cbd5e1;background:#0f172a;padding:3px 6px;border-radius:5px;border:1px solid #1e293b;">
+      <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;">
         <span>العضو: <b id="zad-robot-member" style="color:#fbbf24;">جاري المزامنة...</b></span>
       </div>
-      <div style="display:flex;align-items:center;gap:4px;">
+      <div style="display:flex;align-items:center;gap:3px;">
         <span id="zad-robot-days" style="color:#34d399;font-weight:bold;">--</span>
-        <button id="zad-change-key-btn" style="background:#1e293b;color:#38bdf8;border:1px solid #334155;border-radius:4px;padding:1px 5px;font-size:9.5px;font-weight:bold;cursor:pointer;" title="تغيير أو إدخال رقم حساب كيوتكس (ID)">🔑 ID</button>
+        <button id="zad-change-key-btn" style="background:#1e293b;color:#38bdf8;border:1px solid #334155;border-radius:3px;padding:1px 4px;font-size:8.5px;font-weight:bold;cursor:pointer;" title="تغيير أو إدخال رقم حساب كيوتكس (ID)">🔑 ID</button>
       </div>
     </div>
 
     <!-- مشغل القرآن الكريم المصغر (الشيخ ماهر المعيقلي) أسفل اسم العضو -->
-    <div id="zad-quran-panel" style="display:none;background:linear-gradient(135deg,#064e3b 0%,#022c22 100%);border:1px solid #10b981;border-radius:8px;padding:4px 8px;margin-bottom:6px;font-size:10.5px;color:#ecfdf5;box-shadow:0 4px 12px rgba(16,185,129,0.25);">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;">
-        <div style="display:flex;align-items:center;gap:5px;overflow:hidden;">
-          <span id="zad-quran-dot" style="width:7px;height:7px;border-radius:50%;background:#34d399;box-shadow:0 0 6px #34d399;display:inline-block;"></span>
-          <span style="font-weight:bold;color:#a7f3d0;white-space:nowrap;font-size:10px;">📖 القرآن — الشيخ ماهر المعيقلي</span>
+    <div id="zad-quran-panel" style="display:none;background:linear-gradient(135deg,#064e3b 0%,#022c22 100%);border:1px solid #10b981;border-radius:6px;padding:3px 6px;margin-bottom:4px;font-size:9.5px;color:#ecfdf5;box-shadow:0 3px 10px rgba(16,185,129,0.25);">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;">
+        <div style="display:flex;align-items:center;gap:4px;overflow:hidden;">
+          <span id="zad-quran-dot" style="width:6px;height:6px;border-radius:50%;background:#34d399;box-shadow:0 0 5px #34d399;display:inline-block;"></span>
+          <span style="font-weight:bold;color:#a7f3d0;white-space:nowrap;font-size:9px;">📖 الشيخ ماهر المعيقلي</span>
         </div>
-        <div style="display:flex;align-items:center;gap:4px;">
-          <button id="zad-quran-playpause" style="background:#047857;color:#fff;border:none;border-radius:4px;padding:1px 5px;font-size:9.5px;cursor:pointer;font-weight:bold;">⏸️</button>
-          <button id="zad-quran-close" style="background:transparent;border:none;color:#94a3b8;cursor:pointer;font-size:12px;font-weight:bold;padding:0 2px;" title="إغلاق القرآن">✕</button>
+        <div style="display:flex;align-items:center;gap:3px;">
+          <button id="zad-quran-playpause" style="background:#047857;color:#fff;border:none;border-radius:3px;padding:1px 4px;font-size:8.5px;cursor:pointer;font-weight:bold;">⏸️</button>
+          <button id="zad-quran-close" style="background:transparent;border:none;color:#94a3b8;cursor:pointer;font-size:11px;font-weight:bold;padding:0 2px;" title="إغلاق القرآن">✕</button>
         </div>
       </div>
     </div>
 
-    <div style="font-size:9.5px;color:#94a3b8;margin-bottom:6px;text-align:center;" id="zad-conn-badge">
+    <div style="font-size:8.5px;color:#94a3b8;margin-bottom:4px;text-align:center;" id="zad-conn-badge">
       ⚡ اتصال سحابي سريالي مباشر (Firestore Cloud)
     </div>
 
     <!-- أزرار تبديل وضع التداول: اليدوي مفعل افتراضياً بمجرد التثبيت -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:6px;">
-      <button id="zad-mode-auto" style="padding:5px;font-size:11px;font-weight:bold;border-radius:7px;border:1px solid ${ROBOT_MODE === 'AUTO' ? '#10b981' : '#334155'};background:${ROBOT_MODE === 'AUTO' ? '#10b981' : '#1e293b'};color:${ROBOT_MODE === 'AUTO' ? '#020617' : '#cbd5e1'};cursor:pointer;">🤖 تداول آلي</button>
-      <button id="zad-mode-manual" style="padding:5px;font-size:11px;font-weight:bold;border-radius:7px;border:1px solid ${ROBOT_MODE === 'MANUAL' ? '#f59e0b' : '#334155'};background:${ROBOT_MODE === 'MANUAL' ? '#f59e0b' : '#1e293b'};color:${ROBOT_MODE === 'MANUAL' ? '#020617' : '#cbd5e1'};cursor:pointer;">🖐️ تداول يدوي</button>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px;">
+      <button id="zad-mode-auto" style="padding:3.5px 2px;font-size:9.5px;font-weight:bold;border-radius:6px;border:1px solid ${ROBOT_MODE === 'AUTO' ? '#10b981' : '#334155'};background:${ROBOT_MODE === 'AUTO' ? '#10b981' : '#1e293b'};color:${ROBOT_MODE === 'AUTO' ? '#020617' : '#cbd5e1'};cursor:pointer;">🤖 تداول آلي</button>
+      <button id="zad-mode-manual" style="padding:3.5px 2px;font-size:9.5px;font-weight:bold;border-radius:6px;border:1px solid ${ROBOT_MODE === 'MANUAL' ? '#f59e0b' : '#334155'};background:${ROBOT_MODE === 'MANUAL' ? '#f59e0b' : '#1e293b'};color:${ROBOT_MODE === 'MANUAL' ? '#020617' : '#cbd5e1'};cursor:pointer;">🖐️ تداول يدوي</button>
     </div>
 
     <!-- صندوق الإشارة: يعرض إما الإشارة الحية مع العداد التنازلي أو 'وضع الانتظار WAIT' لمنع التكرار -->
-    <div style="background:#111827;border:1px solid #1e293b;border-radius:9px;padding:8px;margin-bottom:8px;font-size:11px;" id="zad-signal-box">
-      <div id="zad-robot-signal" style="margin-bottom:4px;font-size:12px;"></div>
+    <div style="background:#111827;border:1px solid #1e293b;border-radius:8px;padding:5px 6px;margin-bottom:5px;font-size:10px;" id="zad-signal-box">
+      <div id="zad-robot-signal" style="margin-bottom:3px;font-size:10.5px;"></div>
       
       <!-- عداد تنازلي تفاعلي بارز لأخذ الصفقة -->
-      <div id="zad-robot-countdown" style="display:none;background:linear-gradient(135deg, #032035 0%, #01111d 100%);color:#38bdf8;padding:8px 10px;border-radius:8px;font-weight:extrabold;text-align:center;margin-bottom:6px;font-size:11.5px;border:1.5px solid #0284c7;box-shadow:0 0 15px rgba(2,132,199,0.3);">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
-          <span style="font-size:11px;color:#93c5fd;display:flex;align-items:center;gap:4px;">
-            <span style="font-size:13px;">⏳</span>
-            <span id="zad-countdown-label">متبقي على بدء الصفقة:</span>
+      <div id="zad-robot-countdown" style="display:none;background:linear-gradient(135deg, #032035 0%, #01111d 100%);color:#38bdf8;padding:4px 6px;border-radius:6px;font-weight:extrabold;text-align:center;margin-bottom:4px;font-size:10px;border:1.5px solid #0284c7;box-shadow:0 0 12px rgba(2,132,199,0.3);">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">
+          <span style="font-size:9.5px;color:#93c5fd;display:flex;align-items:center;gap:3px;">
+            <span style="font-size:11px;">⏳</span>
+            <span id="zad-countdown-label">متبقي على الصفقة:</span>
           </span>
-          <span id="zad-countdown-val" style="color:#fde047;font-size:16px;font-family:monospace;font-weight:900;letter-spacing:0.5px;background:#061b2d;padding:2px 8px;border-radius:5px;border:1px solid #0369a1;">-- ثانية</span>
+          <span id="zad-countdown-val" style="color:#fde047;font-size:12.5px;font-family:monospace;font-weight:900;letter-spacing:0.5px;background:#061b2d;padding:1px 6px;border-radius:4px;border:1px solid #0369a1;">-- ثانية</span>
         </div>
-        <div style="width:100%;background:#091b2c;border-radius:999px;height:5px;overflow:hidden;margin-top:4px;">
+        <div style="width:100%;background:#091b2c;border-radius:999px;height:4px;overflow:hidden;margin-top:3px;">
           <div id="zad-countdown-bar" style="background:linear-gradient(90deg,#0284c7,#38bdf8);height:100%;width:100%;border-radius:999px;transition:width 0.9s linear;"></div>
         </div>
-        <div id="zad-countdown-tip" style="font-size:9.5px;color:#94a3b8;margin-top:4px;display:flex;align-items:center;justify-content:center;gap:4px;">
+        <div id="zad-countdown-tip" style="font-size:8.5px;color:#94a3b8;margin-top:3px;display:flex;align-items:center;justify-content:center;gap:3px;">
           <span>🎯</span>
-          <span>ادخل الصفقة بدقة عند ثانية :00 افتتاح الشمعة</span>
+          <span>ادخل بدقة عند ثانية :00 افتتاح الشمعة</span>
         </div>
       </div>
 
-      <div id="zad-manual-trigger-container" style="display:none;margin-bottom:5px;">
-        <button id="zad-manual-trade-btn" style="width:100%;padding:7px;font-size:12px;font-weight:extrabold;border-radius:8px;background:#10b981;color:#020617;border:none;cursor:pointer;animation:pulse 1.5s infinite;">
+      <div id="zad-manual-trigger-container" style="display:none;margin-bottom:4px;">
+        <button id="zad-manual-trade-btn" style="width:100%;padding:5px 4px;font-size:10px;font-weight:extrabold;border-radius:6px;background:#10b981;color:#020617;border:none;cursor:pointer;animation:pulse 1.5s infinite;">
           🚀 اضغط هنا للدخول فوراً في المنصة!
         </button>
       </div>
 
-      <div id="zad-robot-action" style="color:#94a3b8;font-size:10.5px;text-align:center;">جاهز لاستقبال الإشارة القادمة وتنفيذها بالثانية</div>
+      <div id="zad-robot-action" style="color:#94a3b8;font-size:8.5px;text-align:center;">جاهز لاستقبال الإشارة القادمة وتنفيذها بالثانية</div>
     </div>
 
     <!-- 3 مربعات ملونة مؤطرة باللون حسب النتيجة (ربح - خسارة - النسبة) النقر المباشر دون توضيح وبدون علامة + -->
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:6px;text-align:center;">
-      <div id="zad-box-win" style="background:rgba(16,185,129,0.12);border:1.5px solid #10b981;border-radius:9px;padding:6px 2px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;">
-        <span style="color:#34d399;font-size:10px;font-weight:bold;">✅ ربح</span>
-        <b id="zad-robot-wins" style="font-size:15px;color:#fff;font-family:monospace;margin-top:2px;">0</b>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:3.5px;margin-bottom:4px;text-align:center;">
+      <div id="zad-box-win" style="background:rgba(16,185,129,0.12);border:1.5px solid #10b981;border-radius:7px;padding:3px 1px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;">
+        <span style="color:#34d399;font-size:8.5px;font-weight:bold;">✅ ربح</span>
+        <b id="zad-robot-wins" style="font-size:12.5px;color:#fff;font-family:monospace;margin-top:1px;">0</b>
       </div>
 
-      <div id="zad-box-loss" style="background:rgba(239,68,68,0.12);border:1.5px solid #ef4444;border-radius:9px;padding:6px 2px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;">
-        <span style="color:#f87171;font-size:10px;font-weight:bold;">❌ خسارة</span>
-        <b id="zad-robot-losses" style="font-size:15px;color:#fff;font-family:monospace;margin-top:2px;">0</b>
+      <div id="zad-box-loss" style="background:rgba(239,68,68,0.12);border:1.5px solid #ef4444;border-radius:7px;padding:3px 1px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;">
+        <span style="color:#f87171;font-size:8.5px;font-weight:bold;">❌ خسارة</span>
+        <b id="zad-robot-losses" style="font-size:12.5px;color:#fff;font-family:monospace;margin-top:1px;">0</b>
       </div>
 
-      <div style="background:rgba(245,158,11,0.12);border:1.5px solid #f59e0b;border-radius:9px;padding:6px 2px;display:flex;flex-direction:column;align-items:center;justify-content:center;">
-        <span style="color:#fbbf24;font-size:10px;font-weight:bold;">🎯 النسبة</span>
-        <b id="zad-robot-rate" style="font-size:14px;color:#fbbf24;font-family:monospace;margin-top:2px;">100%</b>
+      <div style="background:rgba(245,158,11,0.12);border:1.5px solid #f59e0b;border-radius:7px;padding:3px 1px;display:flex;flex-direction:column;align-items:center;justify-content:center;">
+        <span style="color:#fbbf24;font-size:8.5px;font-weight:bold;">🎯 النسبة</span>
+        <b id="zad-robot-rate" style="font-size:12px;color:#fbbf24;font-family:monospace;margin-top:1px;">100%</b>
       </div>
     </div>
     <!-- قسم اختبار وتثبيت أزرار المنصة (شراء / بيع / معايرة وتثبيت يدوي) -->
-    <div style="background:#090d16;border:1px solid #1e293b;border-radius:10px;padding:8px 7px;margin-top:6px;font-size:10.5px;" id="zad-test-panel">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-        <span style="font-weight:bold;color:#38bdf8;font-size:11px;display:flex;align-items:center;gap:4px;">
+    <div style="background:#090d16;border:1px solid #1e293b;border-radius:8px;padding:5px 6px;margin-top:4px;font-size:9px;" id="zad-test-panel">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">
+        <span style="font-weight:bold;color:#38bdf8;font-size:9.5px;display:flex;align-items:center;gap:3px;">
           <span>🛠️</span>
-          <span>اختبار وتثبيت أزرار المنصة:</span>
+          <span>اختبار أزرار المنصة:</span>
         </span>
-        <button id="zad-calibrate-btn" style="background:#1e293b;color:#fde047;border:1px solid #ca8a04;border-radius:6px;padding:3px 8px;font-size:10px;font-weight:extrabold;cursor:pointer;transition:all 0.2s;" title="تحديد زر المنصة يدوياً بالنقر المباشر عليه">📌 تثبيت يدوي</button>
+        <button id="zad-calibrate-btn" style="background:#1e293b;color:#fde047;border:1px solid #ca8a04;border-radius:4px;padding:1.5px 5px;font-size:8.5px;font-weight:extrabold;cursor:pointer;transition:all 0.2s;" title="تحديد زر المنصة يدوياً بالنقر المباشر عليه">📌 تثبيت يدوي</button>
       </div>
 
-      <div id="zad-test-status" style="font-size:9.5px;color:#94a3b8;margin-bottom:6px;display:flex;justify-content:space-between;background:rgba(15,23,42,0.6);padding:3px 6px;border-radius:5px;border:1px solid #1e293b;">
-        <span>🟢 شراء: <b id="zad-status-call-txt" style="color:#34d399">مكتشف باليمين ✓</b></span>
-        <span>🔴 بيع: <b id="zad-status-put-txt" style="color:#f87171">مكتشف باليمين ✓</b></span>
+      <div id="zad-test-status" style="font-size:8.5px;color:#94a3b8;margin-bottom:4px;display:flex;justify-content:space-between;background:rgba(15,23,42,0.6);padding:2px 4px;border-radius:4px;border:1px solid #1e293b;">
+        <span>🟢 شراء: <b id="zad-status-call-txt" style="color:#34d399">مكتشف ✓</b></span>
+        <span>🔴 بيع: <b id="zad-status-put-txt" style="color:#f87171">مكتشف ✓</b></span>
       </div>
 
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
-        <button id="zad-test-call-btn" style="background:#064e3b;color:#a7f3d0;border:1.5px solid #10b981;border-radius:8px;padding:7px 4px;font-size:11.5px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;box-shadow:0 2px 8px rgba(16,185,129,0.25);" title="تجربة النقر الفعلي على زر الشراء الأخضر في لوحة صفقات كيوتكس">
-          <span>🟢 تجربة الشراء (CALL)</span>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+        <button id="zad-test-call-btn" style="background:#064e3b;color:#a7f3d0;border:1.5px solid #10b981;border-radius:6px;padding:4.5px 2px;font-size:9.5px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:2px;box-shadow:0 2px 6px rgba(16,185,129,0.25);" title="تجربة النقر الفعلي على زر الشراء الأخضر في لوحة صفقات كيوتكس">
+          <span>🟢 شراء (CALL)</span>
         </button>
-        <button id="zad-test-put-btn" style="background:#7f1d1d;color:#fecdd3;border:1.5px solid #ef4444;border-radius:8px;padding:7px 4px;font-size:11.5px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;box-shadow:0 2px 8px rgba(239,68,68,0.25);" title="تجربة النقر الفعلي على زر البيع الأحمر في لوحة صفقات كيوتكس">
-          <span>🔴 تجربة البيع (PUT)</span>
+        <button id="zad-test-put-btn" style="background:#7f1d1d;color:#fecdd3;border:1.5px solid #ef4444;border-radius:6px;padding:4.5px 2px;font-size:9.5px;font-weight:900;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:2px;box-shadow:0 2px 6px rgba(239,68,68,0.25);" title="تجربة النقر الفعلي على زر البيع الأحمر في لوحة صفقات كيوتكس">
+          <span>🔴 بيع (PUT)</span>
         </button>
       </div>
-      <div id="zad-test-feedback" style="display:none;margin-top:6px;font-size:10px;text-align:center;padding:5px 8px;border-radius:6px;font-weight:bold;line-height:1.4;"></div>
+      <div id="zad-test-feedback" style="display:none;margin-top:4px;font-size:8.5px;text-align:center;padding:3px 5px;border-radius:5px;font-weight:bold;line-height:1.3;"></div>
     </div>
   `;
 
@@ -1336,7 +1336,7 @@
       }
 
       // 1. فحص عناصر التبويب النشط وأزرار الأزواج في منصات التداول (Quotex, PocketOption, etc.)
-      const selectors = [
+      const activeSelectors = [
         ".tab-item.tab-item--active .tab-item__symbol",
         ".tab-item--active .tab-item__symbol",
         ".tab-item.tab-item--active .tab-item__name",
@@ -1350,37 +1350,31 @@
         ".tabs__item--active",
         ".tabs-item--active",
         ".tabs__item.active",
-        ".asset-select__button .asset-select__name",
-        ".asset-select__button .asset-select__symbol",
-        ".asset-select__button .symbol",
-        ".asset-select__button",
-        ".asset-select__name",
-        ".asset-select",
-        ".current-symbol",
-        ".current-pair",
-        ".current-asset-title",
         ".assets-item--active",
-        "[data-test='asset-name']",
-        "[data-test='current-asset']",
-        "#zad-sim-pair",
-        "[data-sim-asset]",
-        ".deal-form__asset",
-        ".section-deal__header",
-        ".header-sub__asset",
         "[class*='tab-item--active']",
         "[class*='tab--active']",
         "[class*='active'][class*='tab']",
-        "[class*='asset-select']",
-        "[class*='current'][class*='symbol']",
-        "[class*='current'][class*='asset']"
+        "[aria-selected='true'][class*='tab']",
+        ".deal-form__asset",
+        ".section-deal__header",
+        ".header-sub__asset",
+        ".asset-select__button .asset-select__symbol",
+        ".asset-select__button .asset-select__name",
+        ".asset-select__button",
+        ".current-symbol",
+        ".current-pair",
+        ".current-asset-title"
       ];
 
-      for (let i = 0; i < selectors.length; i++) {
+      for (let i = 0; i < activeSelectors.length; i++) {
         try {
-          const el = document.querySelector(selectors[i]);
-          if (el && el.innerText && el.innerText.trim()) {
-            const found = extractPairFromText(el.innerText);
-            if (found) return found;
+          const el = document.querySelector(activeSelectors[i]);
+          if (el && !el.closest('#zad-universal-floating-robot, #zad-robot-launcher')) {
+            const txt = (el.innerText || el.textContent || "").trim();
+            if (txt) {
+              const found = extractPairFromText(txt);
+              if (found) return found;
+            }
           }
         } catch(e) {}
       }
@@ -1408,16 +1402,6 @@
           if (fromTopUrl) return fromTopUrl;
         }
       } catch(e) {}
-
-      // 5. فحص عام في عناصر الترويسة والشريط العلوي
-      const headerEls = document.querySelectorAll("header, nav, [class*='header'], [class*='asset'], [class*='tab'], [class*='symbol']");
-      for (let i = 0; i < Math.min(headerEls.length, 35); i++) {
-        const t = headerEls[i].innerText;
-        if (t && t.length < 60) {
-          const found = extractPairFromText(t);
-          if (found) return found;
-        }
-      }
     } catch(err) {
       console.warn("[ZAD Robot] Pair detection notice:", err);
     }
@@ -1446,32 +1430,32 @@
     if (currentRobotUiState !== "IN_TRADE") {
       currentRobotUiState = "IN_TRADE";
       sigElem.innerHTML = `
-        <div id="zad-in-trade-card" style="background:linear-gradient(135deg, rgba(6,78,59,0.95) 0%, rgba(2,44,34,0.98) 100%);border:2px solid ${isCall ? '#10b981' : '#ef4444'};border-radius:10px;padding:9px 10px;text-align:center;box-shadow:0 0 20px ${isCall ? 'rgba(16,185,129,0.45)' : 'rgba(239,68,68,0.45)'};">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
-            <span style="color:#6ee7b7;font-size:12px;font-weight:900;display:flex;align-items:center;gap:5px;">
-              <span style="font-size:14px;">⚡</span>
-              <span>الصفقة جارية الآن في المنصة</span>
+        <div id="zad-in-trade-card" style="background:linear-gradient(135deg, rgba(6,78,59,0.95) 0%, rgba(2,44,34,0.98) 100%);border:1.5px solid ${isCall ? '#10b981' : '#ef4444'};border-radius:7px;padding:5px 6px;text-align:center;box-shadow:0 0 15px ${isCall ? 'rgba(16,185,129,0.35)' : 'rgba(239,68,68,0.35)'};">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px;">
+            <span style="color:#6ee7b7;font-size:10px;font-weight:900;display:flex;align-items:center;gap:3px;">
+              <span style="font-size:11px;">⚡</span>
+              <span>الصفقة جارية بالمنصة</span>
             </span>
-            <span style="font-size:11px;font-weight:900;padding:2px 8px;border-radius:6px;background:${isCall ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'};color:${isCall ? '#34d399' : '#f87171'};border:1px solid ${isCall ? '#10b981' : '#ef4444'};">
+            <span style="font-size:9px;font-weight:900;padding:1px 5px;border-radius:4px;background:${isCall ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)'};color:${isCall ? '#34d399' : '#f87171'};border:1px solid ${isCall ? '#10b981' : '#ef4444'};">
               ${dirBadge}
             </span>
           </div>
-          <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(0,0,0,0.4);padding:4px 8px;border-radius:6px;margin-bottom:6px;font-size:11px;">
-            <span style="color:#94a3b8;">🎯 الزوج: <b style="color:#38bdf8;font-family:monospace;font-size:13px;">${currentActiveTrade.asset}</b></span>
-            <span style="color:#cbd5e1;">⏱️ الصلاحية: <b>M1 (1 دقيقة)</b></span>
+          <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(0,0,0,0.4);padding:2px 5px;border-radius:4px;margin-bottom:3px;font-size:9.5px;">
+            <span style="color:#94a3b8;">🎯 الزوج: <b style="color:#38bdf8;font-family:monospace;font-size:11.5px;">${currentActiveTrade.asset}</b></span>
+            <span style="color:#cbd5e1;">⏱️ M1 (60ث)</span>
           </div>
-          <div style="background:#022c22;border:1.5px solid #10b981;border-radius:8px;padding:6px;margin-bottom:6px;">
-            <div style="font-size:10.5px;color:#a7f3d0;margin-bottom:2px;">⏳ متبقي على انتهاء الصفقة:</div>
-            <div id="zad-in-trade-sec" style="font-size:20px;font-weight:900;font-family:monospace;color:#fde047;letter-spacing:0.5px;">${tradeRemainingSec} ثانية</div>
-            <div style="width:100%;background:#064e3b;height:5px;border-radius:999px;overflow:hidden;margin-top:4px;">
+          <div style="background:#022c22;border:1px solid #10b981;border-radius:5px;padding:3px;margin-bottom:3px;">
+            <div style="font-size:9px;color:#a7f3d0;margin-bottom:1px;">⏳ متبقي على انتهاء الصفقة:</div>
+            <div id="zad-in-trade-sec" style="font-size:14px;font-weight:900;font-family:monospace;color:#fde047;letter-spacing:0.5px;">${tradeRemainingSec} ثانية</div>
+            <div style="width:100%;background:#064e3b;height:3.5px;border-radius:999px;overflow:hidden;margin-top:2px;">
               <div id="zad-in-trade-bar" style="background:linear-gradient(90deg, #10b981, #34d399);height:100%;width:${(tradeRemainingSec / 60) * 100}%;border-radius:999px;transition:width 0.9s linear;"></div>
             </div>
           </div>
-          <div style="font-size:10px;color:#94a3b8;">📊 الصفقة مفتوحة في حسابك — بانتظار إغلاق الشمعة وإعلان النتيجة</div>
+          <div style="font-size:8.5px;color:#94a3b8;">📊 الصفقة مفتوحة — بانتظار إغلاق الشمعة</div>
         </div>
       `;
       widget.style.borderColor = isCall ? '#10b981' : '#ef4444';
-      widget.style.boxShadow = isCall ? '0 0 25px rgba(16,185,129,0.5)' : '0 0 25px rgba(239,68,68,0.5)';
+      widget.style.boxShadow = isCall ? '0 0 20px rgba(16,185,129,0.4)' : '0 0 20px rgba(239,68,68,0.4)';
     } else {
       // تحديث النصوص فقط دون المساس بـ innerHTML لمنع أي وميض
       const secEl = document.getElementById("zad-in-trade-sec");
@@ -1502,16 +1486,16 @@
       if (currentRobotUiState === "MARKET_CLOSED") return;
       currentRobotUiState = "MARKET_CLOSED";
       sigElem.innerHTML = `
-        <div style="background:rgba(239,68,68,0.14);border:1.5px solid #ef4444;border-radius:8px;padding:9px 10px;text-align:center;">
-          <div style="color:#f87171;font-size:13px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:6px;">
-            <span style="font-size:14px;">🔴</span>
+        <div style="background:rgba(239,68,68,0.14);border:1.5px solid #ef4444;border-radius:7px;padding:6px 8px;text-align:center;">
+          <div style="color:#f87171;font-size:11px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:4px;">
+            <span style="font-size:12px;">🔴</span>
             <span id="zad-signal-pair-name" style="letter-spacing:0.5px;">مغلق السوق</span>
           </div>
-          <div style="color:#94a3b8;font-size:10px;margin-top:3px;">السوق العالمي في عطلة أسبوعية حالياً</div>
+          <div style="color:#94a3b8;font-size:8.5px;margin-top:2px;">السوق العالمي في عطلة أسبوعية حالياً</div>
         </div>
       `;
       if (actElem) {
-        actElem.innerHTML = `<span style="color:#f87171;font-weight:bold;">السوق مغلق حالياً — بانتظار افتتاح التداول الأسبوعي</span>`;
+        actElem.innerHTML = `<span style="color:#f87171;font-weight:bold;">السوق مغلق حالياً — بانتظار الافتتاح</span>`;
       }
       return;
     }
@@ -1522,15 +1506,15 @@
 
     const cSec = 60 - (new Date().getSeconds());
     sigElem.innerHTML = `
-      <div style="background:rgba(234,179,8,0.12);border:1.5px solid #ca8a04;border-radius:8px;padding:8px 10px;text-align:center;">
-        <div style="color:#fde047;font-size:13px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:6px;">
+      <div style="background:rgba(234,179,8,0.12);border:1.5px solid #ca8a04;border-radius:7px;padding:5px 7px;text-align:center;">
+        <div style="color:#fde047;font-size:11px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:4px;">
           <span>⏸️</span>
           <span id="zad-signal-pair-name">وضع الانتظار (WAIT)</span>
         </div>
-        <div style="color:#94a3b8;font-size:10px;margin-top:3px;">جاري مسح السوق للشمعة القادمة — لن يتم تكرار الإشارة فوراً</div>
-        <div style="margin-top:6px;display:inline-flex;align-items:center;gap:5px;background:#061b2d;border:1px solid #0284c7;border-radius:6px;padding:3px 8px;font-size:11px;">
+        <div style="color:#94a3b8;font-size:8.5px;margin-top:2px;">جاري مسح السوق للشمعة القادمة — لن يتم التكرار</div>
+        <div style="margin-top:4px;display:inline-flex;align-items:center;gap:4px;background:#061b2d;border:1px solid #0284c7;border-radius:5px;padding:2px 6px;font-size:9.5px;">
           <span style="color:#93c5fd;">⏳ اكتمال الشمعة:</span>
-          <b id="zad-wait-candle-cd" style="color:#38bdf8;font-family:monospace;font-size:13px;">${cSec} ثانية</b>
+          <b id="zad-wait-candle-cd" style="color:#38bdf8;font-family:monospace;font-size:11px;">${cSec} ثانية</b>
         </div>
       </div>
     `;
@@ -1539,76 +1523,242 @@
     }
   }
 
-  // تحويل الشارت تلقائياً إلى زوج الإشارة بالنقر على التبويب المفتوح في المنصة (من بين الأزواج المفتوحة كـ 6 أزواج مثلاً)
-  function switchToBrokerAsset(targetAsset) {
+  /* =========================================================================
+     🛡️ ZAD ROBOT CORE ENGINE - GOLDEN BASELINE (v3.6 LOCKED & PROTECTED)
+     هذا الجزء هو محرك النقر والتبديل المعتمد بالمنصة (المقفول كمرجع أساسي ذهبي)
+     لا يتم تعديل أو المساس بمنطق دالة switchToBrokerAsset أو triggerRealisticTabClick
+     عند إضافة أي مؤشرات جديدة أو تعديلات في العضويات أو الرسائل.
+     ========================================================================= */
+
+  // تحويل الشارت تلقائياً إلى زوج الإشارة بالنقر المباشر والدقيق على تبويب الزوج المفتوح بالمنصة (يعمل مع جميع الأزواج والسلع ديناميكياً)
+  function switchToBrokerAsset(targetAsset, force) {
     if (!targetAsset) return false;
     try {
-      const cleanTarget = targetAsset.toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
-      if (!cleanTarget) return false;
-      
-      // 1. إذا كان الشارت الحالي معروضاً عليه نفس الزوج بالفعل فلا داعي للمس أي أزرار
-      const current = detectCurrentBrokerAsset();
-      if (current) {
-        const cleanCurrent = current.toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
-        if (cleanCurrent === cleanTarget || cleanCurrent.includes(cleanTarget) || cleanTarget.includes(cleanCurrent)) {
-          return true;
+      const rawTarget = String(targetAsset).toUpperCase().trim();
+      let cleanTarget = rawTarget.replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
+
+      // استخراج رموز الزوج ودعم ديناميكي شامل لكافة أزواج العملات العالمية والسلع والكريبتو
+      let c1 = "";
+      let c2 = "";
+      let isCommodityOrCrypto = false;
+      let altNames = [];
+
+      if (cleanTarget.includes("GOLD") || cleanTarget.startsWith("XAU")) {
+        c1 = "XAU"; c2 = "USD";
+        isCommodityOrCrypto = true;
+        altNames = ["GOLD", "XAUUSD", "XAU"];
+      } else if (cleanTarget.includes("SILVER") || cleanTarget.startsWith("XAG")) {
+        c1 = "XAG"; c2 = "USD";
+        isCommodityOrCrypto = true;
+        altNames = ["SILVER", "XAGUSD", "XAG"];
+      } else if (cleanTarget.includes("BITCOIN") || cleanTarget.startsWith("BTC")) {
+        c1 = "BTC"; c2 = "USD";
+        isCommodityOrCrypto = true;
+        altNames = ["BTC", "BITCOIN", "BTCUSD"];
+      } else if (cleanTarget.includes("ETHEREUM") || cleanTarget.startsWith("ETH")) {
+        c1 = "ETH"; c2 = "USD";
+        isCommodityOrCrypto = true;
+        altNames = ["ETH", "ETHEREUM", "ETHUSD"];
+      } else if (cleanTarget.length >= 6) {
+        c1 = cleanTarget.slice(0, 3);
+        c2 = cleanTarget.slice(3, 6);
+      } else {
+        return false;
+      }
+
+      // 1. إذا كان الشارت الحالي معروضاً عليه نفس الزوج بالفعل (وليس نقراً إجبارياً)
+      if (!force) {
+        const current = detectCurrentBrokerAsset();
+        if (current) {
+          const cleanCurrent = current.toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
+          const curMatches = isCommodityOrCrypto 
+            ? (cleanCurrent.includes(c1) || altNames.some(alt => cleanCurrent.includes(alt)))
+            : (cleanCurrent.length >= 6 && cleanCurrent.slice(0, 6) === (c1 + c2));
+          if (curMatches) {
+            return true;
+          }
         }
       }
 
-      // 2. دالة محاكاة نقر الماوس الواقعي المتوافقة مع أطر عمل منصات التداول الحديثة (React / Vue)
-      function simulateRealisticClick(elem) {
-        if (!elem) return;
+      function isExcludedNode(n) {
+        if (!n) return true;
+        return !!n.closest('#zad-universal-floating-robot, #zad-robot-launcher, #zad-calibrate-overlay, .usermenu, .header__user');
+      }
+
+      // التحقق الصارم من أن العنصر يمثل هذا الزوج تحديداً وليس حاوية شريطية مشتركة لعدة أزواج (ديناميكي 100% لجميع الأزواج)
+      function isSpecificPairTabNode(el) {
+        if (!el || isExcludedNode(el)) return false;
+        const raw = (el.innerText || el.textContent || "").toUpperCase().trim();
+        if (!raw || raw.length < 3 || raw.length > 90) return false;
+
+        // التحقق من تواجد شطري الزوج أو الاسم البديل (مثل GOLD لـ XAU/USD)
+        let hasPair = false;
+        if (isCommodityOrCrypto) {
+          hasPair = altNames.some(alt => raw.includes(alt)) ||
+                    raw.includes(c1 + '/' + c2) || raw.includes(c1 + ' / ' + c2) || raw.includes(c1 + '-' + c2) ||
+                    (raw.includes(c1) && raw.includes(c2));
+        } else {
+          hasPair = raw.includes(c1 + '/' + c2) || 
+                    raw.includes(c1 + ' / ' + c2) || 
+                    raw.includes(c1 + '-' + c2) || 
+                    raw.includes(c1 + c2) || 
+                    (raw.includes(c1) && raw.includes(c2));
+        }
+        if (!hasPair) return false;
+
+        // استبعاد أي حاوية تضم عملات رئيسية أخرى لمنع النقر على شريط التبويبات ككل
+        const MAJOR_CHECK = ["EUR", "USD", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "BRL", "INR", "BTC", "ETH", "GOLD", "SILVER"];
+        const OTHER_CURR = MAJOR_CHECK.filter(c => c !== c1 && c !== c2 && !altNames.includes(c));
+        let otherCount = 0;
+        for (let i = 0; i < OTHER_CURR.length; i++) {
+          if (raw.includes(OTHER_CURR[i])) otherCount++;
+        }
+        return otherCount === 0;
+      }
+
+      // محاكاة النقر الواقعي الاحترافية الشاملة لجميع أحداث React / DOM في منصات التداول
+      function triggerRealisticTabClick(targetNode, optionalRect) {
+        if (!targetNode) return false;
         try {
-          const opts = { bubbles: true, cancelable: true, view: window };
-          elem.dispatchEvent(new MouseEvent('pointerdown', opts));
-          elem.dispatchEvent(new MouseEvent('mousedown', opts));
-          elem.dispatchEvent(new MouseEvent('pointerup', opts));
-          elem.dispatchEvent(new MouseEvent('mouseup', opts));
-          elem.dispatchEvent(new MouseEvent('click', opts));
-          if (typeof elem.click === 'function') elem.click();
-        } catch(e) {
-          try { elem.click(); } catch(err) {}
+          const rect = optionalRect || targetNode.getBoundingClientRect();
+          if (rect.width <= 0 || rect.height <= 0) return false;
+
+          // الإحداثيات: ننقر عند 35% من عرض العنصر لتفادي زر الإغلاق (x) الموجود على يمين التبويب دائماً
+          const clientX = rect.left + Math.max(12, Math.min(rect.width * 0.35, 60));
+          const clientY = rect.top + rect.height / 2;
+
+          // وميض توهج مؤقت لتأكيد الوصول والنقر بالعين ثم إزالته تلقائياً
+          try {
+            targetNode.style.outline = "3px solid #38bdf8";
+            targetNode.style.boxShadow = "0 0 25px #0284c7";
+            setTimeout(() => {
+              try {
+                targetNode.style.outline = "";
+                targetNode.style.boxShadow = "";
+              } catch(e) {}
+            }, 1200);
+          } catch(e) {}
+
+          const eventOpts = {
+            bubbles: true,
+            cancelable: true,
+            composed: true,
+            view: window,
+            detail: 1,
+            clientX: clientX,
+            clientY: clientY,
+            screenX: clientX,
+            screenY: clientY,
+            pageX: clientX,
+            pageY: clientY,
+            button: 0,
+            buttons: 1
+          };
+
+          // 1. جلب العنصر الحقيقي الظاهر بالسطح عند هذه النقطة بالضبط (كما يراه مؤشر الماوس البشري تماماً)
+          let pointEl = null;
+          try {
+            pointEl = document.elementFromPoint(clientX, clientY);
+            if (pointEl && isExcludedNode(pointEl)) {
+              pointEl = null;
+            }
+          } catch(e) {}
+
+          const targetsToClick = [];
+          if (pointEl) targetsToClick.push(pointEl);
+          if (targetNode && !targetsToClick.includes(targetNode)) targetsToClick.push(targetNode);
+          if (targetNode.parentElement && !targetsToClick.includes(targetNode.parentElement) && !isExcludedNode(targetNode.parentElement)) {
+            targetsToClick.push(targetNode.parentElement);
+          }
+          const closestClickable = targetNode.closest('button, a, div[role="button"], [class*="tab"], [class*="item"]');
+          if (closestClickable && !targetsToClick.includes(closestClickable) && !isExcludedNode(closestClickable)) {
+            targetsToClick.push(closestClickable);
+          }
+
+          // 2. إطلاق تسلسل أحداث الضغط الواقعية الكاملة على كل المستهدفين
+          for (let k = 0; k < targetsToClick.length; k++) {
+            const t = targetsToClick[k];
+            try {
+              if (typeof PointerEvent === "function") {
+                t.dispatchEvent(new PointerEvent("pointerover", { ...eventOpts, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+                t.dispatchEvent(new PointerEvent("pointerenter", { ...eventOpts, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+                t.dispatchEvent(new PointerEvent("pointerdown", { ...eventOpts, pointerId: 1, pointerType: "mouse", isPrimary: true }));
+              }
+              t.dispatchEvent(new MouseEvent("mouseover", eventOpts));
+              t.dispatchEvent(new MouseEvent("mousedown", eventOpts));
+              if (typeof t.focus === "function") t.focus();
+
+              if (typeof PointerEvent === "function") {
+                t.dispatchEvent(new PointerEvent("pointerup", { ...eventOpts, pointerId: 1, pointerType: "mouse", isPrimary: true, buttons: 0 }));
+              }
+              t.dispatchEvent(new MouseEvent("mouseup", { ...eventOpts, buttons: 0 }));
+              t.dispatchEvent(new MouseEvent("click", { ...eventOpts, buttons: 0 }));
+              t.click();
+            } catch(e) {}
+          }
+
+          return true;
+        } catch(err) {
+          console.error("[ZAD Robot] Tab click error:", err);
+          return false;
         }
       }
 
-      // 3. فحص كافة التبويبات المفتوحة في شريط التبويبات العلوي في المنصة (Quotex, PocketOption, etc.)
+      // 1. فحص شامل ومباشر في الشريط العلوي للمنصة (y بين 0 و 140 بيكسل) بدون التقيد بأسماء الكلاسات
+      const matched = [];
+      const allTopNodes = document.querySelectorAll("div, a, button, span, li, p, b, strong");
+      for (let i = 0; i < allTopNodes.length; i++) {
+        const n = allTopNodes[i];
+        if (isExcludedNode(n)) continue;
+        const rect = n.getBoundingClientRect();
+        if (rect.top >= 0 && rect.bottom <= 140 && rect.width >= 20 && rect.height >= 14 && rect.left >= 0 && rect.left <= window.innerWidth) {
+          if (isSpecificPairTabNode(n)) {
+            matched.push({ node: n, rect: rect, area: rect.width * rect.height });
+          }
+        }
+      }
+
+      if (matched.length > 0) {
+        // نختار الحاوية التبويبية الأكبر والعنصر النصي الأصغر معاً وننقرهما جميعاً لضمان الاستجابة 100%
+        matched.sort((a, b) => b.area - a.area);
+        const bestContainer = matched[0];
+        const bestLeaf = matched[matched.length - 1];
+
+        triggerRealisticTabClick(bestContainer.node, bestContainer.rect);
+        if (bestLeaf && bestLeaf.node !== bestContainer.node) {
+          triggerRealisticTabClick(bestLeaf.node, bestLeaf.rect);
+        }
+
+        console.log("%c[روبوت ZAD FX] 🎯 تم العثور على تبويب الزوج (" + targetAsset + ") والنقر عليه بنجاح!", "color:#10b981;font-weight:bold;font-size:13px;");
+        const actElem = document.getElementById("zad-robot-action");
+        if (actElem) {
+          actElem.innerHTML = `🎯 تم تحويل الشارت تلقائياً إلى الزوج المطلوب (<b>${targetAsset}</b>)`;
+        }
+        return true;
+      }
+
+      // 2. محددات إضافية كاحتياط في حال كانت التبويبات ضمن عناصر أخرى
       const tabSelectors = [
         ".tab-item",
         ".tabs__item",
         ".tabs-item",
         "[class*='tab-item']",
         "[class*='tabs__item']",
-        "[data-test*='tab']",
-        ".header-sub__tabs .tab-item",
-        ".header-sub__tabs > div",
-        ".assets-item",
-        ".nav-tabs .nav-item"
+        "[class*='assets-item']",
+        "[data-test*='tab']"
       ];
-
       for (let s = 0; s < tabSelectors.length; s++) {
-        const tabs = document.querySelectorAll(tabSelectors[s]);
-        for (let i = 0; i < tabs.length; i++) {
-          const tab = tabs[i];
-          if (tab.closest('.header__user, .usermenu, #zad-universal-floating-robot')) continue;
-          
-          const text = (tab.innerText || tab.textContent || "").toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
-          // مطابقة اسم العملة (مثل EURJPY أو EUR/JPY)
-          const isMatch = text.includes(cleanTarget) || (cleanTarget.length >= 6 && text.includes(cleanTarget.slice(0, 6)));
-          if (isMatch) {
-            const clickable = tab.querySelector('.tab-item__link, .tab-item__name, .tab-item__symbol, a, button') || tab;
-            simulateRealisticClick(clickable);
-            console.log("%c[روبوت ZAD FX] 🎯 تم اكتشاف الزوج في التبويبات العلوية والتحويل تلقائياً إلى شارت: " + targetAsset, "color:#10b981;font-weight:bold;font-size:12px;");
-            
-            const actElem = document.getElementById("zad-robot-action");
-            if (actElem) {
-              actElem.innerText = `🎯 تم تحويل الشارت تلقائياً إلى الزوج المطلوب (${targetAsset})`;
-            }
+        const tabList = document.querySelectorAll(tabSelectors[s]);
+        for (let i = 0; i < tabList.length; i++) {
+          const tNode = tabList[i];
+          if (isSpecificPairTabNode(tNode)) {
+            triggerRealisticTabClick(tNode);
             return true;
           }
         }
       }
 
-      console.log("%c[روبوت ZAD FX] ℹ️ الزوج (" + targetAsset + ") ليس مفتوحاً حالياً في شريط التبويبات العلوي بالمنصة", "color:#f59e0b;font-weight:bold;");
+      console.log("%c[روبوت ZAD FX] ℹ️ الزوج (" + targetAsset + ") لم يتم العثور على تبويبه المفتوح حالياً في الشريط العلوي", "color:#f59e0b;font-weight:bold;");
     } catch(e) {
       console.error("[ZAD Robot] Auto switch chart error:", e);
     }
@@ -1711,6 +1861,26 @@
           }
           if (cdTip) cdTip.innerHTML = `<span>🎯 ادخل الصفقة بدقة عند ثانية :00 افتتاح الشمعة</span>`;
           if (cdBar) cdBar.style.background = "linear-gradient(90deg, #0284c7, #38bdf8)";
+        }
+
+        // التأكد المستمر بالثانية من أن شارت المنصة يقف بالفعل على زوج الإشارة المطلوب، والتحويل فوراً إن لم يكن عليه (يعمل ديناميكياً مع كافة الأزواج والسلع)
+        if (activeSignalObj && activeSignalObj.asset) {
+          const curBrokerPair = detectCurrentBrokerAsset();
+          const targetStr = activeSignalObj.asset.toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "");
+          const curStr = curBrokerPair ? curBrokerPair.toUpperCase().replace(/\s*OTC/i, "").replace(/[^A-Z]/g, "") : "";
+          
+          let isChartReady = false;
+          if (targetStr.includes("GOLD") || targetStr.startsWith("XAU")) {
+            isChartReady = curStr.includes("XAU") || curStr.includes("GOLD");
+          } else if (targetStr.includes("SILVER") || targetStr.startsWith("XAG")) {
+            isChartReady = curStr.includes("XAG") || curStr.includes("SILVER");
+          } else if (targetStr.length >= 6 && curStr.length >= 6) {
+            isChartReady = (curStr.slice(0, 6) === targetStr.slice(0, 6));
+          }
+
+          if (!isChartReady) {
+            switchToBrokerAsset(activeSignalObj.asset, true);
+          }
         }
 
         if (actElem && activeSignalObj.id !== LAST_EXECUTED_SIG_ID) {
@@ -1842,7 +2012,7 @@
         LAST_ALERTED_SIG_ID = sig.id;
         playSignalChime(isCall);
         try {
-          switchToBrokerAsset(sig.asset);
+          switchToBrokerAsset(sig.asset, true);
         } catch(e) {}
       }
 
@@ -1882,18 +2052,26 @@
       if (currentRobotUiState !== sigKey) {
         currentRobotUiState = sigKey;
         document.getElementById("zad-robot-signal").innerHTML = `
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:4px;background:rgba(15,23,42,0.85);padding:6px 8px;border-radius:8px;border:1px solid #0284c7;">
-            <span style="font-size:11px;color:#94a3b8;display:flex;align-items:center;gap:5px;">
-              <span>🎯 الزوج:</span>
-              <b style="color:#38bdf8;font-size:14px;font-family:monospace;background:#0c1a2e;padding:2px 8px;border-radius:5px;border:1px solid #0284c7;">${sig.asset}</b>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:4px;margin-bottom:3px;background:rgba(15,23,42,0.85);padding:4px 6px;border-radius:6px;border:1px solid #0284c7;">
+            <span style="font-size:9.5px;color:#94a3b8;display:flex;align-items:center;gap:3px;">
+              <span>🎯</span>
+              <b id="zad-signal-pair-btn" style="color:#38bdf8;font-size:11.5px;font-family:monospace;background:#0c1a2e;padding:1px 6px;border-radius:4px;border:1px solid #0284c7;cursor:pointer;display:inline-flex;align-items:center;gap:2px;" title="انقر هنا لتحويل شارت المنصة فوراً إلى هذا الزوج">${sig.asset} <span style="font-size:9px;">🔄</span></b>
             </span>
-            <span style="font-size:11px;color:${isCall ? '#34d399' : '#f87171'};font-weight:bold;background:${isCall ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'};padding:2px 8px;border-radius:5px;border:1px solid ${isCall ? '#10b981' : '#ef4444'};">${dirBadge}</span>
+            <span style="font-size:9.5px;color:${isCall ? '#34d399' : '#f87171'};font-weight:bold;background:${isCall ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'};padding:1px 5px;border-radius:4px;border:1px solid ${isCall ? '#10b981' : '#ef4444'};">${dirBadge}</span>
           </div>
-          <div style="display:flex;justify-content:space-between;font-size:11px;color:#cbd5e1;padding:3px 6px;background:#09121f;border-radius:6px;margin-bottom:4px;">
-            <span>⏰ نقطة الدخول: <b style="color:#fde047;">ثانية :00 (افتتاح الشمعة)</b></span>
-            <span>⏱️ الصلاحية: <b>60 ثانية (M1)</b></span>
+          <div style="display:flex;justify-content:space-between;font-size:9px;color:#cbd5e1;padding:2px 5px;background:#09121f;border-radius:5px;margin-bottom:3px;">
+            <span>⏰ الدخول: <b style="color:#fde047;">ثانية :00 (افتتاح الشمعة)</b></span>
+            <span>⏱️ <b>60 ثانية (M1)</b></span>
           </div>
         `;
+
+        const pairBtn = document.getElementById("zad-signal-pair-btn");
+        if (pairBtn) {
+          pairBtn.onclick = (e) => {
+            e.stopPropagation();
+            switchToBrokerAsset(sig.asset, true);
+          };
+        }
 
         // تجهيز زر التداول اليدوي إذا كان الوضع يدوياً
         const manContainer = document.getElementById("zad-manual-trigger-container");

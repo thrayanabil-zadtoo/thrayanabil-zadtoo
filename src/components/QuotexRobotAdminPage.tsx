@@ -359,6 +359,12 @@ export default function QuotexRobotAdminPage({
     fetchLiveRobotApiFeed(selectedTestApiKey);
   }, [selectedTestApiKey, safeSignals.length]);
 
+  useEffect(() => {
+    if (latestSignal?.asset && latestSignal.status === 'PENDING') {
+      setSimQuotexPair(latestSignal.asset);
+    }
+  }, [latestSignal?.id, latestSignal?.asset, latestSignal?.status]);
+
   // Simulate receiving signal -> Alert -> Auto selecting Pair & Expiry -> Auto opening trade at entry time
   const handleSimulateFullCycle = () => {
     const targetPair = latestSignal?.asset || safeLiveMarket[0]?.pair || 'EUR/USD';
@@ -544,6 +550,53 @@ export default function QuotexRobotAdminPage({
     }
   };
 
+  const [isRestoringGolden, setIsRestoringGolden] = useState<boolean>(false);
+  const [goldenRestoreMessage, setGoldenRestoreMessage] = useState<string | null>(null);
+
+  const handleDownloadGoldenScript = async () => {
+    try {
+      const key = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
+      const res = await fetch(`/api/quotex-robot/golden-reference.user.js?apiKey=${encodeURIComponent(key)}`);
+      const code = await res.text();
+      const blob = new Blob([code], { type: 'text/javascript;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'zad-broker-robot.golden-v3.6.user.js';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch(e) {
+      console.error('Download golden error:', e);
+    }
+  };
+
+  const handleRestoreGoldenBaseline = async () => {
+    if (!window.confirm('🔒 هل أنت متأكد من رغبتك في استعادة وتثبيت النسخة المرجعية الذهبية (v3.6 Golden Baseline)؟\nسيتم تثبيت كود محرك التبديل والتداول المعتمد بنسبة 100% كمرجع أساسي.')) {
+      return;
+    }
+    setIsRestoringGolden(true);
+    setGoldenRestoreMessage(null);
+    try {
+      const res = await fetch('/api/quotex-robot/restore-golden-baseline', { method: 'POST' });
+      const data = await res.json();
+      if (data.ok) {
+        setGoldenRestoreMessage(data.message || '✅ تم تثبيت واستعادة النسخة المرجعية الذهبية بنجاح!');
+        const key = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
+        const txt = await fetch(`/api/quotex-robot/zad-broker-robot.user.js?apiKey=${encodeURIComponent(key)}`).then(r => r.text());
+        setCanonicalUserscript(txt);
+      } else {
+        setGoldenRestoreMessage('❌ فشل: ' + (data.error || 'تعذر الاستعادة'));
+      }
+    } catch (err: any) {
+      setGoldenRestoreMessage('❌ خطأ: ' + err.message);
+    } finally {
+      setIsRestoringGolden(false);
+      setTimeout(() => setGoldenRestoreMessage(null), 7000);
+    }
+  };
+
   // Primary Official Domain & Current App Origin
   const officialDomain = 'https://fx.zadtoo.com';
   const appOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://fx.zadtoo.com';
@@ -676,7 +729,15 @@ export default function QuotexRobotAdminPage({
         </div>
 
         {/* Summary Capabilities Bar */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
+          <div className="p-3 bg-[#0B0F17] border border-slate-800 rounded-xl">
+            <div className="text-[11px] text-slate-400">ساعات عمل الروبوت</div>
+            <div className="font-extrabold text-sky-300 mt-0.5 font-mono-num">10:00 ص - 06:00 م</div>
+          </div>
+          <div className="p-3 bg-[#0B0F17] border border-slate-800 rounded-xl">
+            <div className="text-[11px] text-slate-400">فترة مسح السوق</div>
+            <div className="font-extrabold text-amber-300 mt-0.5">إحماء 10 د عند البدء</div>
+          </div>
           <div className="p-3 bg-[#0B0F17] border border-slate-800 rounded-xl">
             <div className="text-[11px] text-slate-400">وضع التشغيل</div>
             <div className="font-extrabold text-emerald-400 mt-0.5">تداول آلي أو يدوي</div>
@@ -696,12 +757,6 @@ export default function QuotexRobotAdminPage({
           <div className="p-3 bg-[#0B0F17] border border-slate-800 rounded-xl">
             <div className="text-[11px] text-slate-400">ربط API الموقع</div>
             <div className="font-extrabold text-emerald-400 mt-0.5">نشط ومباشر</div>
-          </div>
-          <div className="p-3 bg-[#0B0F17] border border-slate-800 rounded-xl">
-            <div className="text-[11px] text-slate-400">مفاتيح الأعضاء النشطة</div>
-            <div className="font-extrabold text-amber-300 mt-0.5 font-mono-num">
-              {safeSubscribers.filter(s => s.robotEnabled !== false).length} مفتاح خاص
-            </div>
           </div>
         </div>
       </div>
@@ -860,7 +915,7 @@ export default function QuotexRobotAdminPage({
                 {/* Clickable pair tabs to test auto-discovery of pair switching in real time */}
                 <div className="flex flex-wrap items-center gap-1 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
                   <span className="text-[10px] text-slate-400 px-1 font-bold">أزواج الشارت:</span>
-                  {['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'].map(pair => (
+                  {['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD', 'EUR/GBP', 'GOLD (XAU/USD)'].map(pair => (
                     <button
                       key={pair}
                       type="button"
@@ -1002,31 +1057,31 @@ export default function QuotexRobotAdminPage({
                 style={widgetPosition ? { transform: `translate(${widgetPosition.x}px, ${widgetPosition.y}px)` } : undefined}
                 className={`${
                   isScreenFloating
-                    ? 'fixed bottom-8 left-8 z-[99999] shadow-[0_25px_60px_rgba(0,0,0,0.95),0_0_40px_rgba(16,185,129,0.35)]'
-                    : 'absolute top-6 left-3 sm:top-12 sm:left-6 z-30 shadow-[0_20px_50px_rgba(0,0,0,0.85),0_0_30px_rgba(16,185,129,0.3)]'
-                } w-full max-w-[305px] bg-[#0B0F17]/95 backdrop-blur-md border-2 border-emerald-400/90 rounded-2xl overflow-hidden select-none transition-shadow`}
+                    ? 'fixed bottom-8 left-8 z-[99999] shadow-[0_20px_50px_rgba(0,0,0,0.95),0_0_30px_rgba(16,185,129,0.35)]'
+                    : 'absolute top-4 left-2 sm:top-8 sm:left-4 z-30 shadow-[0_15px_40px_rgba(0,0,0,0.85),0_0_25px_rgba(16,185,129,0.3)]'
+                } w-full max-w-[250px] bg-[#0B0F17]/95 backdrop-blur-md border border-emerald-400/90 rounded-xl overflow-hidden select-none transition-shadow`}
               >
                 {/* Compact Floating Header - Draggable */}
                 <div
                   onMouseDown={handleDragStart}
                   onTouchStart={handleTouchStart}
-                  className="px-3.5 py-2.5 bg-gradient-to-r from-emerald-950/90 via-slate-900 to-slate-900 border-b border-slate-800 flex items-center justify-between cursor-move"
+                  className="px-2.5 py-1.5 bg-gradient-to-r from-emerald-950/90 via-slate-900 to-slate-900 border-b border-slate-800 flex items-center justify-between cursor-move"
                   title="اضغط واسحب لتحريك النافذة العائمة"
                 >
-                      <div className="flex items-center gap-2">
-                        <span className="relative flex h-2.5 w-2.5">
+                      <div className="flex items-center gap-1.5">
+                        <span className="relative flex h-2 w-2">
                           <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                          <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500" />
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
                         </span>
-                        <span className="text-xs font-extrabold text-white">
+                        <span className="text-[11px] font-extrabold text-white">
                           روبوت ZAD FX
                         </span>
                       </div>
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1">
                         <button
                           type="button"
                           onClick={() => toggleScreenFloating()}
-                          className={`px-1.5 py-0.5 text-[10px] font-bold rounded border transition-colors cursor-pointer ${
+                          className={`px-1 py-0.5 text-[9px] font-bold rounded border transition-colors cursor-pointer ${
                             isScreenFloating
                               ? 'bg-emerald-500 text-slate-950 border-emerald-400'
                               : 'bg-slate-800 hover:bg-slate-700 text-emerald-300 border-slate-700'
@@ -1038,7 +1093,7 @@ export default function QuotexRobotAdminPage({
                         <button
                           type="button"
                           onClick={() => setShowWidgetInfo(!showWidgetInfo)}
-                          className={`px-1.5 py-0.5 text-[10px] font-bold rounded border transition-colors cursor-pointer ${
+                          className={`px-1 py-0.5 text-[9px] font-bold rounded border transition-colors cursor-pointer ${
                             showWidgetInfo
                               ? 'bg-sky-500 text-slate-950 border-sky-400'
                               : 'bg-slate-800 hover:bg-slate-700 text-sky-300 border-slate-700'
@@ -1050,7 +1105,7 @@ export default function QuotexRobotAdminPage({
                         <button
                           type="button"
                           onClick={handleToggleQuran}
-                          className={`px-1.5 py-0.5 text-[10px] font-bold rounded border transition-colors cursor-pointer flex items-center gap-1 ${
+                          className={`px-1 py-0.5 text-[9px] font-bold rounded border transition-colors cursor-pointer flex items-center gap-0.5 ${
                             showQuranBar
                               ? 'bg-emerald-500 text-slate-950 border-emerald-400'
                               : 'bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border-emerald-700/60'
@@ -1063,7 +1118,7 @@ export default function QuotexRobotAdminPage({
                         <button
                           type="button"
                           onClick={() => setWidgetMinimized(!widgetMinimized)}
-                          className="px-1.5 py-0.5 text-[10px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 rounded cursor-pointer"
+                          className="px-1 py-0.5 text-[9px] font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 rounded cursor-pointer"
                           title="تصغير / تكبير الروبوت العائم"
                         >
                           {widgetMinimized ? '+' : '−'}
@@ -1071,7 +1126,7 @@ export default function QuotexRobotAdminPage({
                         <button
                           type="button"
                           onClick={handleCloseRobot}
-                          className="text-slate-400 hover:text-rose-400 p-0.5 cursor-pointer text-sm font-bold leading-none transition-colors ml-1"
+                          className="text-slate-400 hover:text-rose-400 p-0.5 cursor-pointer text-xs font-bold leading-none transition-colors ml-0.5"
                           title="إغلاق"
                         >
                           ✕
@@ -1081,8 +1136,8 @@ export default function QuotexRobotAdminPage({
 
                   {/* Info Modal / Drawer inside Widget */}
                   {showWidgetInfo && !widgetMinimized && (
-                    <div className="m-3 p-3 bg-gradient-to-br from-[#0F172A] to-slate-900 border border-sky-500/50 rounded-xl space-y-2 text-[11px] shadow-lg animate-in fade-in duration-200">
-                      <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+                    <div className="m-2 p-2 bg-gradient-to-br from-[#0F172A] to-slate-900 border border-sky-500/50 rounded-lg space-y-1.5 text-[10px] shadow-lg animate-in fade-in duration-200">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-1">
                         <strong className="text-sky-300 flex items-center gap-1">
                           <span>ℹ️ معلومات الروبوت العائم</span>
                         </strong>
@@ -1094,9 +1149,9 @@ export default function QuotexRobotAdminPage({
                           ✕
                         </button>
                       </div>
-                      <div className="space-y-1.5 leading-relaxed text-slate-300">
+                      <div className="space-y-1 leading-relaxed text-slate-300">
                         <div className="flex items-center justify-between">
-                          <span className="text-slate-400">🌐 الموقع الرسمي:</span>
+                          <span className="text-slate-400">🌐 الموقع:</span>
                           <a
                             href="https://fx.zadtoo.com"
                             target="_blank"
@@ -1107,7 +1162,7 @@ export default function QuotexRobotAdminPage({
                           </a>
                         </div>
                         <div className="flex items-center justify-between">
-                          <span className="text-slate-400">📢 القناة الرسمية:</span>
+                          <span className="text-slate-400">📢 القناة:</span>
                           <a
                             href="https://t.me/ZadNBFX"
                             target="_blank"
@@ -1117,8 +1172,8 @@ export default function QuotexRobotAdminPage({
                             <span>@ZadNBFX</span>
                           </a>
                         </div>
-                        <div className="pt-1.5 border-t border-slate-800/80 flex items-center justify-between text-[10.5px]">
-                          <span className="text-slate-400">👨‍💻 إعداد وبرمجة:</span>
+                        <div className="pt-1 border-t border-slate-800/80 flex items-center justify-between text-[9.5px]">
+                          <span className="text-slate-400">👨‍💻 برمجة:</span>
                           <strong className="text-amber-300 font-bold">Nabil Barakat</strong>
                         </div>
                       </div>
@@ -1126,16 +1181,16 @@ export default function QuotexRobotAdminPage({
                   )}
 
                   {!widgetMinimized ? (
-                    <div className="p-3.5 space-y-3 text-xs">
+                    <div className="p-2.5 space-y-2 text-[10.5px]">
                       {/* Member Subscription & Key Status Row */}
-                      <div className="p-2.5 bg-slate-900/90 border border-slate-800 rounded-xl space-y-1.5">
-                        <div className="flex items-center justify-between text-[11px]">
+                      <div className="p-2 bg-slate-900/90 border border-slate-800 rounded-lg space-y-1">
+                        <div className="flex items-center justify-between text-[10px]">
                           <span className="text-slate-400">العضو المشترك:</span>
-                          <strong className="text-amber-300 truncate max-w-[150px]">
+                          <strong className="text-amber-300 truncate max-w-[130px]">
                             {apiFeedResponse?.member?.name || 'حساب المشرف التجريبي'}
                           </strong>
                         </div>
-                        <div className="flex items-center justify-between text-[11px]">
+                        <div className="flex items-center justify-between text-[10px]">
                           <span className="text-slate-400">صلاحية المفتاح:</span>
                           <span className="font-mono-num font-bold text-emerald-400">
                             {apiFeedResponse?.authorized === false
@@ -1147,24 +1202,24 @@ export default function QuotexRobotAdminPage({
 
                       {/* مشغل القرآن الكريم المصغر (الشيخ ماهر المعيقلي) أسفل اسم العضو */}
                       {showQuranBar && (
-                        <div className="p-2 bg-gradient-to-r from-emerald-950 via-[#032e22] to-slate-900 border border-emerald-500/50 rounded-xl flex items-center justify-between gap-2 shadow-lg animate-in fade-in duration-200">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="relative flex h-2 w-2 flex-shrink-0">
+                        <div className="p-1.5 bg-gradient-to-r from-emerald-950 via-[#032e22] to-slate-900 border border-emerald-500/50 rounded-lg flex items-center justify-between gap-1.5 shadow-lg animate-in fade-in duration-200">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="relative flex h-1.5 w-1.5 flex-shrink-0">
                               <span className={`absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 ${isQuranPlaying ? 'animate-ping' : ''}`} />
-                              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-400" />
+                              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400" />
                             </span>
                             <div className="truncate">
-                              <div className="text-[10.5px] font-extrabold text-emerald-200 truncate flex items-center gap-1">
+                              <div className="text-[9.5px] font-extrabold text-emerald-200 truncate flex items-center gap-1">
                                 <span>📖</span>
-                                <span>القرآن — الشيخ ماهر المعيقلي</span>
+                                <span>الشيخ ماهر المعيقلي</span>
                               </div>
                             </div>
                           </div>
-                          <div className="flex items-center gap-1.5 flex-shrink-0">
+                          <div className="flex items-center gap-1 flex-shrink-0">
                             <button
                               type="button"
                               onClick={handleToggleQuranPlayPause}
-                              className="px-2 py-0.5 text-[10px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded cursor-pointer transition-colors shadow"
+                              className="px-1.5 py-0.5 text-[9px] font-bold bg-emerald-600 hover:bg-emerald-500 text-white rounded cursor-pointer transition-colors shadow"
                             >
                               {isQuranPlaying ? '⏸️' : '▶️'}
                             </button>
@@ -1181,11 +1236,11 @@ export default function QuotexRobotAdminPage({
                       )}
 
                       {/* Auto vs Manual Mode Switcher */}
-                      <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-900 border border-slate-800 rounded-xl">
+                      <div className="grid grid-cols-2 gap-1 p-0.5 bg-slate-900 border border-slate-800 rounded-lg">
                         <button
                           type="button"
                           onClick={() => setWidgetMode('AUTO')}
-                          className={`py-1.5 px-2 rounded-lg text-[11px] font-extrabold transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                          className={`py-1 px-1.5 rounded-md text-[10px] font-extrabold transition-all cursor-pointer flex items-center justify-center gap-1 ${
                             widgetMode === 'AUTO'
                               ? 'bg-emerald-400 text-slate-950 shadow'
                               : 'text-slate-400 hover:text-white'
@@ -1196,7 +1251,7 @@ export default function QuotexRobotAdminPage({
                         <button
                           type="button"
                           onClick={() => setWidgetMode('MANUAL')}
-                          className={`py-1.5 px-2 rounded-lg text-[11px] font-extrabold transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                          className={`py-1 px-1.5 rounded-md text-[10px] font-extrabold transition-all cursor-pointer flex items-center justify-center gap-1 ${
                             widgetMode === 'MANUAL'
                               ? 'bg-amber-400 text-slate-950 shadow'
                               : 'text-slate-400 hover:text-white'
@@ -1207,98 +1262,98 @@ export default function QuotexRobotAdminPage({
                       </div>
 
                       {/* مزامنة سحابية حصرية مع الإشارات المعتمدة */}
-                      <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#09121f] border border-sky-900/50 rounded-xl text-[10.5px]">
-                        <span className="flex items-center gap-1.5 text-slate-200">
+                      <div className="flex items-center justify-between px-2 py-1 bg-[#09121f] border border-sky-900/50 rounded-lg text-[9.5px]">
+                        <span className="flex items-center gap-1 text-slate-200">
                           <span className="text-sky-400">⚡</span>
-                          <span className="font-bold text-sky-300">مزامنة سحابية مع الإشارات المعتمدة</span>
+                          <span className="font-bold text-sky-300">مزامنة سحابية معتمدة</span>
                         </span>
-                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border text-emerald-300 bg-emerald-500/15 border-emerald-500/30">
-                          مفعلة تلقائياً ✓
+                        <span className="text-[8.5px] font-bold px-1 py-0.2 rounded border text-emerald-300 bg-emerald-500/15 border-emerald-500/30">
+                          مفعلة ✓
                         </span>
                       </div>
 
                       {/* Active Signal & Auto Pair/Expiry Box */}
-                      <div className="p-2.5 bg-[#070A10] border border-emerald-500/30 rounded-xl space-y-1.5">
-                        <div className="flex items-center justify-between text-[11px]">
+                      <div className="p-2 bg-[#070A10] border border-emerald-500/30 rounded-lg space-y-1">
+                        <div className="flex items-center justify-between text-[10px]">
                           <span className="text-sky-300 font-bold flex items-center gap-1">
-                            <Radio className="w-3 h-3 text-emerald-400" />
+                            <Radio className="w-2.5 h-2.5 text-emerald-400" />
                             <span>حالة الإشارة:</span>
                           </span>
-                          <span className="font-mono-num text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-amber-300">
+                          <span className="font-mono-num text-[9.5px] px-1 py-0.5 rounded bg-slate-800 text-amber-300">
                             {latestSignal ? `الدقيقة ${latestSignal.entryTime}` : isGlobalMarketOpen ? 'بانتظار إشارة' : 'مغلق السوق'}
                           </span>
                         </div>
 
                         {simAutoTradeStatus === 'TRADE_OPENED' ? (
-                          <div className="p-3 bg-gradient-to-br from-emerald-950 via-[#022c22] to-slate-900 border-2 border-emerald-500 rounded-xl space-y-2 text-center shadow-[0_0_20px_rgba(16,185,129,0.35)]">
+                          <div className="p-2 bg-gradient-to-br from-emerald-950 via-[#022c22] to-slate-900 border border-emerald-500 rounded-lg space-y-1 text-center shadow-[0_0_15px_rgba(16,185,129,0.35)]">
                             <div className="flex items-center justify-between">
-                              <span className="text-emerald-300 font-extrabold text-xs flex items-center gap-1.5">
-                                <span className="text-base animate-pulse">⚡</span>
-                                <span>الصفقة جارية الآن في المنصة</span>
+                              <span className="text-emerald-300 font-extrabold text-[10px] flex items-center gap-1">
+                                <span className="animate-pulse">⚡</span>
+                                <span>الصفقة جارية بالمنصة</span>
                               </span>
-                              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                                M1 (60 ثانية)
+                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                M1 (60ث)
                               </span>
                             </div>
-                            <div className="flex items-center justify-between bg-black/40 px-2.5 py-1 rounded-lg text-[11px]">
+                            <div className="flex items-center justify-between bg-black/40 px-2 py-0.5 rounded text-[9.5px]">
                               <span className="text-slate-400">🎯 الزوج: <b className="text-sky-400 font-mono">{simQuotexPair}</b></span>
                               <span className="text-slate-300">الصلاحية: <b>60 ثانية</b></span>
                             </div>
-                            <div className="p-2 bg-[#022c22] border border-emerald-500/50 rounded-lg">
-                              <div className="text-[10.5px] text-emerald-200">⏳ متبقي على انتهاء الصفقة:</div>
-                              <div className="text-base font-black font-mono-num text-amber-300">
-                                {simCountdownSec > 0 ? `${simCountdownSec} ثانية` : 'الصفقة مفتوحة (جارية الآن)'}
+                            <div className="p-1 bg-[#022c22] border border-emerald-500/50 rounded">
+                              <div className="text-[9px] text-emerald-200">⏳ متبقي على الانتهاء:</div>
+                              <div className="text-sm font-black font-mono-num text-amber-300">
+                                {simCountdownSec > 0 ? `${simCountdownSec} ثانية` : 'الصفقة مفتوحة (جارية)'}
                               </div>
                             </div>
-                            <div className="text-[10px] text-slate-400">
-                              📊 الصفقة مفتوحة في حسابك — بانتظار إغلاق الشمعة بالثانية
+                            <div className="text-[8.5px] text-slate-400">
+                              📊 مفتوحة بحسابك — بانتظار إغلاق الشمعة
                             </div>
                           </div>
                         ) : latestSignal && latestSignal.status === 'PENDING' ? (
-                          <div className="space-y-1.5 pt-1">
+                          <div className="space-y-1 pt-0.5">
                             <div className="flex items-center justify-between">
                               <div>
-                                <div className="text-sm font-extrabold text-white font-mono-num flex items-center gap-1.5">
+                                <div className="text-xs font-extrabold text-white font-mono-num flex items-center gap-1">
                                   <span>{latestSignal.asset}</span>
-                                  <span className="text-[9.5px] text-emerald-300 bg-emerald-950 px-1.5 py-0.5 rounded border border-emerald-800">
-                                    إشارة مؤكدة 🎯
+                                  <span className="text-[8.5px] text-emerald-300 bg-emerald-950 px-1 py-0.2 rounded border border-emerald-800">
+                                    مؤكدة 🎯
                                   </span>
                                 </div>
-                                <div className="text-[10px] text-slate-400">
-                                  نقطة الدخول: ثانية :00 (افتتاح الشمعة) | الصلاحية: 60 ثانية
+                                <div className="text-[9px] text-slate-400">
+                                  الدخول: :00 (افتتاح الشمعة) | 60 ثانية
                                 </div>
                               </div>
                               <span
-                                className={`px-2.5 py-1 rounded-lg text-xs font-extrabold ${
+                                className={`px-2 py-0.5 rounded text-[10px] font-extrabold ${
                                   latestSignal.direction === 'CALL'
                                     ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
                                     : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
                                 }`}
                               >
-                                {latestSignal.direction === 'CALL' ? 'صعود CALL 🟢' : 'هبوط PUT 🔴'}
+                                {latestSignal.direction === 'CALL' ? 'صعود 🟢' : 'هبوط 🔴'}
                               </span>
                             </div>
 
-                            <div className="text-[10.5px] font-bold text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 rounded-md py-1 text-center">
-                              🎯 إشارة مؤكدة على ({latestSignal.asset}) — جاهز للتنفيذ ({widgetMode === 'AUTO' ? 'آلياً' : 'يدوياً'}) عند ثانية :00
+                            <div className="text-[9.5px] font-bold text-emerald-400 bg-emerald-950/40 border border-emerald-500/30 rounded py-0.5 text-center">
+                              🎯 جاهز للتنفيذ ({widgetMode === 'AUTO' ? 'آلياً' : 'يدوياً'}) عند ثانية :00
                             </div>
                           </div>
                         ) : !isGlobalMarketOpen ? (
-                          <div className="p-3 bg-rose-950/20 rounded-xl border border-rose-500/40 text-xs text-rose-300 text-center space-y-1">
-                            <div className="flex items-center justify-center gap-2 font-black text-sm text-rose-400">
+                          <div className="p-2 bg-rose-950/20 rounded-lg border border-rose-500/40 text-[10px] text-rose-300 text-center space-y-0.5">
+                            <div className="flex items-center justify-center gap-1.5 font-black text-xs text-rose-400">
                               <span>🔴</span>
                               <span>مغلق السوق</span>
                             </div>
-                            <p className="text-[10px] text-slate-400">السوق العالمي في عطلة أسبوعية حالياً</p>
+                            <p className="text-[9px] text-slate-400">السوق العالمي في عطلة أسبوعية</p>
                           </div>
                         ) : (
-                          <div className="p-3 bg-[#09121d] rounded-xl border border-amber-500/40 text-xs text-slate-300 space-y-1.5 text-center">
-                            <div className="flex items-center justify-center gap-2 text-amber-300 font-bold text-sm">
+                          <div className="p-2 bg-[#09121d] rounded-lg border border-amber-500/40 text-[10px] text-slate-300 space-y-1 text-center">
+                            <div className="flex items-center justify-center gap-1.5 text-amber-300 font-bold text-xs">
                               <span>⏸️</span>
                               <span>وضع الانتظار (WAIT)</span>
                             </div>
-                            <p className="text-[10px] text-slate-400">جاري مسح السوق للشمعة القادمة — لن يتم تكرار الإشارة فوراً</p>
-                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#061b2d] border border-sky-500/40 text-[11px] font-mono-num text-sky-300">
+                            <p className="text-[9px] text-slate-400">جاري مسح السوق — لن يتم التكرار</p>
+                            <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#061b2d] border border-sky-500/40 text-[9.5px] font-mono-num text-sky-300">
                               <span>⏳ اكتمال الشمعة:</span>
                               <b className="text-sky-400 font-bold">{60 - (new Date().getSeconds())} ثانية</b>
                             </div>
@@ -1307,14 +1362,14 @@ export default function QuotexRobotAdminPage({
                       </div>
 
                       {/* Three Result-Framed Colored Boxes (ربح - خسارة - النسبة) with Direct Click Increment (Without Hint/Explanation) */}
-                      <div className="grid grid-cols-3 gap-2 text-center pt-1 select-none">
+                      <div className="grid grid-cols-3 gap-1.5 text-center pt-0.5 select-none">
                         {/* 1. Wins Box (Green Border) */}
                         <div
                           onClick={() => setManualWins(prev => prev + 1)}
-                          className="p-2.5 bg-emerald-950/30 hover:bg-emerald-950/50 border-2 border-emerald-500/80 rounded-xl flex flex-col items-center justify-center cursor-pointer shadow-[0_0_15px_rgba(16,185,129,0.15)] transition-all active:scale-95"
+                          className="p-1.5 bg-emerald-950/30 hover:bg-emerald-950/50 border border-emerald-500/80 rounded-lg flex flex-col items-center justify-center cursor-pointer shadow-[0_0_10px_rgba(16,185,129,0.15)] transition-all active:scale-95"
                         >
-                          <span className="text-[11px] font-bold text-emerald-300">✅ ربح</span>
-                          <span className="text-lg font-black text-white font-mono-num mt-1">
+                          <span className="text-[9.5px] font-bold text-emerald-300">✅ ربح</span>
+                          <span className="text-sm font-black text-white font-mono-num mt-0.5">
                             {manualWins}
                           </span>
                         </div>
@@ -1322,44 +1377,44 @@ export default function QuotexRobotAdminPage({
                         {/* 2. Losses Box (Red Border) */}
                         <div
                           onClick={() => setManualLosses(prev => prev + 1)}
-                          className="p-2.5 bg-rose-950/30 hover:bg-rose-950/50 border-2 border-rose-500/80 rounded-xl flex flex-col items-center justify-center cursor-pointer shadow-[0_0_15px_rgba(239,68,68,0.15)] transition-all active:scale-95"
+                          className="p-1.5 bg-rose-950/30 hover:bg-rose-950/50 border border-rose-500/80 rounded-lg flex flex-col items-center justify-center cursor-pointer shadow-[0_0_10px_rgba(239,68,68,0.15)] transition-all active:scale-95"
                         >
-                          <span className="text-[11px] font-bold text-rose-300">❌ خسارة</span>
-                          <span className="text-lg font-black text-white font-mono-num mt-1">
+                          <span className="text-[9.5px] font-bold text-rose-300">❌ خسارة</span>
+                          <span className="text-sm font-black text-white font-mono-num mt-0.5">
                             {manualLosses}
                           </span>
                         </div>
 
                         {/* 3. Win Rate Box (Amber Border) */}
-                        <div className="p-2.5 bg-amber-950/30 border-2 border-amber-500/80 rounded-xl flex flex-col items-center justify-center shadow-[0_0_15px_rgba(245,158,11,0.15)]">
-                          <span className="text-[11px] font-bold text-amber-300">🎯 النسبة</span>
-                          <span className="text-lg font-black text-amber-300 font-mono-num mt-1">
+                        <div className="p-1.5 bg-amber-950/30 border border-amber-500/80 rounded-lg flex flex-col items-center justify-center shadow-[0_0_10px_rgba(245,158,11,0.15)]">
+                          <span className="text-[9.5px] font-bold text-amber-300">🎯 النسبة</span>
+                          <span className="text-sm font-black text-amber-300 font-mono-num mt-0.5">
                             {manualRate}%
                           </span>
                         </div>
                       </div>
 
                       {/* قسم تجربة واختبار أزرار المنصة في الواجهة */}
-                      <div className="p-2.5 bg-[#090d16] border border-slate-800 rounded-xl space-y-2 text-[10.5px]">
+                      <div className="p-2 bg-[#090d16] border border-slate-800 rounded-lg space-y-1.5 text-[9.5px]">
                         <div className="flex items-center justify-between">
                           <span className="font-bold text-sky-400 flex items-center gap-1">
                             <span>🛠️</span>
-                            <span>اختبار وتثبيت أزرار المنصة:</span>
+                            <span>اختبار أزرار المنصة:</span>
                           </span>
-                          <span className="text-[9.5px] font-bold text-amber-300 bg-amber-950/60 px-1.5 py-0.5 rounded border border-amber-800/60">
+                          <span className="text-[8.5px] font-bold text-amber-300 bg-amber-950/60 px-1 py-0.5 rounded border border-amber-800/60">
                             📌 تثبيت يدوي متاح
                           </span>
                         </div>
-                        <div className="grid grid-cols-2 gap-1.5">
+                        <div className="grid grid-cols-2 gap-1">
                           <button
                             type="button"
                             onClick={() => {
                               setSimTestFeedback('✅ تم اختبار زر الشراء (CALL 🟢): الزر مكتشف وجاهز للتنفيذ بالثانية!');
                               setTimeout(() => setSimTestFeedback(null), 5000);
                             }}
-                            className="py-1.5 px-2 bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/80 text-emerald-300 rounded-lg font-extrabold text-[11px] cursor-pointer flex items-center justify-center gap-1 transition-all active:scale-95 shadow"
+                            className="py-1 px-1 bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-500/80 text-emerald-300 rounded font-extrabold text-[9.5px] cursor-pointer flex items-center justify-center gap-1 transition-all active:scale-95 shadow"
                           >
-                            <span>🟢 تجربة الشراء (CALL)</span>
+                            <span>🟢 شراء (CALL)</span>
                           </button>
                           <button
                             type="button"
@@ -1367,28 +1422,28 @@ export default function QuotexRobotAdminPage({
                               setSimTestFeedback('✅ تم اختبار زر البيع (PUT 🔴): الزر مكتشف وجاهز للتنفيذ بالثانية!');
                               setTimeout(() => setSimTestFeedback(null), 5000);
                             }}
-                            className="py-1.5 px-2 bg-rose-950/80 hover:bg-rose-900 border border-rose-500/80 text-rose-300 rounded-lg font-extrabold text-[11px] cursor-pointer flex items-center justify-center gap-1 transition-all active:scale-95 shadow"
+                            className="py-1 px-1 bg-rose-950/80 hover:bg-rose-900 border border-rose-500/80 text-rose-300 rounded font-extrabold text-[9.5px] cursor-pointer flex items-center justify-center gap-1 transition-all active:scale-95 shadow"
                           >
-                            <span>🔴 تجربة البيع (PUT)</span>
+                            <span>🔴 بيع (PUT)</span>
                           </button>
                         </div>
                         {simTestFeedback && (
-                          <div className="p-1.5 bg-emerald-950/40 border border-emerald-500/40 rounded-lg text-emerald-300 font-bold text-center text-[10px] animate-in fade-in duration-200">
+                          <div className="p-1 bg-emerald-950/40 border border-emerald-500/40 rounded text-emerald-300 font-bold text-center text-[9px] animate-in fade-in duration-200">
                             {simTestFeedback}
                           </div>
                         )}
                       </div>
 
                       {/* Stake & Sound Quick Controls */}
-                      <div className="flex items-center justify-between gap-2 pt-1 border-t border-slate-800 text-[11px]">
+                      <div className="flex items-center justify-between gap-1.5 pt-1 border-t border-slate-800 text-[10px]">
                         <div className="flex items-center gap-1">
-                          <span className="text-slate-400">المبلغ ($):</span>
+                          <span className="text-slate-400">المبلغ:</span>
                           {[1, 5, 10, 20].map(amt => (
                             <button
                               key={amt}
                               type="button"
                               onClick={() => setWidgetStakeUsd(amt)}
-                              className={`px-1.5 py-0.5 rounded font-mono-num font-bold cursor-pointer ${
+                              className={`px-1 py-0.5 rounded font-mono-num font-bold cursor-pointer text-[9.5px] ${
                                 widgetStakeUsd === amt
                                   ? 'bg-emerald-400 text-slate-950'
                                   : 'bg-slate-800 text-slate-300'
@@ -1401,7 +1456,7 @@ export default function QuotexRobotAdminPage({
                         <button
                           type="button"
                           onClick={() => setWidgetSoundOn(!widgetSoundOn)}
-                          className={`px-2 py-0.5 rounded font-bold cursor-pointer ${
+                          className={`px-1.5 py-0.5 rounded font-bold cursor-pointer text-[9.5px] ${
                             widgetSoundOn
                               ? 'bg-sky-500/20 text-sky-300'
                               : 'bg-slate-800 text-slate-500'
@@ -1412,7 +1467,7 @@ export default function QuotexRobotAdminPage({
                       </div>
                     </div>
                   ) : (
-                    <div className="px-3.5 py-2 flex items-center justify-between text-[11px] text-slate-300">
+                    <div className="px-2.5 py-1.5 flex items-center justify-between text-[10px] text-slate-300">
                       <span>
                         الوضع: <strong>{widgetMode === 'AUTO' ? 'آلي 🤖' : 'يدوي 🖐️'}</strong>
                       </span>
@@ -1718,6 +1773,62 @@ export default function QuotexRobotAdminPage({
               >
                 <span>تثبيت مباشر بنقرة واحدة ↗</span>
               </a>
+            </div>
+
+            {/* GOLDEN REFERENCE BASELINE LOCK CARD (النسخة المرجعية الذهبية المعتمدة والمقفولة) */}
+            <div className="p-4 bg-gradient-to-r from-amber-950/40 via-slate-950 to-amber-950/30 border-2 border-amber-500/60 rounded-xl space-y-3 shadow-lg">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="w-7 h-7 rounded-lg bg-amber-500/20 border border-amber-400/50 flex items-center justify-center text-amber-300 font-bold text-sm">
+                    🔒
+                  </span>
+                  <div>
+                    <h4 className="text-xs font-extrabold text-amber-300 flex items-center gap-1.5">
+                      <span>النسخة المرجعية الذهبية المعتمدة (v3.6 Golden Baseline)</span>
+                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[9px] font-bold">
+                        محمية ومقفولة
+                      </span>
+                    </h4>
+                    <p className="text-[10.5px] text-slate-400 mt-0.5">
+                      تم حفظ وتجميد محرك النقر والتبديل واختيار الشارت المعتمد كمرجع دائم لا يتأثر بأي تعديلات في العضويات أو المؤشرات.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {goldenRestoreMessage && (
+                <div className="p-2.5 rounded-lg bg-emerald-950/90 border border-emerald-500/50 text-emerald-200 text-xs font-bold flex items-center gap-2 animate-fade-in">
+                  <span>{goldenRestoreMessage}</span>
+                </div>
+              )}
+
+              <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-amber-500/20">
+                <button
+                  type="button"
+                  onClick={handleRestoreGoldenBaseline}
+                  disabled={isRestoringGolden}
+                  className="px-3 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs transition-all cursor-pointer flex items-center gap-1.5 shadow"
+                >
+                  <span>{isRestoringGolden ? '⏳ جاري الاستعادة...' : '🔄 استعادة وتثبيت النسخة الذهبية بنقرة واحدة'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadGoldenScript}
+                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 font-bold rounded-lg text-xs transition-all cursor-pointer flex items-center gap-1.5"
+                >
+                  <span>📥 تحميل نسخة الاحتياط الذهبية (.user.js)</span>
+                </button>
+
+                <a
+                  href="/api/quotex-robot/golden-reference.user.js"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-2.5 py-2 text-[11px] text-slate-400 hover:text-white underline underline-offset-4"
+                >
+                  عرض الكود المرجعي الخام ↗
+                </a>
+              </div>
             </div>
           </div>
         </div>
