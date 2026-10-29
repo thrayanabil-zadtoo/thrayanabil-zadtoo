@@ -100,10 +100,14 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     setIsSendingSignal(true);
     setSignalFeedback(null);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
     try {
       const res = await fetch('/api/admin/live-broadcast', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           type: 'signal',
           pair: selectedPair,
@@ -118,33 +122,52 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
         })
       });
 
-      const data = await res.json();
-      if (data.ok) {
-        const destParts: string[] = [];
-        if (data.sentToFree) destParts.push('بوت القناة العامة');
-        if (data.sentToVip) destParts.push('بوت VIP');
-        if (data.sentToFloating) destParts.push('الروبوت العائم');
-
-        setSignalFeedback({
-          type: 'success',
-          text: `تم إرسال إشارة ${selectedPair} (${direction === 'CALL' ? 'صعود 🟢' : 'هبوط 🔴'}) بنجاح!`,
-          details: `وصلت الإشارة إلى: ${destParts.join(' + ') || 'الأجهزة المحددة'}`
-        });
-
-        // Trigger signal refresh across app
-        if (onRefreshSignals) onRefreshSignals();
-      } else {
-        setSignalFeedback({
-          type: 'error',
-          text: data.error || data.telegramError || 'تعذر إرسال الإشارة، يرجى المحاولة مرة أخرى.'
-        });
+      let data: any;
+      try {
+        data = await res.json();
+      } catch (_jsonErr) {
+        throw new Error(`خطأ في استجابة الخادم (${res.status} ${res.statusText || 'Error'})`);
       }
+
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || data?.telegramError || `تعذر إرسال الإشارة (رمز الاستجابة ${res.status})`);
+      }
+
+      const destParts: string[] = [];
+      if (data.sentToFree) destParts.push('بوت القناة العامة (@ZadNBFX)');
+      if (data.sentToVip) destParts.push('بوت VIP');
+      if (data.sentToFloating) destParts.push('الروبوت العائم');
+
+      let detailsText = `وصلت الإشارة بنجاح إلى: ${destParts.join(' + ') || 'الوجهات المحددة'}`;
+      if (data.telegramError) {
+        detailsText += ` | ملاحظة البوت المجاني: ${data.telegramError}`;
+      }
+      if (data.vipTelegramError) {
+        detailsText += ` | ملاحظة بوت VIP: ${data.vipTelegramError}`;
+      }
+
+      setSignalFeedback({
+        type: 'success',
+        text: `تم إرسال إشارة ${selectedPair} (${direction === 'CALL' ? 'صعود 🟢' : 'هبوط 🔴'}) بنجاح!`,
+        details: detailsText
+      });
+
+      // Trigger signal refresh across app
+      if (onRefreshSignals) onRefreshSignals();
     } catch (err: any) {
+      const isTimeout = err?.name === 'AbortError';
+      const msg = isTimeout
+        ? 'انتهت مهلة الاتصال بالخادم (15 ثانية). يرجى التأكد من الاتصال وإعادة المحاولة.'
+        : err?.message?.includes('fetch') || err?.message?.includes('NetworkError')
+        ? 'تعذر الاتصال بالسيرفر، تأكد من استقرار الشبكة أو اضغط إعادة المحاولة.'
+        : err?.message || 'خطأ في الاتصال بالسيرفر أثناء إرسال الإشارة.';
+
       setSignalFeedback({
         type: 'error',
-        text: err?.message || 'خطأ في الاتصال بالسيرفر أثناء إرسال الإشارة.'
+        text: msg
       });
     } finally {
+      clearTimeout(timeoutId);
       setIsSendingSignal(false);
     }
   };
@@ -173,10 +196,14 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     setIsSendingAnnouncement(boxId);
     setAnnouncementFeedback(null);
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+
     try {
       const res = await fetch('/api/admin/live-broadcast', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
         body: JSON.stringify({
           type: 'announcement',
           announcementType: boxId,
@@ -188,32 +215,43 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
         })
       });
 
-      const data = await res.json();
-      if (data.ok) {
-        const destParts: string[] = [];
-        if (data.sentToFree) destParts.push('القناة العامة');
-        if (data.sentToVip) destParts.push('قناة VIP');
+      let data: any;
+      try {
+        data = await res.json();
+      } catch (_jsonErr) {
+        throw new Error(`خطأ في استجابة الخادم (${res.status} ${res.statusText || 'Error'})`);
+      }
 
-        setAnnouncementFeedback({
-          type: 'success',
-          text: `تم إرسال الرسالة بنجاح إلى: ${destParts.join(' و ') || 'البوتات المحددة'}!`
-        });
+      if (!res.ok || !data.ok) {
+        throw new Error(data?.error || data?.telegramError || 'فشل إرسال الرسالة، تأكد من إعدادات البوت والقنوات.');
+      }
 
-        if (boxId === 'custom') {
-          setCustomAnnouncement('');
-        }
-      } else {
-        setAnnouncementFeedback({
-          type: 'error',
-          text: data.error || data.telegramError || 'فشل إرسال الرسالة، تأكد من التوكن والقنوات.'
-        });
+      const destParts: string[] = [];
+      if (data.sentToFree) destParts.push('القناة العامة (@ZadNBFX)');
+      if (data.sentToVip) destParts.push('قناة VIP');
+
+      setAnnouncementFeedback({
+        type: 'success',
+        text: `تم إرسال الرسالة بنجاح إلى: ${destParts.join(' و ') || 'البوتات المحددة'}!`
+      });
+
+      if (boxId === 'custom') {
+        setCustomAnnouncement('');
       }
     } catch (err: any) {
+      const isTimeout = err?.name === 'AbortError';
+      const msg = isTimeout
+        ? 'انتهت مهلة إرسال الرسالة (15 ثانية). يرجى إعادة المحاولة.'
+        : err?.message?.includes('fetch') || err?.message?.includes('NetworkError')
+        ? 'تعذر الاتصال بالسيرفر أثناء إرسال الرسالة، يرجى إعادة المحاولة.'
+        : err?.message || 'خطأ أثناء إرسال الرسالة.';
+
       setAnnouncementFeedback({
         type: 'error',
-        text: err?.message || 'خطأ في الاتصال أثناء إرسال الرسالة.'
+        text: msg
       });
     } finally {
+      clearTimeout(timeoutId);
       setIsSendingAnnouncement(null);
     }
   };

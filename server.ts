@@ -2205,8 +2205,8 @@ async function sendTelegramMessage(botToken: string, chatId: string, text: strin
     payload.reply_to_message_id = replyToMessageId;
   }
 
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6500);
   try {
     const tgRes = await fetch(`https://api.telegram.org/bot${botToken.trim()}/sendMessage`, {
       method: 'POST',
@@ -5057,17 +5057,51 @@ async function startServer() {
         const entryMinute = nextMin;
         const targetEntryTimestamp = Math.floor(now.getTime() / 1000) + 60;
 
-        // Try getting live price for pair
-        let numericPrice = 1.0850;
-        let formattedPrice = '1.08500';
-        try {
-          const { selectedCandidate } = await scanRealGlobalForexMarket(false, pair);
-          if (selectedCandidate) {
-            numericPrice = selectedCandidate.price;
-            formattedPrice = selectedCandidate.formattedPrice;
+        // Fast, resilient price resolution: use cached live snapshot or quick fetch with 2.5s timeout
+        const isJpy = pair.includes('JPY');
+        const defaultFallbackPrices: Record<string, number> = {
+          'EUR/USD': 1.08520,
+          'GBP/USD': 1.29410,
+          'USD/JPY': 153.240,
+          'USD/CAD': 1.38650,
+          'AUD/USD': 0.65820,
+          'USD/CHF': 0.86610
+        };
+
+        let numericPrice = defaultFallbackPrices[pair] || 1.0850;
+        let formattedPrice = numericPrice.toFixed(isJpy ? 3 : 5);
+
+        const cachedSnapshot = liveMarketSnapshots.find(
+          s => s.pair === pair || s.pair.replace('/', '') === pair.replace('/', '')
+        );
+
+        if (cachedSnapshot && typeof cachedSnapshot.price === 'number') {
+          numericPrice = cachedSnapshot.price;
+          formattedPrice = cachedSnapshot.formattedPrice || numericPrice.toFixed(isJpy ? 3 : 5);
+        } else {
+          try {
+            const yahooSymbol = `${pair.replace('/', '')}=X`;
+            const priceController = new AbortController();
+            const priceTimeout = setTimeout(() => priceController.abort(), 2500);
+            const priceRes = await fetch(
+              `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1m&range=1d`,
+              {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
+                signal: priceController.signal
+              }
+            );
+            clearTimeout(priceTimeout);
+            if (priceRes.ok) {
+              const pData = (await priceRes.json()) as any;
+              const curPrice = pData?.chart?.result?.[0]?.meta?.regularMarketPrice;
+              if (typeof curPrice === 'number' && !isNaN(curPrice)) {
+                numericPrice = curPrice;
+                formattedPrice = curPrice.toFixed(isJpy ? 3 : 5);
+              }
+            }
+          } catch (_e) {
+            // Retain default fallback benchmark price
           }
-        } catch (_e) {
-          // Fallback price
         }
 
         const dirSymbol = direction === 'CALL' ? 'صعود 🟢 ⬆️ (CALL)' : 'هبوط 🔴 ⬇️ (PUT)';
@@ -5112,34 +5146,59 @@ async function startServer() {
         // 1. Deliver to Floating Robot (App Store & Firestore)
         if (sendToFloating) {
           signalsStore = [newSignal, ...signalsStore.filter(s => s.id !== newSignal.id)].slice(0, 50);
-          await saveState();
-        }
-
-        // 2. Deliver to Free Telegram Bot
-        if (sendToFree && freeToken && freeChat) {
           try {
-            const resFree = await sendTelegramMessage(freeToken, freeChat, formattedMessage);
-            if (resFree.ok) {
-              telegramMessageId = resFree.result?.message_id;
-            } else {
-              telegramError = resFree.description || 'فشل الإرسال للبوت المجاني';
-            }
-          } catch (err: any) {
-            telegramError = err?.message || 'خطأ في الاتصال بالبوت المجاني';
+            await saveState();
+          } catch (saveErr) {
+            console.warn('[Live Broadcast] Error saving state:', saveErr);
           }
         }
 
-        // 3. Deliver to VIP Telegram Bot
+        // 2 & 3. Deliver to Telegram Bots in parallel with Promise.allSettled
+        const sendTasks: Promise<void>[] = [];
+
+        if (sendToFree && freeToken && freeChat) {
+          sendTasks.push(
+            sendTelegramMessage(freeToken, freeChat, formattedMessage)
+              .then(resFree => {
+                if (resFree.ok) {
+                  telegramMessageId = resFree.result?.message_id;
+                } else {
+                  telegramError = resFree.description || 'فشل الإرسال للبوت المجاني';
+                }
+              })
+              .catch(err => {
+                telegramError = err?.message || 'خطأ في الاتصال بالبوت المجاني';
+              })
+          );
+        }
+
         if (sendToVip && vipToken && vipChat) {
-          try {
-            const resVip = await sendTelegramMessage(vipToken, vipChat, formattedMessage);
-            if (resVip.ok) {
-              vipTelegramMessageId = resVip.result?.message_id;
-            } else {
-              vipTelegramError = resVip.description || 'فشل الإرسال لبوت VIP';
-            }
-          } catch (err: any) {
-            vipTelegramError = err?.message || 'خطأ في الاتصال ببوت VIP';
+          sendTasks.push(
+            sendTelegramMessage(vipToken, vipChat, formattedMessage)
+              .then(resVip => {
+                if (resVip.ok) {
+                  vipTelegramMessageId = resVip.result?.message_id;
+                } else {
+                  vipTelegramError = resVip.description || 'فشل الإرسال لبوت VIP';
+                }
+              })
+              .catch(err => {
+                vipTelegramError = err?.message || 'خطأ في الاتصال ببوت VIP';
+              })
+          );
+        }
+
+        if (sendTasks.length > 0) {
+          await Promise.allSettled(sendTasks);
+        }
+
+        // Update stored signal with telegram IDs if available
+        if (telegramMessageId || vipTelegramMessageId) {
+          newSignal.telegramMessageId = telegramMessageId;
+          newSignal.vipTelegramMessageId = vipTelegramMessageId;
+          const idx = signalsStore.findIndex(s => s.id === newSignal.id);
+          if (idx !== -1) {
+            signalsStore[idx] = { ...newSignal };
           }
         }
 
@@ -5163,32 +5222,43 @@ async function startServer() {
           return res.status(400).json({ ok: false, error: 'الرجاء إدخال نص الرسالة المراد إرسالها' });
         }
 
-        // 1. Deliver to Free Telegram Bot
+        // Deliver to Free and VIP Telegram Bots in parallel
+        const announceTasks: Promise<void>[] = [];
+
         if (sendToFree && freeToken && freeChat) {
-          try {
-            const resFree = await sendTelegramMessage(freeToken, freeChat, messageText);
-            if (resFree.ok) {
-              telegramMessageId = resFree.result?.message_id;
-            } else {
-              telegramError = resFree.description || 'فشل الإرسال للبوت المجاني';
-            }
-          } catch (err: any) {
-            telegramError = err?.message || 'خطأ في الاتصال بالبوت المجاني';
-          }
+          announceTasks.push(
+            sendTelegramMessage(freeToken, freeChat, messageText)
+              .then(resFree => {
+                if (resFree.ok) {
+                  telegramMessageId = resFree.result?.message_id;
+                } else {
+                  telegramError = resFree.description || 'فشل الإرسال للبوت المجاني';
+                }
+              })
+              .catch(err => {
+                telegramError = err?.message || 'خطأ في الاتصال بالبوت المجاني';
+              })
+          );
         }
 
-        // 2. Deliver to VIP Telegram Bot
         if (sendToVip && vipToken && vipChat) {
-          try {
-            const resVip = await sendTelegramMessage(vipToken, vipChat, messageText);
-            if (resVip.ok) {
-              vipTelegramMessageId = resVip.result?.message_id;
-            } else {
-              vipTelegramError = resVip.description || 'فشل الإرسال لبوت VIP';
-            }
-          } catch (err: any) {
-            vipTelegramError = err?.message || 'خطأ في الاتصال ببوت VIP';
-          }
+          announceTasks.push(
+            sendTelegramMessage(vipToken, vipChat, messageText)
+              .then(resVip => {
+                if (resVip.ok) {
+                  vipTelegramMessageId = resVip.result?.message_id;
+                } else {
+                  vipTelegramError = resVip.description || 'فشل الإرسال لبوت VIP';
+                }
+              })
+              .catch(err => {
+                vipTelegramError = err?.message || 'خطأ في الاتصال ببوت VIP';
+              })
+          );
+        }
+
+        if (announceTasks.length > 0) {
+          await Promise.allSettled(announceTasks);
         }
 
         return res.json({
