@@ -230,6 +230,10 @@ export interface SignalItem {
   timeframe: string;
   entryMinute: string;
   entryTime: string;
+  targetEntryTimestamp?: number;
+  entryPriceNumeric?: number;
+  resultSent?: boolean;
+  vipTelegramMessageId?: number;
   payout?: string;
   livePrice?: string;
   rsiValue?: number;
@@ -510,22 +514,22 @@ export default function App() {
 
   // Server-side 24/7 Focused Auto-Pilot state
   const [autoPilot, setAutoPilot] = useState<AutoPilotConfig>({
-    enabled: false,
+    enabled: true,
     freeBotEnabled: true,
-    botToken: localStorage.getItem('tg_bot_token') || '',
+    botToken: localStorage.getItem('tg_bot_token') || '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U',
     chatId: localStorage.getItem('tg_chat_id') || '@ZadNBFX',
     freeScheduleEnabled: true,
-    freeStartHourEgypt: Number(localStorage.getItem('tg_free_start_hour') ?? 10),
-    freeEndHourEgypt: Number(localStorage.getItem('tg_free_end_hour') ?? 18),
+    freeStartHourEgypt: Number(localStorage.getItem('tg_free_start_hour') ?? 9),
+    freeEndHourEgypt: Number(localStorage.getItem('tg_free_end_hour') ?? 15),
     freeWinIcon: localStorage.getItem('tg_free_win_icon') || '✅ ربح',
     freeWinGale1Icon: localStorage.getItem('tg_free_gale1_icon') || '✅ ربح مضاعفة واحدة',
     freeLossIcon: localStorage.getItem('tg_free_loss_icon') || '❌',
     freeWinImageUrl: localStorage.getItem('tg_free_win_img') || '',
     freeWinGale1ImageUrl: localStorage.getItem('tg_free_gale1_img') || '',
     freeLossImageUrl: localStorage.getItem('tg_free_loss_img') || '',
-    vipEnabled: false,
-    vipBotToken: localStorage.getItem('tg_vip_bot_token') || '',
-    vipChatId: localStorage.getItem('tg_vip_chat_id') || '',
+    vipEnabled: true,
+    vipBotToken: localStorage.getItem('tg_vip_bot_token') || '8814918920:AAGeXmZrTy03s9gozdDAOj3hkIijHm9yJHM',
+    vipChatId: localStorage.getItem('tg_vip_chat_id') || '-1004323890544',
     vipWinIcon: localStorage.getItem('tg_vip_win_icon') || '👑✅ ربح VIP',
     vipWinGale1Icon: localStorage.getItem('tg_vip_gale1_icon') || '👑✅ ربح مضاعفة واحدة',
     vipLossIcon: localStorage.getItem('tg_vip_loss_icon') || '❌',
@@ -781,8 +785,11 @@ export default function App() {
           setAutoPilot(prev => ({
             ...prev,
             ...cloudData.autopilot,
-            botToken: cloudData.autopilot.botToken || prev.botToken,
-            chatId: cloudData.autopilot.chatId || prev.chatId
+            botToken: cloudData.autopilot.botToken || prev.botToken || localStorage.getItem('tg_bot_token') || '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U',
+            chatId: cloudData.autopilot.chatId || prev.chatId || localStorage.getItem('tg_chat_id') || '@ZadNBFX',
+            vipBotToken: cloudData.autopilot.vipBotToken || prev.vipBotToken || localStorage.getItem('tg_vip_bot_token') || '8814918920:AAGeXmZrTy03s9gozdDAOj3hkIijHm9yJHM',
+            vipChatId: cloudData.autopilot.vipChatId || prev.vipChatId || localStorage.getItem('tg_vip_chat_id') || '-1004323890544',
+            vipEnabled: cloudData.autopilot.vipEnabled ?? prev.vipEnabled ?? true
           }));
         }
         if (cloudData?.signals) {
@@ -3140,7 +3147,7 @@ export default function App() {
                               يبدأ الإرسال الساعة (بتوقيت مصر)
                             </label>
                             <select
-                              value={autoPilot.freeStartHourEgypt ?? 10}
+                              value={autoPilot.freeStartHourEgypt ?? 9}
                               onChange={(e) =>
                                 handleSaveAutoPilot({ freeStartHourEgypt: Number(e.target.value) })
                               }
@@ -3159,7 +3166,7 @@ export default function App() {
                               يتوقف الإرسال الساعة (بتوقيت مصر)
                             </label>
                             <select
-                              value={autoPilot.freeEndHourEgypt ?? 18}
+                              value={autoPilot.freeEndHourEgypt ?? 15}
                               onChange={(e) =>
                                 handleSaveAutoPilot({ freeEndHourEgypt: Number(e.target.value) })
                               }
@@ -3179,14 +3186,14 @@ export default function App() {
                           <div className="flex items-center justify-between text-[10px] text-slate-400">
                             <span>المخطط البصري لساعات عمل البوت المجاني (24 ساعة - توقيت القاهرة):</span>
                             <span className="font-mono-num text-emerald-400 font-bold">
-                              {String(autoPilot.freeStartHourEgypt ?? 10).padStart(2, '0')}:00 ←{' '}
-                              {String(autoPilot.freeEndHourEgypt ?? 18).padStart(2, '0')}:00
+                              {String(autoPilot.freeStartHourEgypt ?? 9).padStart(2, '0')}:00 ←{' '}
+                              {String(autoPilot.freeEndHourEgypt ?? 15).padStart(2, '0')}:00
                             </span>
                           </div>
                           <div className="grid grid-cols-24 gap-0.5 h-3 rounded overflow-hidden bg-slate-900 p-0.5">
                             {Array.from({ length: 24 }, (_, h) => {
-                              const startH = autoPilot.freeStartHourEgypt ?? 10;
-                              const endH = autoPilot.freeEndHourEgypt ?? 18;
+                              const startH = autoPilot.freeStartHourEgypt ?? 9;
+                              const endH = autoPilot.freeEndHourEgypt ?? 15;
                               const isActiveHour =
                                 startH <= endH
                                   ? h >= startH && h < endH
@@ -5906,6 +5913,9 @@ export default function App() {
                 <ZadtooAdminLiveBroadcast
                   autoPilot={autoPilot}
                   onRefreshSignals={fetchSignals}
+                  onSignalCreated={(sig) => {
+                    setSignals(prev => [sig, ...prev.filter(s => s.id !== sig.id)].slice(0, 50));
+                  }}
                 />
               </section>
             )}

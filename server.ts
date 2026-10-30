@@ -148,15 +148,15 @@ export interface AutoPilotConfig {
   botToken: string;
   chatId: string;
   freeScheduleEnabled: boolean;
-  freeStartHourEgypt: number; // Fixed 10:00 AM Africa/Cairo time
-  freeEndHourEgypt: number;   // Fixed 06:00 PM Africa/Cairo time
+  freeStartHourEgypt: number; // Fixed 09:00 AM Africa/Cairo time
+  freeEndHourEgypt: number;   // Fixed 03:00 PM (15:00) Africa/Cairo time
   freeWinIcon?: string;       // Custom Win icon/text for Bot 1 (Free Channel)
   freeWinGale1Icon?: string;  // Custom Win Gale 1 icon/text for Bot 1 (Free Channel)
   freeLossIcon?: string;      // Custom Loss icon/text for Bot 1 (Free Channel)
   freeWinImageUrl?: string;      // Custom Win photo/sticker (base64 data URL) for Bot 1
   freeWinGale1ImageUrl?: string; // Custom Win Gale 1 photo/sticker (base64 data URL) for Bot 1
   freeLossImageUrl?: string;     // Custom Loss photo/sticker (base64 data URL) for Bot 1
-  // Bot 2: VIP Channel Bot (Runs daily 10:00 AM - 06:00 PM Cairo Time without win/loss quota)
+  // Bot 2: VIP Channel Bot (Runs daily 09:00 AM - 03:00 PM Cairo Time regardless of win/loss results)
   vipEnabled: boolean;
   vipBotToken: string;
   vipChatId: string;
@@ -326,8 +326,8 @@ const defaultAutoPilot: AutoPilotConfig = {
   botToken: '',
   chatId: '@ZadNBFX',
   freeScheduleEnabled: true,
-  freeStartHourEgypt: 10, // Fixed 10:00 AM Cairo Time
-  freeEndHourEgypt: 18,  // Fixed 06:00 PM Cairo Time
+  freeStartHourEgypt: 9, // Fixed 09:00 AM Cairo Time
+  freeEndHourEgypt: 15,  // Fixed 03:00 PM (15:00) Cairo Time
   freeWinIcon: '✅ ربح',
   freeWinGale1Icon: '✅ ربح مضاعفة واحدة',
   freeLossIcon: '❌',
@@ -543,12 +543,12 @@ function getWarmupStatus(): { isWarmup: boolean; minutesRemaining: number; reaso
   const cairoHour = getCurrentEgyptHour();
   const cairoMinute = getCurrentEgyptMinute();
 
-  // Daily 10:00 AM session warmup (10:00 to 10:10 AM Cairo Time)
-  if (cairoHour === 10 && cairoMinute < 10) {
+  // Daily 09:00 AM session warmup (09:00 to 09:10 AM Cairo Time)
+  if (cairoHour === 9 && cairoMinute < 10) {
     return {
       isWarmup: true,
       minutesRemaining: 10 - cairoMinute,
-      reason: `فترة الإحماء الصباحية ومسح سيولة السوق الشامل (10:00 - 10:10 ص بتوقيت القاهرة)`
+      reason: `فترة الإحماء الصباحية ومسح سيولة السوق الشامل (09:00 - 09:10 ص بتوقيت القاهرة)`
     };
   }
 
@@ -600,12 +600,18 @@ function getFreeBotTargetStatus(): {
   // Requires at least 3 completed trades and reaching a win rate between 70% and 75% or higher (e.g. 3/3=100%, 3/4=75%, 4/5=80%, etc.)
   // When this target (70% - 75%+) is reached, immediately close signals for the day!
   const isTargetReached = totalCompleted >= 3 && winRate >= 70;
+  const currentEgyptH = getCurrentEgyptHour();
+  const isSessionClosed = currentEgyptH >= 15;
 
   const statusDescription = isTargetReached
-    ? `تم تحقيق نسبة النجاح المستهدفة بنجاح (${winRate}% - ${wins} ربح / ${losses} خسارة) — تم فوراً إغلاق بث القناة العامة لليوم وإرسال التقرير والمباركة للمشاركين`
+    ? `تم تحقيق نسبة الأرباح المستهدفة بنجاح (${winRate}% - ${wins} ربح / ${losses} خسارة) — تم فوراً إيقاف بث القناة العامة لليوم وإرسال النتيجة والمباركة`
+    : isSessionClosed
+    ? `انتهت جلسة اليوم الرسمية (03:00 عصراً) — تم إيقاف البوت وإرسال التقرير اليومي النهائي`
+    : currentEgyptH < 9
+    ? `قبل موعد انطلاق الصفقات اليومية (تبدأ الساعة 09:00 صباحاً بتوقيت مصر)`
     : totalCompleted === 0
-    ? `بانتظار انطلاق الصفقات لتحقيق نسبة نجاح 70% - 75%`
-    : `جاري العمل للوصول لنسبة 70% - 75% (الحالي: ${winRate}% | ${wins} ربح : ${losses} خسارة)`;
+    ? `بانتظار الصفقات لتحقيق نسبة نجاح 70% - 75% قبل الساعة 03:00 عصراً`
+    : `جاري العمل للوصول لنسبة 70% - 75% قبل 03:00 عصراً (الحالي: ${winRate}% | ${wins} ربح : ${losses} خسارة)`;
 
   return {
     todayWins: wins,
@@ -620,21 +626,21 @@ function getFreeBotTargetStatus(): {
 
 /**
  * Checks whether VIP Bot is active right now.
- * VIP Bot operates strictly between 10:00 AM and 06:00 PM (18:00) Cairo Time, without win/loss quota limits.
+ * VIP Bot operates daily between 09:00 AM and 03:00 PM (15:00) Cairo Time, regardless of win/loss results.
  */
 function isVipBotActiveNow(): boolean {
   if (!autoPilot.vipEnabled) return false;
   const cairoHour = getCurrentEgyptHour();
-  return cairoHour >= 10 && cairoHour < 18;
+  return cairoHour >= 9 && cairoHour < 15;
 }
 
 /**
  * Checks whether the Floating Broker Robot (Quotex Pro Bot) is active right now.
- * Operates daily from 10:00 AM to 06:00 PM (18:00) Cairo Time when global market is open.
+ * Operates daily from 09:00 AM to 03:00 PM (15:00) Cairo Time when global market is open.
  */
 function isFloatingRobotActiveNow(): boolean {
   const cairoHour = getCurrentEgyptHour();
-  return cairoHour >= 10 && cairoHour < 18 && isGlobalForexMarketOpen();
+  return cairoHour >= 9 && cairoHour < 15 && isGlobalForexMarketOpen();
 }
 
 /**
@@ -667,9 +673,9 @@ async function checkAndSendFreeBotTargetCelebration(): Promise<boolean> {
     `❌ عدد الصفقات الخاسرة: ${status.todayLosses}`,
     `🎯 نسبة النجاح المحققة: ${winRate}% (محققاً المستهدف 70% - 75% وزيادة ولله الحمد)`,
     `━━━━━━━━━━━━━━━━━━━━`,
-    `🛑 تم فوراً إغلاق بث الإشارات لهذا اليوم في القناة العامة بعد الوصول لنسبة النجاح المستهدفة بنجاح تام.`,
+    `🛑 تم فوراً إيقاف بث الإشارات لهذا اليوم في القناة العامة بعد الوصول لنسبة النجاح المستهدفة (70% - 75%) بنجاح تام.`,
     ``,
-    `👑 للاستمرار في التداول وتلقي الإشارات اليومية بدون انقطاع من 10:00 ص حتى 06:00 م:`,
+    `👑 يستمر بوت قناة VIP الخاصة في العمل وبث الصفقات حتى الساعة 03:00 عصراً:`,
     `انضم الآن إلى قناة VIP الخاصة:`,
     `🔗 رابط الانضمام والإحالة: ${qxLink}`,
     `━━━━━━━━━━━━━━━━━━━━`,
@@ -709,25 +715,25 @@ function getEgyptHourFromDate(dateObj: Date): number {
 }
 
 /**
- * Checks whether a signal was created strictly within Egypt trading hours (09:00 AM to 09:00 PM Egypt Time).
- * (From 10:00 up to 18:00 Cairo Time)
+ * Checks whether a signal was created strictly within Egypt trading hours.
+ * (From 09:00 AM up to 03:00 PM Cairo Time)
  */
 function isSignalWithinEgyptTradingHours(dateObj: Date): boolean {
   const h = getEgyptHourFromDate(dateObj);
-  return h >= 10 && h < 18;
+  return h >= 9 && h < 15;
 }
 
 /**
  * Checks whether the Free Bot is currently enabled and inside its allowed Cairo working hours
- * (Note: Free Bot operates until 3:1 win/loss target is achieved)
+ * (Note: Free Bot operates from 09:00 AM until 70%-75% target is achieved, or until 03:00 PM)
  */
 function isFreeBotActiveNow(cfg: AutoPilotConfig): boolean {
   if (cfg.freeBotEnabled === false) return false;
   const freeStatus = getFreeBotTargetStatus();
   if (freeStatus.isTargetReached) return false;
-  // Trading starts at 10:00 AM Cairo Time
+  // Trading starts at 09:00 AM Cairo Time and closes at 03:00 PM (15:00)
   const currentHour = getCurrentEgyptHour();
-  return currentHour >= 10;
+  return currentHour >= 9 && currentHour < 15;
 }
 
 const initialSignals: SignalItem[] = [];
@@ -1268,10 +1274,10 @@ async function saveState(): Promise<boolean> {
           isWarmup: warmup.isWarmup,
           warmupMinutesRemaining: warmup.minutesRemaining,
           tradingHoursMessage: !isRobotActive
-            ? 'خارج ساعات عمل الروبوت (10:00 ص - 06:00 م بتوقيت القاهرة)'
+            ? 'خارج ساعات عمل الروبوت (09:00 ص - 03:00 عصراً بتوقيت القاهرة)'
             : warmup.isWarmup
             ? `جاري مسح سيولة السوق والإحماء (${warmup.minutesRemaining} دقيقة متبقية)...`
-            : 'ساعات التداول الرسمية نشطة (10:00 ص - 06:00 م)',
+            : 'ساعات التداول الرسمية نشطة (09:00 ص - 03:00 عصراً)',
           statsNoMartingale: {
             wins: todayDirectWins,
             losses: todayNoGaleLosses,
@@ -2900,11 +2906,12 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
   let vipTelegramMessageId: number | undefined;
   let telegramError: string | undefined;
 
-  // 1. Check Free Bot: Send if Free Bot is enabled, credentials exist, AND (it's a manual trigger OR (not reached 3:1 target yet AND Cairo time >= 10:00 AM))
+  // 1. Check Free Bot: Send if Free Bot is enabled, credentials exist, AND (it's a manual trigger OR (not reached 70%-75% target yet AND Cairo time between 09:00 AM and 03:00 PM))
   const freeTargetStatus = getFreeBotTargetStatus();
+  const cairoH = getCurrentEgyptHour();
   const canSendToFreeBot =
     autoPilot.freeBotEnabled !== false &&
-    (!isAuto || (!freeTargetStatus.isTargetReached && getCurrentEgyptHour() >= 10));
+    (!isAuto || (!freeTargetStatus.isTargetReached && cairoH >= 9 && cairoH < 15));
 
   if (canSendToFreeBot && autoPilot.botToken.trim() && autoPilot.chatId.trim()) {
     try {
@@ -2919,7 +2926,7 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
     }
   }
 
-  // 2. Check VIP Bot: Operates strictly 10:00 AM to 06:00 PM Cairo Time without win/loss quota
+  // 2. Check VIP Bot: Operates strictly 09:00 AM to 03:00 PM Cairo Time regardless of win/loss quota
   // IMPORTANT: If vipChatId is identical to Free Bot chatId and Free Bot already sent it, DO NOT send twice to the same channel!
   const activeVipToken = (autoPilot.vipBotToken || autoPilot.botToken).trim();
   const activeVipChat = (autoPilot.vipChatId || '').trim();
@@ -3117,11 +3124,11 @@ export interface EndOfDayFinalReport {
 function buildEndOfDayFinalReport(customDateStr?: string): EndOfDayFinalReport {
   const todayEgypt = customDateStr || getCurrentEgyptDateString(new Date());
   const currentEgyptHour = getCurrentEgyptHour();
-  const startHour = Number(autoPilot.freeStartHourEgypt ?? 10);
-  const endHour = Number(autoPilot.freeEndHourEgypt ?? 18);
+  const startHour = Number(autoPilot.freeStartHourEgypt ?? 9);
+  const endHour = Number(autoPilot.freeEndHourEgypt ?? 15);
   const isAfterClosingHour = !autoPilot.freeScheduleEnabled
-    ? currentEgyptHour >= 18
-    : !isFreeBotActiveNow(autoPilot);
+    ? currentEgyptHour >= 15
+    : currentEgyptHour >= endHour;
 
   // Filter signals belonging to the target date
   const daySignals = signalsStore.filter(s => {
@@ -3269,7 +3276,33 @@ async function dispatchEndOfDayReportToTelegram(
   customText?: string
 ): Promise<{ ok: boolean; sentFree: boolean; sentVip: boolean; error?: string; report: EndOfDayFinalReport }> {
   const report = buildEndOfDayFinalReport();
-  const textToSend = (customText && customText.trim()) ? customText.trim() : report.telegramReportText;
+  const freeText = (customText && customText.trim()) ? customText.trim() : [
+    `📊 التقرير الختامي لجلسة التداول للقناة العامة | ${appSettings.channelTitle || 'نَبض التداول'}`,
+    `📅 التاريخ: ${report.date} (إغلاق الجلسة 03:00 عصراً بتوقيت مصر)`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `✅ عدد الصفقات الرابحة: ${report.oneGaleActiveInBot ? report.totalWinsWithGale : report.directWins}`,
+    `❌ عدد الصفقات الخاسرة: ${report.oneGaleActiveInBot ? report.lossesWithGale : report.firstCandleLossesNoGale}`,
+    `🎯 نسبة النجاح: ${report.oneGaleActiveInBot ? report.winRateWithGale : report.winRateNoGale}%`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `🛑 تم اختتام جلسة التداول لهذا اليوم عند الساعة 03:00 عصراً بتوقيت مصر.`,
+    `👑 للاستمرار في التداول وتلقي التوصيات الحصرية، انضم إلى قناة VIP:`,
+    `🔗 ${autoPilot.quotexReferralLink || 'https://broker-qx.pro/?lid=2303934'}`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `نلتقي بكم غداً في تمام الساعة 09:00 صباحاً بتوقيت مصر 🤝`,
+    `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
+  ].join('\n');
+
+  const vipText = (customText && customText.trim()) ? customText.trim() : [
+    `👑 التقرير الختامي لقناة VIP الخاصة | ${appSettings.channelTitle || 'نَبض التداول'}`,
+    `📅 التاريخ: ${report.date} (ختام جلسة اليوم الرسمية 03:00 عصراً بتوقيت مصر)`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `✅ عدد الصفقات الرابحة: ${report.oneGaleActiveInBot ? report.totalWinsWithGale : report.directWins}`,
+    `❌ عدد الصفقات الخاسرة: ${report.oneGaleActiveInBot ? report.lossesWithGale : report.firstCandleLossesNoGale}`,
+    `🎯 نسبة النجاح العامة: ${report.oneGaleActiveInBot ? report.winRateWithGale : report.winRateNoGale}%`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `✨ نشكر جميع أعضاء VIP على مشاركتهم وتفاعلهم. نلتقي بكم غداً في تمام الساعة 09:00 صباحاً بتوقيت مصر 🤝`,
+    `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
+  ].join('\n');
 
   let sentFree = false;
   let sentVip = false;
@@ -3280,7 +3313,7 @@ async function dispatchEndOfDayReportToTelegram(
 
   if ((targetDestination === 'both' || targetDestination === 'free') && freeToken && freeChat) {
     try {
-      const resFree = await sendTelegramMessage(freeToken, freeChat, textToSend);
+      const resFree = await sendTelegramMessage(freeToken, freeChat, freeText);
       if (resFree.ok) sentFree = true;
       else lastErr = resFree.description || 'فشل إرسال التقرير للقناة المجانية';
     } catch (e: any) {
@@ -3299,7 +3332,7 @@ async function dispatchEndOfDayReportToTelegram(
     !isSameChat
   ) {
     try {
-      const resVip = await sendTelegramMessage(vipToken, vipChat, textToSend);
+      const resVip = await sendTelegramMessage(vipToken, vipChat, vipText);
       if (resVip.ok) sentVip = true;
       else if (!lastErr) lastErr = resVip.description || 'فشل إرسال التقرير لقناة VIP';
     } catch (e: any) {
@@ -3396,15 +3429,14 @@ async function checkFocusedGlobalMarketAutoPilot() {
     }
 
     // Automatic End-of-Day Final Trading Report Dispatcher:
-    // Immediately once the signal broadcast schedule closes (e.g., at freeEndHourEgypt / 9 PM)
-    // and all pending trades have finished, automatically send the brief daily summary report once per day!
+    // When the trading session closes at 03:00 PM (15:00 Cairo time) or configured freeEndHourEgypt:
+    // - Free Bot: if 70%-75% target was not reached by 03:00 PM, send the closing report now and stop!
+    // - VIP Bot: stops at 03:00 PM and receives its dedicated VIP closing report!
     if (autoPilot.autoDailyReportEnabled !== false) {
       const todayEgypt = getCurrentEgyptDateString(new Date());
       const currentEgyptH = getCurrentEgyptHour();
-      const closeH = Number(autoPilot.freeEndHourEgypt ?? 18);
-      const isScheduleClosedNow = autoPilot.freeScheduleEnabled === false
-        ? currentEgyptH >= 18
-        : !isFreeBotActiveNow(autoPilot) && currentEgyptH >= closeH;
+      const closeH = Number(autoPilot.freeEndHourEgypt ?? 15);
+      const isScheduleClosedNow = currentEgyptH >= closeH;
       const hasPending = signalsStore.some(s => s.status === 'PENDING');
       const reportNow = buildEndOfDayFinalReport(todayEgypt);
 
@@ -3414,7 +3446,11 @@ async function checkFocusedGlobalMarketAutoPilot() {
         reportNow.totalCompleted > 0 &&
         autoPilot.lastDailyReportSentDate !== todayEgypt
       ) {
-        await dispatchEndOfDayReportToTelegram('both');
+        // If Free Bot target was already celebrated earlier, only send closing report to VIP.
+        // Otherwise, send to both!
+        const alreadyCelebratedFree = autoPilot.freeBotCelebrationSentDate === todayEgypt;
+        const targetDest = alreadyCelebratedFree ? 'vip' : 'both';
+        await dispatchEndOfDayReportToTelegram(targetDest);
       }
     }
 
@@ -3422,7 +3458,7 @@ async function checkFocusedGlobalMarketAutoPilot() {
     if (!autoPilot.marketOpenStatus) return; // Never send fake signals when global market is closed
 
     // 0. Warmup Delay Check (10-minute deep market scan):
-    // Do not broadcast any signal until 10 minutes have elapsed from the start of the trading day or engine launch
+    // Do not broadcast any signal until 10 minutes have elapsed from the start of the trading day (09:00 AM) or engine launch
     const warmup = getWarmupStatus();
     if (warmup.isWarmup) {
       // Warmup window is active: keep scanning market data every minute, but defer signal broadcasting
@@ -3430,12 +3466,13 @@ async function checkFocusedGlobalMarketAutoPilot() {
     }
 
     // 1. Recipient Eligibility Check:
-    // - Free Bot: active if 3:1 target not yet met and Cairo hour >= 10
-    // - VIP Bot: active daily 10:00 AM - 06:00 PM without win/loss quota
-    // - Floating Robot: active daily 10:00 AM - 06:00 PM
+    // - Free Bot: active if 70%-75% target not yet met and Cairo hour between 09:00 AM and 03:00 PM (15:00)
+    // - VIP Bot: active daily 09:00 AM - 03:00 PM regardless of win/loss results
+    // - Floating Robot: active daily 09:00 AM - 03:00 PM
     const freeTarget = getFreeBotTargetStatus();
+    const cairoHNow = getCurrentEgyptHour();
     const isFreeActive =
-      autoPilot.freeBotEnabled !== false && !freeTarget.isTargetReached && getCurrentEgyptHour() >= 10;
+      autoPilot.freeBotEnabled !== false && !freeTarget.isTargetReached && cairoHNow >= 9 && cairoHNow < 15;
     const isVipActive = isVipBotActiveNow();
     const isRobotActive = isFloatingRobotActiveNow();
 
@@ -4257,10 +4294,10 @@ async function startServer() {
       isWarmup: warmup.isWarmup,
       warmupMinutesRemaining: warmup.minutesRemaining,
       tradingHoursMessage: !isRobotActive
-        ? 'خارج ساعات عمل الروبوت (10:00 ص - 06:00 م بتوقيت القاهرة)'
+        ? 'خارج ساعات عمل الروبوت (09:00 ص - 03:00 عصراً بتوقيت القاهرة)'
         : warmup.isWarmup
         ? `جاري مسح سيولة السوق والإحماء (${warmup.minutesRemaining} دقيقة متبقية)...`
-        : 'ساعات التداول الرسمية نشطة (10:00 ص - 06:00 م)',
+        : 'ساعات التداول الرسمية نشطة (09:00 ص - 03:00 عصراً)',
       freeBotStatus: {
         isTargetReached: freeBotStatus.isTargetReached,
         todayWins: freeBotStatus.todayWins,
@@ -4270,7 +4307,7 @@ async function startServer() {
       },
       vipBotStatus: {
         isActive: isVipActive,
-        hoursText: '10:00 ص - 06:00 م (توقيت القاهرة) بدون قيود للربح والخسارة'
+        hoursText: '09:00 ص - 03:00 عصراً (توقيت القاهرة) مستمر بغض النظر عن النتيجة'
       },
       robotConfig: {
         title: robotSettings.robotTitle,

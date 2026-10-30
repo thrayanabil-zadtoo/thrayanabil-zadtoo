@@ -732,7 +732,7 @@ export default function QuotexRobotAdminPage({
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
           <div className="p-3 bg-[#0B0F17] border border-slate-800 rounded-xl">
             <div className="text-[11px] text-slate-400">ساعات عمل الروبوت</div>
-            <div className="font-extrabold text-sky-300 mt-0.5 font-mono-num">10:00 ص - 06:00 م</div>
+            <div className="font-extrabold text-sky-300 mt-0.5 font-mono-num">09:00 ص - 03:00 م</div>
           </div>
           <div className="p-3 bg-[#0B0F17] border border-slate-800 rounded-xl">
             <div className="text-[11px] text-slate-400">فترة مسح السوق</div>

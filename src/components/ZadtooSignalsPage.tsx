@@ -146,7 +146,7 @@ export const ZadtooSignalsPage: React.FC<ZadtooSignalsPageProps> = ({
         }).format(now)
       );
       const isWeekend = now.getDay() === 0 || now.getDay() === 6;
-      const isWithinHours = cairoHour >= 10 && cairoHour < 18;
+      const isWithinHours = cairoHour >= 9 && cairoHour < 15;
       const active = isWithinHours && !isWeekend;
 
       setSessionInfo({
@@ -154,11 +154,11 @@ export const ZadtooSignalsPage: React.FC<ZadtooSignalsPageProps> = ({
         isScheduleActive: active,
         sessionNote: isWeekend
           ? 'عطلة نهاية الأسبوع (السوق العالمي مغلق). يُستأنف البث صباح الإثنين.'
-          : cairoHour >= 18
-          ? 'انتهت جلسة اليوم الرسمية (18:00) وتم إرسال التقرير النهائي للقناة. تُستأنف الإشارات غداً 10:00 ص.'
-          : cairoHour < 10
-          ? 'قبل بدء جلسة التداول اليومية (تبدأ الساعة 10:00 صباحاً بتوقيت مصر).'
-          : 'جلسة التداول الرسمية نشطة الآن (من 10:00 ص إلى 6:00 م) · إشارة كل 15 دقيقة بدقة 75%+'
+          : cairoHour >= 15
+          ? 'انتهت جلسة اليوم الرسمية (03:00 عصراً) وتم إرسال التقرير النهائي للقناة. تُستأنف الإشارات غداً 09:00 ص.'
+          : cairoHour < 9
+          ? 'قبل بدء جلسة التداول اليومية (تبدأ الساعة 09:00 صباحاً بتوقيت مصر).'
+          : 'جلسة التداول الرسمية نشطة الآن (من 09:00 ص إلى 03:00 عصراً) · إشارة كل 15 دقيقة بدقة 75%+'
       });
     } catch (_e) {
       // Ignore
