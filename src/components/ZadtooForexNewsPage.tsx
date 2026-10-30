@@ -56,6 +56,11 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
   const [broadcastingId, setBroadcastingId] = useState<string | null>(null);
   const [broadcastFeedback, setBroadcastFeedback] = useState<{ id: string; success: boolean; msg: string } | null>(null);
 
+  // Broadcast Confirmation Modal State (تأكيد الإرسال)
+  const [confirmBroadcastItem, setConfirmBroadcastItem] = useState<ForexNewsItem | null>(null);
+  const [broadcastTargetFree, setBroadcastTargetFree] = useState<boolean>(true);
+  const [broadcastTargetVip, setBroadcastTargetVip] = useState<boolean>(true);
+
   // Edit/Add Modal states
   const [isModalOpen, setIsModalOpen] = useState<boolean>(false);
   const [editingItem, setEditingItem] = useState<ForexNewsItem | null>(null);
@@ -92,22 +97,60 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Fetch news from server
+  // Fetch news from Firestore, server, or local cache
   const fetchNews = async () => {
     setIsLoading(true);
+    let loaded = false;
+
+    // 1. Check persistent Firestore first for real-time admin changes
     try {
-      const res = await fetch('/api/forex-news');
-      if (res.ok) {
-        const data = await res.json();
-        if (data.ok && Array.isArray(data.news) && data.news.length > 0) {
-          setNews(data.news);
+      const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const d = snap.data();
+        if (d?.payload) {
+          const parsed = JSON.parse(d.payload);
+          if (Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0) {
+            setNews(parsed.forexNews);
+            loaded = true;
+          }
         }
       }
-    } catch (_e) {
-      // Ignore
-    } finally {
-      setIsLoading(false);
+    } catch (_firestoreErr) {
+      // fallback
     }
+
+    // 2. Try server API if not loaded
+    if (!loaded) {
+      try {
+        const res = await fetch('/api/forex-news');
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data.ok && Array.isArray(data.news) && data.news.length > 0) {
+            setNews(data.news);
+            loaded = true;
+          }
+        }
+      } catch (_serverErr) {
+        // fallback
+      }
+    }
+
+    // 3. Check localStorage cache
+    if (!loaded) {
+      try {
+        const cached = localStorage.getItem('cached_forex_news');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setNews(parsed);
+          }
+        }
+      } catch (_cacheErr) {}
+    }
+
+    setIsLoading(false);
   };
 
   useEffect(() => {
@@ -204,11 +247,37 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
   return lines.filter(Boolean).join('\n');
 }
 
-  // Handle Telegram recommendation broadcast
-  const handleBroadcast = async (item: ForexNewsItem) => {
+  // Request Broadcast -> opens the confirmation modal with channel targets
+  const handleRequestBroadcast = (item: ForexNewsItem) => {
     if (!isAdmin) return;
+    setConfirmBroadcastItem(item);
+    setBroadcastTargetFree(true);
+    setBroadcastTargetVip(true);
+  };
+
+  const handleBroadcast = (item: ForexNewsItem) => {
+    handleRequestBroadcast(item);
+  };
+
+  // Execute Telegram recommendation broadcast after confirmation
+  const executeBroadcast = async (
+    item: ForexNewsItem,
+    sendFree: boolean = true,
+    sendVip: boolean = true
+  ) => {
+    if (!isAdmin) return;
+    if (!sendFree && !sendVip) {
+      setBroadcastFeedback({
+        id: item.id,
+        success: false,
+        msg: 'يرجى اختيار قناة واحدة على الأقل لنشر التوصية.'
+      });
+      return;
+    }
+
     setBroadcastingId(item.id);
     setBroadcastFeedback(null);
+    setConfirmBroadcastItem(null);
 
     const messageText = buildNewsTelegramMessage(item);
     const freeToken = (localStorage.getItem('tg_bot_token') || DEFAULT_FREE_BOT_TOKEN).trim();
@@ -216,126 +285,103 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
     const vipToken = (localStorage.getItem('tg_vip_bot_token') || DEFAULT_VIP_BOT_TOKEN).trim();
     const vipChat = (localStorage.getItem('tg_vip_chat_id') || DEFAULT_VIP_CHAT_ID).trim();
 
-    const isStaticHost =
-      typeof window !== 'undefined' &&
-      !window.location.hostname.includes('localhost') &&
-      !window.location.hostname.includes('127.0.0.1') &&
-      !window.location.hostname.includes('run.app');
+    const destParts: string[] = [];
+    const tasks: Promise<void>[] = [];
+    let freeErr: string | undefined;
+    let vipErr: string | undefined;
 
-    let serverHandled = false;
-
-    // Step 1: Try server route if not static host
-    if (!isStaticHost) {
-      try {
-        const ctrl = new AbortController();
-        const tid = setTimeout(() => ctrl.abort(), 2500);
-        const res = await fetch(`/api/forex-news/${encodeURIComponent(item.id)}/broadcast`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          signal: ctrl.signal
-        });
-        clearTimeout(tid);
-        const contentType = res.headers.get('content-type') || '';
-        if (res.ok && contentType.includes('application/json')) {
-          const data = await res.json().catch(() => ({}));
-          if (data && data.ok) {
-            serverHandled = true;
-          }
-        }
-      } catch (_e) {
-        // Fallback to direct client execution below
-      }
-    }
-
-    // Step 2: Direct Client Dispatch to Telegram (Guaranteed on fx.zadtoo.com & incognito)
-    if (!serverHandled) {
-      const destParts: string[] = [];
-      const tasks: Promise<void>[] = [];
-      let freeErr: string | undefined;
-      let vipErr: string | undefined;
-
-      if (freeToken && freeChat) {
-        tasks.push(
-          sendTelegramDirect(freeToken, freeChat, messageText)
-            .then(r => {
-              if (r.ok) destParts.push('القناة العامة (@ZadNBFX)');
-              else freeErr = r.description;
-            })
-            .catch(e => {
-              freeErr = e?.message;
-            })
-        );
-      }
-
-      if (vipToken && vipChat && vipChat.toLowerCase() !== freeChat.toLowerCase()) {
-        tasks.push(
-          sendTelegramDirect(vipToken, vipChat, messageText)
-            .then(r => {
-              if (r.ok) destParts.push('قناة VIP');
-              else vipErr = r.description;
-            })
-            .catch(e => {
-              vipErr = e?.message;
-            })
-        );
-      }
-
-      if (tasks.length > 0) {
-        await Promise.allSettled(tasks);
-      }
-
-      if (destParts.length > 0) {
-        serverHandled = true;
-      } else {
-        setBroadcastFeedback({
-          id: item.id,
-          success: false,
-          msg: freeErr || vipErr || 'تعذر إرسال التوصية عبر التليجرام، تأكد من الاتصال.'
-        });
-      }
-    }
-
-    if (serverHandled) {
-      setBroadcastFeedback({
-        id: item.id,
-        success: true,
-        msg: '✅ تم نشر توصية الخبر بنجاح على التليجرام! (القناة العامة + VIP) 📢'
-      });
-      setNews(prev =>
-        prev.map(n =>
-          n.id === item.id ? { ...n, isBroadcasted: true, broadcastedAt: new Date().toISOString() } : n
-        )
+    // Direct Client Dispatch to Telegram (Guaranteed on fx.zadtoo.com & incognito)
+    if (sendFree && freeToken && freeChat) {
+      tasks.push(
+        sendTelegramDirect(freeToken, freeChat, messageText)
+          .then(r => {
+            if (r.ok) destParts.push('القناة العامة (@ZadNBFX)');
+            else freeErr = r.description;
+          })
+          .catch(e => {
+            freeErr = e?.message;
+          })
       );
+    }
 
-      // Persist broadcast status to Firestore if available
-      try {
-        const docRef = doc(db, 'system_state', 'zad_main_state_v1');
-        const snap = await getDoc(docRef);
-        if (snap.exists()) {
-          const d = snap.data();
-          if (d?.payload) {
-            const parsed = JSON.parse(d.payload);
-            const savedNews = Array.isArray(parsed.forexNews) ? parsed.forexNews : [];
-            parsed.forexNews = savedNews.map((n: any) =>
-              n.id === item.id ? { ...n, isBroadcasted: true, broadcastedAt: new Date().toISOString() } : n
-            );
-            await setDoc(docRef, {
-              updatedAt: new Date().toISOString(),
-              payload: JSON.stringify(parsed)
-            });
-          }
-        }
-      } catch (_e) {}
+    if (sendVip && vipToken && vipChat) {
+      tasks.push(
+        sendTelegramDirect(vipToken, vipChat, messageText)
+          .then(r => {
+            if (r.ok) destParts.push('قناة VIP (Abusalim FX VIP)');
+            else vipErr = r.description;
+          })
+          .catch(e => {
+            vipErr = e?.message;
+          })
+      );
+    }
+
+    // Also trigger server route in background if available
+    try {
+      fetch(`/api/forex-news/${encodeURIComponent(item.id)}/broadcast`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
+      }).catch(() => {});
+    } catch (_e) {}
+
+    if (tasks.length > 0) {
+      await Promise.allSettled(tasks);
     }
 
     setBroadcastingId(null);
+
+    if (destParts.length > 0) {
+      const updatedItem: ForexNewsItem = {
+        ...item,
+        isBroadcasted: true,
+        broadcastedAt: new Date().toISOString()
+      };
+
+      setNews(prev => {
+        const next = prev.map(n => (n.id === item.id ? updatedItem : n));
+        try {
+          localStorage.setItem('cached_forex_news', JSON.stringify(next));
+        } catch (_e) {}
+        return next;
+      });
+
+      // Persist broadcast status to Firestore
+      try {
+        const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+        const snap = await getDoc(docRef);
+        const d = snap.exists() ? snap.data() : null;
+        const parsed = d?.payload ? JSON.parse(d.payload) : {};
+        const currentList = Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0
+          ? parsed.forexNews
+          : [...INITIAL_WEEKLY_FOREX_NEWS];
+        const exists = currentList.some((n: any) => n.id === item.id);
+        parsed.forexNews = exists
+          ? currentList.map((n: any) => (n.id === item.id ? updatedItem : n))
+          : [updatedItem, ...currentList];
+        await setDoc(docRef, {
+          updatedAt: new Date().toISOString(),
+          payload: JSON.stringify(parsed)
+        }, { merge: true });
+      } catch (_e) {}
+
+      setBroadcastFeedback({
+        id: item.id,
+        success: true,
+        msg: `✅ تم تأكيد ونشر توصية الخبر بنجاح إلى: ${destParts.join(' و ')} 📢`
+      });
+    } else {
+      setBroadcastFeedback({
+        id: item.id,
+        success: false,
+        msg: freeErr || vipErr || 'تعذر إرسال التوصية عبر التليجرام، تأكد من الاتصال وتوكن البوت.'
+      });
+    }
+
     setTimeout(() => setBroadcastFeedback(null), 8000);
   };
 
-  // Handle Save / Create news item
+  // Handle Save / Create news item (تعديل أو إضافة خبر)
   const handleSaveModal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.title?.trim() || !formData.currency?.trim()) {
@@ -369,106 +415,90 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
     try {
       let savedItem: ForexNewsItem | null = null;
       const isEditing = Boolean(editingItem);
-      const isStaticHost =
-        typeof window !== 'undefined' &&
-        !window.location.hostname.includes('localhost') &&
-        !window.location.hostname.includes('127.0.0.1') &&
-        !window.location.hostname.includes('run.app');
 
-      if (!isStaticHost) {
-        try {
-          if (editingItem) {
-            const res = await fetch(`/api/forex-news/${encodeURIComponent(editingItem.id)}`, {
-              method: 'PUT',
-              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-              body: JSON.stringify(payload)
-            });
-            const data = await res.json().catch(() => ({}));
-            if (res.ok && data.ok && data.item) {
-              savedItem = data.item;
-            }
-          } else {
-            const res = await fetch('/api/forex-news', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-              body: JSON.stringify(payload)
-            });
-            const data = await res.json().catch(() => ({}));
-            if (res.ok && data.ok && data.item) {
-              savedItem = data.item;
-            }
-          }
-        } catch (_serverErr) {}
-      }
-
-      // Direct client fallback (guaranteed to work on fx.zadtoo.com & static hosts)
-      if (!savedItem) {
+      // Try server endpoint in background
+      try {
         if (editingItem) {
-          savedItem = {
-            ...editingItem,
-            ...(payload as any),
-            id: editingItem.id,
-            updatedAt: new Date().toISOString()
-          };
+          fetch(`/api/forex-news/${encodeURIComponent(editingItem.id)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify(payload)
+          }).catch(() => {});
         } else {
-          savedItem = {
-            ...(payload as any),
-            id: `news-${Date.now()}`,
-            isBroadcasted: false,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
+          fetch('/api/forex-news', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify(payload)
+          }).catch(() => {});
         }
-      }
+      } catch (_serverErr) {}
 
-      if (isEditing && editingItem) {
-        setNews(prev => prev.map(n => (n.id === editingItem.id ? savedItem! : n)));
+      // Create or update item in client state
+      if (editingItem) {
+        savedItem = {
+          ...editingItem,
+          ...(payload as any),
+          id: editingItem.id,
+          updatedAt: new Date().toISOString()
+        };
       } else {
-        setNews(prev => [savedItem!, ...prev]);
+        savedItem = {
+          ...(payload as any),
+          id: `news-${Date.now()}`,
+          isBroadcasted: false,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
       }
 
-      // Sync updated news list to persistent Firestore
+      // Update React state & localStorage
+      setNews(prev => {
+        const exists = prev.some(n => n.id === savedItem!.id);
+        const nextList = exists
+          ? prev.map(n => (n.id === savedItem!.id ? savedItem! : n))
+          : [savedItem!, ...prev];
+        try {
+          localStorage.setItem('cached_forex_news', JSON.stringify(nextList));
+        } catch (_e) {}
+        return nextList;
+      });
+
+      // Sync to persistent Firestore (doc: zad_main_state_v1)
       try {
         const docRef = doc(db, 'system_state', 'zad_main_state_v1');
         const snap = await getDoc(docRef);
-        if (snap.exists()) {
-          const d = snap.data();
-          if (d?.payload) {
-            const parsed = JSON.parse(d.payload);
-            const currentList = Array.isArray(parsed.forexNews) ? parsed.forexNews : [];
-            const updatedList = isEditing
-              ? currentList.map((n: any) => (n.id === savedItem!.id ? savedItem : n))
-              : [savedItem, ...currentList.filter((n: any) => n.id !== savedItem!.id)];
-            parsed.forexNews = updatedList;
-            await setDoc(docRef, {
-              updatedAt: new Date().toISOString(),
-              payload: JSON.stringify(parsed)
-            });
-          }
-        }
+        const d = snap.exists() ? snap.data() : null;
+        const parsed = d?.payload ? JSON.parse(d.payload) : {};
+        const currentList: any[] = Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0
+          ? parsed.forexNews
+          : [...INITIAL_WEEKLY_FOREX_NEWS];
+        const existsInDb = currentList.some((n: any) => n.id === savedItem!.id);
+        const updatedList = existsInDb
+          ? currentList.map((n: any) => (n.id === savedItem!.id ? savedItem : n))
+          : [savedItem, ...currentList.filter((n: any) => n.id !== savedItem!.id)];
+        parsed.forexNews = updatedList;
+        await setDoc(docRef, {
+          updatedAt: new Date().toISOString(),
+          payload: JSON.stringify(parsed)
+        }, { merge: true });
       } catch (_e) {}
 
       setIsModalOpen(false);
       setEditingItem(null);
 
       if (autoPublishTelegram && savedItem) {
-        await handleBroadcast(savedItem);
+        await executeBroadcast(savedItem, true, true);
       } else {
         setBroadcastFeedback({
-          id: savedItem ? savedItem.id : 'saved',
+          id: savedItem?.id || editingItem?.id || 'saved',
           success: true,
-          msg: isEditing ? '✅ تم حفظ وتحديث بيانات الخبر بنجاح في الأجندة!' : '✅ تم إضافة وحفظ الخبر العاجل بنجاح في الأجندة الاقتصادية!'
+          msg: isEditing ? '✅ تم حفظ وتحديث بيانات الخبر بنجاح في الأجندة الاقتصادية!' : '✅ تم إضافة وحفظ الخبر العاجل بنجاح في الأجندة!'
         });
         setTimeout(() => setBroadcastFeedback(null), 7000);
       }
     } catch (err: any) {
       console.error('Save news error:', err);
-      const isFetchErr = err?.name === 'TypeError' || String(err?.message || '').toLowerCase().includes('fetch');
-      setModalError(
-        isFetchErr
-          ? 'تعذر الاتصال بالخادم لحفظ الخبر. يرجى التحقق من اتصال الإنترنت والمحاولة مرة أخرى.'
-          : (err?.message || 'حدث خطأ أثناء حفظ الخبر.')
-      );
+      setModalError(err?.message || 'حدث خطأ أثناء حفظ الخبر.');
     } finally {
       setIsSavingNews(false);
     }
@@ -477,48 +507,84 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
   // Handle Delete
   const handleDelete = async (id: string) => {
     if (!isAdmin) return;
-    if (!window.confirm('هل أنت متأكد من حذف هذا الخبر؟')) return;
+    if (!window.confirm('هل أنت متأكد من حذف هذا الخبر نهائياً من الأجندة؟')) return;
+
+    // 1. Update React state & localStorage immediately
+    setNews(prev => {
+      const filtered = prev.filter(n => n.id !== id);
+      try {
+        localStorage.setItem('cached_forex_news', JSON.stringify(filtered));
+      } catch (_e) {}
+      return filtered;
+    });
+
+    // 2. Try server route
     try {
-      const res = await fetch(`/api/forex-news/${encodeURIComponent(id)}`, {
+      fetch(`/api/forex-news/${encodeURIComponent(id)}`, {
         method: 'DELETE',
         headers: { 'Accept': 'application/json' }
-      });
-      if (res.ok) {
-        setNews(prev => prev.filter(n => n.id !== id));
-        setBroadcastFeedback({
-          id,
-          success: true,
-          msg: '✅ تم حذف الخبر بنجاح من الأجندة.'
-        });
-        setTimeout(() => setBroadcastFeedback(null), 5000);
-      }
-    } catch (err) {
-      console.error(err);
-    }
+      }).catch(() => {});
+    } catch (_e) {}
+
+    // 3. Sync to persistent Firestore
+    try {
+      const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+      const snap = await getDoc(docRef);
+      const d = snap.exists() ? snap.data() : null;
+      const parsed = d?.payload ? JSON.parse(d.payload) : {};
+      const currentList: any[] = Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0
+        ? parsed.forexNews
+        : [...INITIAL_WEEKLY_FOREX_NEWS];
+      parsed.forexNews = currentList.filter((n: any) => n.id !== id);
+      await setDoc(docRef, {
+        updatedAt: new Date().toISOString(),
+        payload: JSON.stringify(parsed)
+      }, { merge: true });
+    } catch (_e) {}
+
+    setBroadcastFeedback({
+      id,
+      success: true,
+      msg: '✅ تم حذف الخبر بنجاح من الأجندة.'
+    });
+    setTimeout(() => setBroadcastFeedback(null), 5000);
   };
 
   // Handle Seed Weekly
   const handleSeedWeekly = async () => {
     if (!isAdmin) return;
-    if (!window.confirm('هل تريد إعادة تعيين الأجندة وتحميل الأخبار الأسبوعية القياسية المحدثة؟')) return;
+    if (!window.confirm('هل تريد إعادة تعيين الأجندة وتحميل جدول الأخبار القياسية الأسبوعية المحدثة؟')) return;
+
+    setNews(INITIAL_WEEKLY_FOREX_NEWS);
     try {
-      const res = await fetch('/api/forex-news/seed-weekly', {
+      localStorage.setItem('cached_forex_news', JSON.stringify(INITIAL_WEEKLY_FOREX_NEWS));
+    } catch (_e) {}
+
+    try {
+      fetch('/api/forex-news/seed-weekly', {
         method: 'POST',
         headers: { 'Accept': 'application/json' }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setNews(data.news);
-        setBroadcastFeedback({
-          id: 'seed',
-          success: true,
-          msg: '✅ تمت إعادة تعيين الأجندة وتحميل جدول الأخبار الأسبوعية بنجاح!'
-        });
-        setTimeout(() => setBroadcastFeedback(null), 5000);
-      }
-    } catch (err) {
-      console.error(err);
-    }
+      }).catch(() => {});
+    } catch (_e) {}
+
+    try {
+      const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+      const snap = await getDoc(docRef);
+      const d = snap.exists() ? snap.data() : null;
+      const parsed = d?.payload ? JSON.parse(d.payload) : {};
+      parsed.forexNews = INITIAL_WEEKLY_FOREX_NEWS;
+      await setDoc(docRef, {
+        updatedAt: new Date().toISOString(),
+        payload: JSON.stringify(parsed)
+      }, { merge: true });
+    } catch (_e) {}
+
+    setBroadcastFeedback({
+      id: 'seed',
+      success: true,
+      msg: '✅ تمت استعادة وتحميل جدول الأخبار القياسية الأسبوعية بنجاح!'
+    });
+    setTimeout(() => setBroadcastFeedback(null), 5000);
   };
 
   // Open modal for editing
@@ -1548,6 +1614,177 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Broadcast Confirmation Modal (تأكيد الإرسال والبث للتليجرام) */}
+      {isAdmin && confirmBroadcastItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fadeIn" dir="rtl">
+          <div className="bg-[#0B0F17] border border-rose-500/40 rounded-2xl w-full max-w-2xl overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+            {/* Header */}
+            <div className="p-5 bg-gradient-to-r from-rose-950/80 via-slate-900 to-[#0B0F17] border-b border-rose-500/30 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-rose-600/20 border border-rose-500/40 flex items-center justify-center text-rose-400">
+                  <Send className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <span>تأكيد بث ونشر التوصية للتليجرام</span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 font-normal border border-rose-500/30">
+                      طلب تأكيد المشرف
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    راجع تفاصيل التوصية وقنوات الإرسال المحددة قبل الإرسال المباشر
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmBroadcastItem(null)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 space-y-4 overflow-y-auto text-xs">
+              {/* Event Summary Card */}
+              <div className="p-3.5 bg-slate-950 rounded-xl border border-slate-800 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-white text-sm leading-tight">{confirmBroadcastItem.title}</span>
+                  <span className="px-2.5 py-0.5 rounded-lg bg-slate-800 border border-slate-700 text-rose-300 font-mono font-bold text-xs shrink-0">
+                    {confirmBroadcastItem.currency}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-3 text-slate-300 text-[11px]">
+                  <span>📅 {confirmBroadcastItem.eventDayArabic} ({confirmBroadcastItem.eventDate})</span>
+                  <span>🇪🇬 توقيت مصر: <b className="text-emerald-400 font-mono">{confirmBroadcastItem.timeCairo}</b></span>
+                  <span>🕋 مكة: <b className="text-cyan-400 font-mono">{confirmBroadcastItem.timeMecca}</b></span>
+                  <span>🌍 GMT: <b className="text-slate-400 font-mono">{confirmBroadcastItem.timeGmt}</b></span>
+                </div>
+                {confirmBroadcastItem.recommendation && (
+                  <div className="pt-2 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-400">الزوج الموصى به:</span>
+                      <span className="font-bold text-white font-mono bg-slate-900 px-2 py-0.5 rounded border border-slate-700">
+                        {confirmBroadcastItem.recommendation.pair}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded font-bold ${
+                        confirmBroadcastItem.recommendation.action === 'BUY'
+                          ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                          : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                      }`}>
+                        {confirmBroadcastItem.recommendation.action === 'BUY' ? '🟢 شراء (BUY)' : '🔴 بيع (SELL)'}
+                      </span>
+                    </div>
+                    {confirmBroadcastItem.recommendation.entryStrategy && (
+                      <div className="text-slate-400 text-[10px] w-full">
+                        💡 الاستراتيجية: {confirmBroadcastItem.recommendation.entryStrategy}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Target Channel Destination Selection */}
+              <div className="space-y-2">
+                <div className="font-bold text-slate-200">اختر القنوات المستهدفة لنشر التوصية:</div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <label
+                    onClick={() => setBroadcastTargetFree(!broadcastTargetFree)}
+                    className={`p-3 rounded-xl border flex items-center gap-3 cursor-pointer transition-all ${
+                      broadcastTargetFree
+                        ? 'bg-emerald-950/40 border-emerald-500/60 text-white'
+                        : 'bg-slate-950/40 border-slate-800 text-slate-400 opacity-60'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={broadcastTargetFree}
+                      onChange={() => {}}
+                      className="w-4 h-4 accent-emerald-500 cursor-pointer"
+                    />
+                    <div className="text-right">
+                      <div className="font-bold flex items-center gap-1.5">
+                        <span>📢 القناة العامة (@ZadNBFX)</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400">بوت ZAD FX لجميع المشتركين</div>
+                    </div>
+                  </label>
+
+                  <label
+                    onClick={() => setBroadcastTargetVip(!broadcastTargetVip)}
+                    className={`p-3 rounded-xl border flex items-center gap-3 cursor-pointer transition-all ${
+                      broadcastTargetVip
+                        ? 'bg-amber-950/40 border-amber-500/60 text-white'
+                        : 'bg-slate-950/40 border-slate-800 text-slate-400 opacity-60'
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={broadcastTargetVip}
+                      onChange={() => {}}
+                      className="w-4 h-4 accent-amber-500 cursor-pointer"
+                    />
+                    <div className="text-right">
+                      <div className="font-bold flex items-center gap-1.5 text-amber-300">
+                        <span>👑 قناة VIP الخاصة (Abusalim FX)</span>
+                      </div>
+                      <div className="text-[10px] text-slate-400">بوت وتوصيات أعضاء VIP المميزين</div>
+                    </div>
+                  </label>
+                </div>
+                {!broadcastTargetFree && !broadcastTargetVip && (
+                  <p className="text-rose-400 text-[11px] font-semibold">
+                    ⚠️ يرجى اختيار قناة واحدة على الأقل لإتمام البث.
+                  </p>
+                )}
+              </div>
+
+              {/* Message Live Preview */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between text-slate-300 font-semibold">
+                  <span>معاينة نص الرسالة بالتليجرام:</span>
+                  <span className="text-[10px] text-slate-500">جاهز للإرسال المباشر</span>
+                </div>
+                <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-slate-300 whitespace-pre-wrap font-mono text-[11px] leading-relaxed max-h-44 overflow-y-auto select-all">
+                  {buildNewsTelegramMessage(confirmBroadcastItem)}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer Buttons */}
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmBroadcastItem(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold cursor-pointer transition-colors"
+              >
+                إلغاء ✕
+              </button>
+
+              <button
+                type="button"
+                disabled={(!broadcastTargetFree && !broadcastTargetVip) || broadcastingId === confirmBroadcastItem.id}
+                onClick={() => executeBroadcast(confirmBroadcastItem, broadcastTargetFree, broadcastTargetVip)}
+                className="px-5 py-2.5 bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 disabled:opacity-50 text-white font-bold rounded-xl text-xs cursor-pointer shadow-lg shadow-rose-600/30 flex items-center gap-2 transition-all"
+              >
+                {broadcastingId === confirmBroadcastItem.id ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>جاري إرسال التوصية إلى التليجرام...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    <span>تأكيد وبث التوصية الآن 🚀</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}
