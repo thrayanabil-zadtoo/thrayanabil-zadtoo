@@ -187,9 +187,9 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
 
     const isStaticHost =
       typeof window !== 'undefined' &&
-      (window.location.hostname === 'fx.zadtoo.com' ||
-        window.location.hostname.endsWith('.web.app') ||
-        window.location.hostname.endsWith('.firebaseapp.com'));
+      !window.location.hostname.includes('localhost') &&
+      !window.location.hostname.includes('127.0.0.1') &&
+      !window.location.hostname.includes('run.app');
 
     let serverSuccess = false;
     let serverData: any = null;
@@ -387,9 +387,9 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
 
     const isStaticHost =
       typeof window !== 'undefined' &&
-      (window.location.hostname === 'fx.zadtoo.com' ||
-        window.location.hostname.endsWith('.web.app') ||
-        window.location.hostname.endsWith('.firebaseapp.com'));
+      !window.location.hostname.includes('localhost') &&
+      !window.location.hostname.includes('127.0.0.1') &&
+      !window.location.hostname.includes('run.app');
 
     let serverSuccess = false;
 

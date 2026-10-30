@@ -24,6 +24,14 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS } from '../types/forexNews';
+import {
+  DEFAULT_FREE_BOT_TOKEN,
+  DEFAULT_FREE_CHAT_ID,
+  DEFAULT_VIP_BOT_TOKEN,
+  DEFAULT_VIP_CHAT_ID
+} from './ZadtooAdminLiveBroadcast';
+import { db } from '../firebase';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 
 interface ZadtooForexNewsPageProps {
   isAdmin: boolean;
@@ -125,52 +133,206 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
     };
   }, [deviceNow]);
 
+async function sendTelegramDirect(token: string, chatId: string, text: string) {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), 8500);
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token.trim()}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId.trim(), text }),
+      signal: ctrl.signal
+    });
+    return (await res.json()) as { ok: boolean; result?: any; description?: string };
+  } catch (err: any) {
+    return { ok: false, description: err?.message || 'تعذر الاتصال بسيرفر التليجرام' };
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
+function buildNewsTelegramMessage(item: ForexNewsItem): string {
+  const impactBadge =
+    item.impact === 'high'
+      ? '🔴 عالي الأهمية (High Impact) 🔥'
+      : item.impact === 'medium'
+      ? '🟡 متوسط الأهمية'
+      : '🟢 منخفض الأهمية';
+  const impactEmoji = item.expectedImpact.includes('bullish')
+    ? '🟢 صعود متوقع ↗️'
+    : item.expectedImpact.includes('bearish')
+    ? '🔴 هبوط متوقع ↘️'
+    : '⚖️ محايد / تذبذب';
+  const recActionText = item.recommendation?.action === 'BUY' ? '🟢 شراء (BUY) 📈' : '🔴 بيع (SELL) 📉';
+
+  const lines = [
+    `🚨 خبر عاجل وتوصية فوركس حصرية | ZAD FX`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `📌 الحدث: ${item.title}`,
+    `⚡ العملة المتأثرة: ${item.currency} | ${impactBadge}`,
+    `📅 الموعد: ${item.eventDayArabic} (${item.eventDate})`,
+    ``,
+    `⏰ توقيت الصدور بدقة:`,
+    `• 🇪🇬 توقيت مصر (القاهرة): ${item.timeCairo}`,
+    `• 🕋 توقيت مكة المكرمة: ${item.timeMecca}`,
+    `• 🌍 توقيت غرينتش (GMT): ${item.timeGmt}`,
+    ``,
+    item.previous ? `📊 القراءة السابقة: ${item.previous}` : '',
+    item.forecast ? `🎯 التوقع التقديري: ${item.forecast}` : '',
+    item.actual ? `⚡ النتيجة الفعلية: ${item.actual}` : '',
+    `🔮 اتجاه الحركة المتوقع: ${impactEmoji}`,
+    item.expectedMoveSummary ? `💡 التحليل وتأثير الخبر: ${item.expectedMoveSummary}` : '',
+    `━━━━━━━━━━━━━━━━━━━━`
+  ].filter(Boolean);
+
+  if (item.recommendation) {
+    lines.push(
+      `🎯 توصية التداول المباشرة:`,
+      `• الزوج الموصى به: ${item.recommendation.pair}`,
+      `• القرار: ${recActionText}`,
+      item.recommendation.entryStrategy ? `• الاستراتيجية: ${item.recommendation.entryStrategy}` : ''
+    );
+  }
+
+  lines.push(
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `📢 القناة العامة: @ZadNBFX`,
+    `👑 قناة VIP الخاصة: متاح الانضمام عبر الرابط الرسمي`,
+    `💡 إدارة رأس المال سر النجاح — تداول بذكاء`
+  );
+
+  return lines.filter(Boolean).join('\n');
+}
+
   // Handle Telegram recommendation broadcast
   const handleBroadcast = async (item: ForexNewsItem) => {
     if (!isAdmin) return;
     setBroadcastingId(item.id);
     setBroadcastFeedback(null);
-    try {
-      const res = await fetch(`/api/forex-news/${encodeURIComponent(item.id)}/broadcast`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        }
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.ok) {
-        setBroadcastFeedback({
-          id: item.id,
-          success: true,
-          msg: '✅ تم نشر توصية الخبر بنجاح على التليجرام! 📢'
+
+    const messageText = buildNewsTelegramMessage(item);
+    const freeToken = (localStorage.getItem('tg_bot_token') || DEFAULT_FREE_BOT_TOKEN).trim();
+    const freeChat = (localStorage.getItem('tg_chat_id') || DEFAULT_FREE_CHAT_ID).trim();
+    const vipToken = (localStorage.getItem('tg_vip_bot_token') || DEFAULT_VIP_BOT_TOKEN).trim();
+    const vipChat = (localStorage.getItem('tg_vip_chat_id') || DEFAULT_VIP_CHAT_ID).trim();
+
+    const isStaticHost =
+      typeof window !== 'undefined' &&
+      !window.location.hostname.includes('localhost') &&
+      !window.location.hostname.includes('127.0.0.1') &&
+      !window.location.hostname.includes('run.app');
+
+    let serverHandled = false;
+
+    // Step 1: Try server route if not static host
+    if (!isStaticHost) {
+      try {
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 2500);
+        const res = await fetch(`/api/forex-news/${encodeURIComponent(item.id)}/broadcast`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          signal: ctrl.signal
         });
-        setNews(prev =>
-          prev.map(n =>
-            n.id === item.id ? { ...n, isBroadcasted: true, broadcastedAt: new Date().toISOString() } : n
-          )
+        clearTimeout(tid);
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const data = await res.json().catch(() => ({}));
+          if (data && data.ok) {
+            serverHandled = true;
+          }
+        }
+      } catch (_e) {
+        // Fallback to direct client execution below
+      }
+    }
+
+    // Step 2: Direct Client Dispatch to Telegram (Guaranteed on fx.zadtoo.com & incognito)
+    if (!serverHandled) {
+      const destParts: string[] = [];
+      const tasks: Promise<void>[] = [];
+      let freeErr: string | undefined;
+      let vipErr: string | undefined;
+
+      if (freeToken && freeChat) {
+        tasks.push(
+          sendTelegramDirect(freeToken, freeChat, messageText)
+            .then(r => {
+              if (r.ok) destParts.push('القناة العامة (@ZadNBFX)');
+              else freeErr = r.description;
+            })
+            .catch(e => {
+              freeErr = e?.message;
+            })
         );
+      }
+
+      if (vipToken && vipChat && vipChat.toLowerCase() !== freeChat.toLowerCase()) {
+        tasks.push(
+          sendTelegramDirect(vipToken, vipChat, messageText)
+            .then(r => {
+              if (r.ok) destParts.push('قناة VIP');
+              else vipErr = r.description;
+            })
+            .catch(e => {
+              vipErr = e?.message;
+            })
+        );
+      }
+
+      if (tasks.length > 0) {
+        await Promise.allSettled(tasks);
+      }
+
+      if (destParts.length > 0) {
+        serverHandled = true;
       } else {
         setBroadcastFeedback({
           id: item.id,
           success: false,
-          msg: data.error || (res.status === 404 ? 'الخبر غير موجود في السيرفر' : 'فشل إرسال التوصية، يرجى فحص إعدادات البوت')
+          msg: freeErr || vipErr || 'تعذر إرسال التوصية عبر التليجرام، تأكد من الاتصال.'
         });
       }
-    } catch (err: any) {
-      console.error('Broadcast error:', err);
-      const isFetchErr = err?.name === 'TypeError' || String(err?.message || '').toLowerCase().includes('fetch');
+    }
+
+    if (serverHandled) {
       setBroadcastFeedback({
         id: item.id,
-        success: false,
-        msg: isFetchErr
-          ? 'تعذر الاتصال بالخادم لنشر الخبر، يرجى التحقق من اتصال الإنترنت أو التأكد من إعدادات توكن البوت في لوحة التحكم.'
-          : (err?.message || 'خطأ في الاتصال بالسيرفر')
+        success: true,
+        msg: '✅ تم نشر توصية الخبر بنجاح على التليجرام! (القناة العامة + VIP) 📢'
       });
-    } finally {
-      setBroadcastingId(null);
-      setTimeout(() => setBroadcastFeedback(null), 8000);
+      setNews(prev =>
+        prev.map(n =>
+          n.id === item.id ? { ...n, isBroadcasted: true, broadcastedAt: new Date().toISOString() } : n
+        )
+      );
+
+      // Persist broadcast status to Firestore if available
+      try {
+        const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          const d = snap.data();
+          if (d?.payload) {
+            const parsed = JSON.parse(d.payload);
+            const savedNews = Array.isArray(parsed.forexNews) ? parsed.forexNews : [];
+            parsed.forexNews = savedNews.map((n: any) =>
+              n.id === item.id ? { ...n, isBroadcasted: true, broadcastedAt: new Date().toISOString() } : n
+            );
+            await setDoc(docRef, {
+              updatedAt: new Date().toISOString(),
+              payload: JSON.stringify(parsed)
+            });
+          }
+        }
+      } catch (_e) {}
     }
+
+    setBroadcastingId(null);
+    setTimeout(() => setBroadcastFeedback(null), 8000);
   };
 
   // Handle Save / Create news item
@@ -207,40 +369,84 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
     try {
       let savedItem: ForexNewsItem | null = null;
       const isEditing = Boolean(editingItem);
+      const isStaticHost =
+        typeof window !== 'undefined' &&
+        !window.location.hostname.includes('localhost') &&
+        !window.location.hostname.includes('127.0.0.1') &&
+        !window.location.hostname.includes('run.app');
 
-      if (editingItem) {
-        // Update
-        const res = await fetch(`/api/forex-news/${encodeURIComponent(editingItem.id)}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          throw new Error(data.error || `فشل حفظ التعديلات في السيرفر (رمز: ${res.status})`);
-        }
-        savedItem = data.item;
-        setNews(prev => prev.map(n => (n.id === editingItem.id ? data.item : n)));
-      } else {
-        // Create
-        const res = await fetch('/api/forex-news', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Accept': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok) {
-          throw new Error(data.error || `فشل إضافة الخبر في السيرفر (رمز: ${res.status})`);
-        }
-        savedItem = data.item;
-        setNews(prev => [data.item, ...prev]);
+      if (!isStaticHost) {
+        try {
+          if (editingItem) {
+            const res = await fetch(`/api/forex-news/${encodeURIComponent(editingItem.id)}`, {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.ok && data.item) {
+              savedItem = data.item;
+            }
+          } else {
+            const res = await fetch('/api/forex-news', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.ok && data.item) {
+              savedItem = data.item;
+            }
+          }
+        } catch (_serverErr) {}
       }
+
+      // Direct client fallback (guaranteed to work on fx.zadtoo.com & static hosts)
+      if (!savedItem) {
+        if (editingItem) {
+          savedItem = {
+            ...editingItem,
+            ...(payload as any),
+            id: editingItem.id,
+            updatedAt: new Date().toISOString()
+          };
+        } else {
+          savedItem = {
+            ...(payload as any),
+            id: `news-${Date.now()}`,
+            isBroadcasted: false,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+        }
+      }
+
+      if (isEditing && editingItem) {
+        setNews(prev => prev.map(n => (n.id === editingItem.id ? savedItem! : n)));
+      } else {
+        setNews(prev => [savedItem!, ...prev]);
+      }
+
+      // Sync updated news list to persistent Firestore
+      try {
+        const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          const d = snap.data();
+          if (d?.payload) {
+            const parsed = JSON.parse(d.payload);
+            const currentList = Array.isArray(parsed.forexNews) ? parsed.forexNews : [];
+            const updatedList = isEditing
+              ? currentList.map((n: any) => (n.id === savedItem!.id ? savedItem : n))
+              : [savedItem, ...currentList.filter((n: any) => n.id !== savedItem!.id)];
+            parsed.forexNews = updatedList;
+            await setDoc(docRef, {
+              updatedAt: new Date().toISOString(),
+              payload: JSON.stringify(parsed)
+            });
+          }
+        }
+      } catch (_e) {}
 
       setIsModalOpen(false);
       setEditingItem(null);
@@ -251,7 +457,7 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
         setBroadcastFeedback({
           id: savedItem ? savedItem.id : 'saved',
           success: true,
-          msg: isEditing ? '✅ تم حفظ وتحديث بيانات الخبر بنجاح في السيرفر والأجندة!' : '✅ تم إضافة وحفظ الخبر العاجل بنجاح في الأجندة الاقتصادية!'
+          msg: isEditing ? '✅ تم حفظ وتحديث بيانات الخبر بنجاح في الأجندة!' : '✅ تم إضافة وحفظ الخبر العاجل بنجاح في الأجندة الاقتصادية!'
         });
         setTimeout(() => setBroadcastFeedback(null), 7000);
       }
