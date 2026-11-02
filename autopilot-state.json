@@ -1,36 +1,6 @@
 {
-  "stateUpdatedAt": "2026-10-30T08:12:09.088Z",
-  "signals": [
-    {
-      "id": "sig-1793347860",
-      "asset": "EUR/JPY",
-      "isOtc": false,
-      "direction": "CALL",
-      "timeframe": "1 دقيقة (M1)",
-      "entryMinute": "11",
-      "entryTime": ":11",
-      "targetEntryTimestamp": 1793347860,
-      "payout": "السوق العالمي",
-      "livePrice": "176.316",
-      "rsiValue": 40.1,
-      "analysisReason": "🟢 ارتداد من مقاومة سابقة مخترقة تحولت لدعم (تبادل أدوار) عند 176.311 [شرط أساسي محقق ✅] + توافق (2 من 3 مؤشرات: سوبر تريند صاعد (أخضر) + ميل صعودي RSI(40.1))",
-      "entryPriceNumeric": 176.3159942626953,
-      "qualityScore": 80,
-      "reversalPattern": "🟢 ارتداد من مقاومة سابقة مخترقة تحولت لدعم (تبادل أدوار) عند 176.311",
-      "supportResistanceText": "🟢 ارتداد من مقاومة سابقة مخترقة تحولت لدعم (تبادل أدوار) عند 176.311",
-      "confluenceText": "سوبر تريند صاعد (أخضر) + ميل صعودي RSI(40.1)",
-      "formattedMessage": "✨ نَبض التداول | السوق العالمي ✨\n━━━━━━━━━━━━━━\n📊 الزوج: EUR/JPY (السوق العالمي 🌍)\n⏱ المدة: 1 دقيقة (M1)\n⏰ وقت الدخول: الدقيقة :11 (حسب ساعة جهازك)\n🟢 الاتجاه: صعود (شراء ⬆️)\n📈 السعر: 176.316 | مؤشر RSI (9): 40.1\n🧭 سوبر تريند: 🟢 صاعد (176.29806)\n📐 الفركتال: لا يوجد نموذج فركتال نشط\n🧱 الدعم والمقاومة: 🟢 ارتداد من مقاومة سابقة مخترقة تحولت لدعم (تبادل أدوار) عند 176.311\n🎯 سبب الدخول: 🟢 ارتداد من مقاومة سابقة مخترقة تحولت لدعم (تبادل أدوار) عند 176.311 [شرط أساسي محقق ✅] + توافق (2 من 3 مؤشرات: سوبر تريند صاعد (أخضر) + ميل صعودي RSI(40.1))\n━━━━━━━━━━━━━━\n📢 قناتنا المجانية: @ZadNBFX\n💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال\n━━━━━━━━━━━━━━\n━━━━━━━━━━━━━━\n✅ ربح",
-      "status": "WIN",
-      "createdAt": "2026-10-30T08:10:10.149Z",
-      "resultSent": true,
-      "autoSent": true,
-      "telegramMessageId": 2001,
-      "vipTelegramMessageId": 344,
-      "galeStep": 0,
-      "telegramReplyMessageId": 2002,
-      "vipTelegramReplyMessageId": 345
-    }
-  ],
+  "stateUpdatedAt": "2026-11-01T07:30:11.144Z",
+  "signals": [],
   "settings": {
     "sourceChannel": "LIVE_GLOBAL_FOREX",
     "channelTitle": "نَبض التداول | السوق العالمي",
@@ -58,13 +28,14 @@
     "engineStartedAt": 1793258464132,
     "warmupMinutes": 10,
     "freeBotDailyTargetReached": false,
-    "freeBotCelebrationSentDate": "",
+    "freeBotCelebrationSentDate": "2026-10-30",
+    "freeBotStoppedForToday": false,
     "freeBotEnabled": true,
     "botToken": "8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U",
     "chatId": "@ZadNBFX",
     "freeScheduleEnabled": true,
-    "freeStartHourEgypt": 10,
-    "freeEndHourEgypt": 18,
+    "freeStartHourEgypt": 9,
+    "freeEndHourEgypt": 15,
     "freeWinIcon": "✅ ربح",
     "freeWinGale1Icon": "✅ ربح مضاعفة واحدة",
     "freeLossIcon": "❌",
@@ -97,10 +68,10 @@
     "autoWinNotification": true,
     "resultNotificationStyle": "emoji_size",
     "autoDailyReportEnabled": true,
-    "lastDailyReportSentDate": "2026-10-28",
-    "lastRunAt": "2026-10-30T08:10:10.150Z",
-    "nextRunAt": "2026-10-30T08:25:10.150Z",
-    "totalAutoSent": 1,
+    "lastDailyReportSentDate": "2026-10-30",
+    "lastRunAt": "2026-10-30T12:45:34.795Z",
+    "nextRunAt": "2026-10-30T13:00:34.795Z",
+    "totalAutoSent": 0,
     "lastError": null,
     "marketOpenStatus": true,
     "pairSelectionMode": "custom_list",
@@ -124,7 +95,7 @@
       "USD/CAD",
       "EUR/GBP"
     ],
-    "lastResetEgyptDate": "2026-10-30",
+    "lastResetEgyptDate": "2026-11-01",
     "currentEgyptHour": 10,
     "isFreeBotWithinSchedule": true
   },
@@ -144,12 +115,12 @@
   "dailyStats": [
     {
       "date": "2026-10-30",
-      "directWins": 1,
+      "directWins": 12,
       "gale1Wins": 0,
-      "losses": 0,
+      "losses": 7,
       "draws": 0,
       "manualOverride": false,
-      "updatedAt": "2026-10-30T08:12:08.354Z"
+      "updatedAt": "2026-10-30T12:47:29.821Z"
     },
     {
       "date": "2026-10-29",
@@ -311,8 +282,8 @@
         "entryStrategy": "شراء مع اختراق مستويات المقاومة الفورية وتأكيد سلبية الدولار الأمريكي"
       },
       "isBroadcasted": false,
-      "createdAt": "2026-10-30T08:01:49.220Z",
-      "updatedAt": "2026-10-30T08:01:49.221Z"
+      "createdAt": "2026-11-01T07:30:10.365Z",
+      "updatedAt": "2026-11-01T07:30:10.365Z"
     },
     {
       "id": "news-ecb-rate",
@@ -337,8 +308,8 @@
         "entryStrategy": "بيع زوج اليورو/دولار (EUR/USD هبوط 🔴) مع كسر الدعم وتأكيد سلبية خفض الفائدة"
       },
       "isBroadcasted": false,
-      "createdAt": "2026-10-30T08:01:49.221Z",
-      "updatedAt": "2026-10-30T08:01:49.221Z"
+      "createdAt": "2026-11-01T07:30:10.365Z",
+      "updatedAt": "2026-11-01T07:30:10.365Z"
     },
     {
       "id": "news-ecb-lagarde-conference",
@@ -363,8 +334,8 @@
         "entryStrategy": "بيع زوج اليورو/دولار (EUR/USD هبوط 🔴) لمواكبة استمرار الضغط السلبي على اليورو خلال المؤتمر الصحفي"
       },
       "isBroadcasted": false,
-      "createdAt": "2026-10-30T08:01:49.221Z",
-      "updatedAt": "2026-10-30T08:01:49.221Z"
+      "createdAt": "2026-11-01T07:30:10.365Z",
+      "updatedAt": "2026-11-01T07:30:10.365Z"
     },
     {
       "id": "news-us-cpi",
@@ -389,8 +360,8 @@
         "entryStrategy": "شراء الدولار مقابل الين مع افتتاح شمعة الخبر في حال تجاوز التضخم للتوقعات"
       },
       "isBroadcasted": false,
-      "createdAt": "2026-10-30T08:01:49.221Z",
-      "updatedAt": "2026-10-30T08:01:49.221Z"
+      "createdAt": "2026-11-01T07:30:10.365Z",
+      "updatedAt": "2026-11-01T07:30:10.365Z"
     },
     {
       "id": "news-us-nfp",
@@ -415,8 +386,8 @@
         "entryStrategy": "بيع زوج EUR/USD مع تأكيد شمعة الـ 5 دقائق الأولى بعد صدور تقرير الوظائف"
       },
       "isBroadcasted": false,
-      "createdAt": "2026-10-30T08:01:49.221Z",
-      "updatedAt": "2026-10-30T08:01:49.221Z"
+      "createdAt": "2026-11-01T07:30:10.365Z",
+      "updatedAt": "2026-11-01T07:30:10.365Z"
     },
     {
       "id": "news-gbp-pmi",
@@ -441,8 +412,8 @@
         "entryStrategy": "شراء الإسترليني/دولار مع ارتداد السعر من دعم شارت الدقيقة"
       },
       "isBroadcasted": false,
-      "createdAt": "2026-10-30T08:01:49.221Z",
-      "updatedAt": "2026-10-30T08:01:49.221Z"
+      "createdAt": "2026-11-01T07:30:10.365Z",
+      "updatedAt": "2026-11-01T07:30:10.365Z"
     },
     {
       "id": "news-us-retail",
@@ -467,8 +438,8 @@
         "entryStrategy": "شراء الدولار/كندي مع اختراق القمة السابقة"
       },
       "isBroadcasted": false,
-      "createdAt": "2026-10-30T08:01:49.221Z",
-      "updatedAt": "2026-10-30T08:01:49.221Z"
+      "createdAt": "2026-11-01T07:30:10.365Z",
+      "updatedAt": "2026-11-01T07:30:10.365Z"
     }
   ],
   "plans": [
@@ -567,5 +538,5 @@
     "supportEmail": "support@zadtoo.com",
     "contactNotes": "فريق الدعم وإدارة الاشتراكات متاح 24/7. يمكن التحويل عبر المحافظ الإلكترونية، إنستاباي، والتحويل البنكي."
   },
-  "lastDispatchedEpochMinute": 1793347860
+  "lastDispatchedEpochMinute": 1793364360
 }

@@ -22,7 +22,8 @@ import {
   Clock,
   Layers,
   Award,
-  ShieldCheck
+  ShieldCheck,
+  X
 } from 'lucide-react';
 import type { AutoPilotConfig, SignalItem } from '../App';
 
@@ -105,6 +106,14 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     text: string;
   } | null>(null);
 
+  // --- Section 3: Send Confirmation Modals State (تأكيد الإرسال) ---
+  const [confirmSignalModalOpen, setConfirmSignalModalOpen] = useState<boolean>(false);
+  const [confirmAnnouncement, setConfirmAnnouncement] = useState<{
+    boxId: 'win' | 'loss' | 'closing' | 'custom';
+    title: string;
+    text: string;
+  } | null>(null);
+
   // Quick preset notes for the signal
   const PRESET_NOTES = [
     'تأكيد الدخول فور إغلاق الشمعة الحالية مباشرة ⏱️',
@@ -113,8 +122,8 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     'التزام صارم بإدارة رأس المال 1% كحد أقصى ⚖️'
   ];
 
-  // Handler for sending the live signal
-  const handleSendLiveSignal = async (e?: React.FormEvent) => {
+  // Request Confirmation before sending Live Signal
+  const handleRequestSendSignal = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!targetFreeBot && !targetVipBot && !targetFloatingRobot) {
       setSignalFeedback({
@@ -123,7 +132,12 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
       });
       return;
     }
+    setConfirmSignalModalOpen(true);
+  };
 
+  // Execute sending the live signal after confirmation
+  const executeSendLiveSignal = async () => {
+    setConfirmSignalModalOpen(false);
     setIsSendingSignal(true);
     setSignalFeedback(null);
 
@@ -185,50 +199,42 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
       autoSent: false
     };
 
-    const isStaticHost =
-      typeof window !== 'undefined' &&
-      !window.location.hostname.includes('localhost') &&
-      !window.location.hostname.includes('127.0.0.1') &&
-      !window.location.hostname.includes('run.app');
-
     let serverSuccess = false;
     let serverData: any = null;
 
-    // Step 1: Try calling server backend route if NOT on static Firebase Hosting (fx.zadtoo.com)
-    if (!isStaticHost) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2500);
-        const res = await fetch('/api/admin/live-broadcast', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: controller.signal,
-          body: JSON.stringify({
-            type: 'signal',
-            pair: selectedPair,
-            direction,
-            timeframe: '1 دقيقة (M1)',
-            customNotes: customNotes.trim(),
-            targetBots: {
-              freeBot: targetFreeBot,
-              vipBot: targetVipBot,
-              floatingRobot: targetFloatingRobot
-            }
-          })
-        });
-        clearTimeout(timeoutId);
-
-        const contentType = res.headers.get('content-type') || '';
-        if (res.ok && contentType.includes('application/json')) {
-          const d = await res.json();
-          if (d && d.ok) {
-            serverSuccess = true;
-            serverData = d;
+    // Step 1: Always prioritize Backend Server API (Reliable in cloud container)
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 9000);
+      const res = await fetch('/api/admin/live-broadcast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          type: 'signal',
+          pair: selectedPair,
+          direction,
+          timeframe: '1 دقيقة (M1)',
+          customNotes: customNotes.trim(),
+          targetBots: {
+            freeBot: targetFreeBot,
+            vipBot: targetVipBot,
+            floatingRobot: targetFloatingRobot
           }
+        })
+      });
+      clearTimeout(timeoutId);
+
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const d = await res.json();
+        if (d && d.ok) {
+          serverSuccess = true;
+          serverData = d;
         }
-      } catch (_serverErr) {
-        // Fallback to direct client execution below
       }
+    } catch (_serverErr) {
+      // Backend route unreachable, fallback to direct client execution below
     }
 
     try {
@@ -356,9 +362,10 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     }
   };
 
-  // Handler for sending announcements / celebrations
-  const handleSendAnnouncement = async (
+  // Request Confirmation before sending Announcement
+  const handleRequestSendAnnouncement = (
     boxId: 'win' | 'loss' | 'closing' | 'custom',
+    title: string,
     text: string
   ) => {
     if (!announcementFreeBot && !announcementVipBot) {
@@ -377,6 +384,15 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
       return;
     }
 
+    setConfirmAnnouncement({ boxId, title, text: text.trim() });
+  };
+
+  // Execute sending announcement after confirmation
+  const executeSendAnnouncement = async (
+    boxId: 'win' | 'loss' | 'closing' | 'custom',
+    text: string
+  ) => {
+    setConfirmAnnouncement(null);
     setIsSendingAnnouncement(boxId);
     setAnnouncementFeedback(null);
 
@@ -385,45 +401,37 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     const vipToken = (autoPilot?.vipBotToken || localStorage.getItem('tg_vip_bot_token') || DEFAULT_VIP_BOT_TOKEN).trim();
     const vipChat = (autoPilot?.vipChatId || localStorage.getItem('tg_vip_chat_id') || DEFAULT_VIP_CHAT_ID).trim();
 
-    const isStaticHost =
-      typeof window !== 'undefined' &&
-      !window.location.hostname.includes('localhost') &&
-      !window.location.hostname.includes('127.0.0.1') &&
-      !window.location.hostname.includes('run.app');
-
     let serverSuccess = false;
 
-    // Step 1: Try server route if NOT on static Firebase Hosting
-    if (!isStaticHost) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2500);
-        const res = await fetch('/api/admin/live-broadcast', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          signal: controller.signal,
-          body: JSON.stringify({
-            type: 'announcement',
-            announcementType: boxId,
-            announcementText: text.trim(),
-            targetBots: {
-              freeBot: announcementFreeBot,
-              vipBot: announcementVipBot
-            }
-          })
-        });
-        clearTimeout(timeoutId);
-
-        const contentType = res.headers.get('content-type') || '';
-        if (res.ok && contentType.includes('application/json')) {
-          const d = await res.json();
-          if (d && d.ok) {
-            serverSuccess = true;
+    // Step 1: Always prioritize Backend Server API (Reliable in cloud container)
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 9000);
+      const res = await fetch('/api/admin/live-broadcast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          type: 'announcement',
+          announcementType: boxId,
+          announcementText: text.trim(),
+          targetBots: {
+            freeBot: announcementFreeBot,
+            vipBot: announcementVipBot
           }
+        })
+      });
+      clearTimeout(timeoutId);
+
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const d = await res.json();
+        if (d && d.ok) {
+          serverSuccess = true;
         }
-      } catch (_serverErr) {
-        // Fallback to direct client execution below
       }
+    } catch (_serverErr) {
+      // Backend route unreachable, fallback to direct client execution below
     }
 
     try {
@@ -610,7 +618,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
           </div>
         </div>
 
-        <form onSubmit={handleSendLiveSignal} className="space-y-6">
+        <form onSubmit={handleRequestSendSignal} className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* 1. قائمة منسدلة للأزواج الستة الرئيسية */}
             <div className="space-y-2">
@@ -956,7 +964,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
             <button
               type="button"
               disabled={isSendingAnnouncement === 'win'}
-              onClick={() => handleSendAnnouncement('win', winMessage)}
+              onClick={() => handleRequestSendAnnouncement('win', 'رسالة مباركة الفوز والربح', winMessage)}
               className="w-full py-3 px-4 rounded-xl font-black text-xs sm:text-sm bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white shadow-md shadow-emerald-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-60"
             >
               {isSendingAnnouncement === 'win' ? (
@@ -967,7 +975,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
               ) : (
                 <>
                   <Award className="w-4 h-4" />
-                  <span>🎉 إرسال مباركة الفوز والربح فوراً</span>
+                  <span>🎉 إرسال مباركة الفوز والربح (طلب تأكيد)</span>
                 </>
               )}
             </button>
@@ -999,7 +1007,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
             <button
               type="button"
               disabled={isSendingAnnouncement === 'loss'}
-              onClick={() => handleSendAnnouncement('loss', lossMessage)}
+              onClick={() => handleRequestSendAnnouncement('loss', 'رسالة التنبيه والفرصة التعويضية', lossMessage)}
               className="w-full py-3 px-4 rounded-xl font-black text-xs sm:text-sm bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white shadow-md shadow-amber-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-60"
             >
               {isSendingAnnouncement === 'loss' ? (
@@ -1010,7 +1018,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
               ) : (
                 <>
                   <AlertCircle className="w-4 h-4" />
-                  <span>⚠️ إرسال إشعار التنبيه والتعويض</span>
+                  <span>⚠️ إرسال إشعار التنبيه والتعويض (طلب تأكيد)</span>
                 </>
               )}
             </button>
@@ -1042,7 +1050,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
             <button
               type="button"
               disabled={isSendingAnnouncement === 'closing'}
-              onClick={() => handleSendAnnouncement('closing', closingMessage)}
+              onClick={() => handleRequestSendAnnouncement('closing', 'رسالة اختتام البث الحي والشكر', closingMessage)}
               className="w-full py-3 px-4 rounded-xl font-black text-xs sm:text-sm bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 text-white shadow-md shadow-sky-500/20 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95 disabled:opacity-60"
             >
               {isSendingAnnouncement === 'closing' ? (
@@ -1053,7 +1061,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
               ) : (
                 <>
                   <Send className="w-4 h-4" />
-                  <span>📢 إرسال إشعار اختتام البث الحي</span>
+                  <span>📢 إرسال إشعار اختتام البث الحي (طلب تأكيد)</span>
                 </>
               )}
             </button>
@@ -1081,7 +1089,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
               <button
                 type="button"
                 disabled={isSendingAnnouncement === 'custom' || !customAnnouncement.trim()}
-                onClick={() => handleSendAnnouncement('custom', customAnnouncement)}
+                onClick={() => handleRequestSendAnnouncement('custom', 'رسالة إدارية مخصصة', customAnnouncement)}
                 className="px-5 py-2.5 rounded-xl font-bold text-xs bg-purple-600 hover:bg-purple-500 text-white flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
               >
                 {isSendingAnnouncement === 'custom' ? (
@@ -1089,12 +1097,214 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
                 ) : (
                   <Send className="w-3.5 h-3.5" />
                 )}
-                <span>إرسال الرسالة</span>
+                <span>إرسال الرسالة (طلب تأكيد)</span>
               </button>
             </div>
           </div>
         </div>
       </div>
+
+      {/* Confirmation Modal 1: تأكيد إرسال إشارة البث الحي المباشرة */}
+      {confirmSignalModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fadeIn" dir="rtl">
+          <div className="bg-[#0B0F17] border border-rose-500/50 rounded-2xl w-full max-w-xl overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+            <div className="p-5 bg-gradient-to-r from-rose-950/90 via-slate-900 to-[#0B0F17] border-b border-rose-500/30 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-rose-600/20 border border-rose-500/40 flex items-center justify-center text-rose-400">
+                  <Send className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <span>تأكيد إرسال إشارة البث الحي المباشر</span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 font-normal border border-rose-500/30">
+                      موافقة المشرف 🔴
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    راجع تفاصيل الصفقة والوجهات المحددة قبل البث إلى المشتركين
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmSignalModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 overflow-y-auto text-xs">
+              <div className="grid grid-cols-2 gap-3 p-3.5 bg-slate-950 rounded-xl border border-slate-800">
+                <div>
+                  <span className="text-slate-400 block text-[11px]">زوج العملة:</span>
+                  <span className="text-white font-black text-base font-mono">{selectedPair}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[11px]">الاتجاه:</span>
+                  <span className={`font-black text-sm flex items-center gap-1 ${
+                    direction === 'CALL' ? 'text-emerald-400' : 'text-rose-400'
+                  }`}>
+                    {direction === 'CALL' ? 'صعود 🟢 ⬆️ (CALL)' : 'هبوط 🔴 ⬇️ (PUT)'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[11px]">فريم الصفقة:</span>
+                  <span className="text-cyan-300 font-bold">1 دقيقة (M1)</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 block text-[11px]">وقت الدخول:</span>
+                  <span className="text-amber-300 font-bold font-mono">مع بداية الشمعة القادمة مباشرة</span>
+                </div>
+              </div>
+
+              {customNotes && customNotes.trim() && (
+                <div className="p-3 bg-slate-900 rounded-xl border border-slate-800 space-y-1">
+                  <div className="text-[11px] font-bold text-slate-300">📝 ملاحظات وتوجيهات المشرف:</div>
+                  <div className="text-slate-200 text-xs leading-relaxed">{customNotes.trim()}</div>
+                </div>
+              )}
+
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                <div className="text-[11px] font-bold text-slate-300">📡 الوجهات المحددة لاستقبال الإشارة:</div>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {targetFreeBot && (
+                    <span className="px-2.5 py-1 rounded-lg bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 font-bold">
+                      📢 القناة العامة (@ZadNBFX)
+                    </span>
+                  )}
+                  {targetVipBot && (
+                    <span className="px-2.5 py-1 rounded-lg bg-amber-950/80 border border-amber-500/40 text-amber-300 font-bold">
+                      👑 قناة VIP الخاصة (Abusalim FX)
+                    </span>
+                  )}
+                  {targetFloatingRobot && (
+                    <span className="px-2.5 py-1 rounded-lg bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 font-bold">
+                      🤖 الروبوت العائم على منصة Quotex
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmSignalModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold cursor-pointer transition-colors"
+              >
+                إلغاء ✕
+              </button>
+
+              <button
+                type="button"
+                disabled={isSendingSignal}
+                onClick={executeSendLiveSignal}
+                className="px-6 py-2.5 bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-500 hover:to-rose-400 disabled:opacity-50 text-white font-bold rounded-xl text-xs cursor-pointer shadow-lg shadow-rose-600/30 flex items-center gap-2 transition-all"
+              >
+                {isSendingSignal ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>جاري الإرسال للبوتات...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    <span>تأكيد وإرسال الإشارة فوراً 🚀</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal 2: تأكيد إرسال رسائل ونتائج البث الحي */}
+      {confirmAnnouncement && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fadeIn" dir="rtl">
+          <div className="bg-[#0B0F17] border border-amber-500/50 rounded-2xl w-full max-w-xl overflow-hidden shadow-2xl flex flex-col max-h-[92vh]">
+            <div className="p-5 bg-gradient-to-r from-amber-950/90 via-slate-900 to-[#0B0F17] border-b border-amber-500/30 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-600/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                    <span>تأكيد إرسال رسالة البث الحي</span>
+                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-normal border border-amber-500/30">
+                      طلب موافقة المشرف 📢
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    {confirmAnnouncement.title}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmAnnouncement(null)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 overflow-y-auto text-xs">
+              <div className="space-y-1.5">
+                <div className="font-bold text-slate-300">معاينة نص الرسالة قبل الإرسال:</div>
+                <div className="p-4 bg-slate-950 rounded-xl border border-slate-800 text-slate-200 whitespace-pre-wrap font-sans text-xs leading-relaxed max-h-56 overflow-y-auto select-all">
+                  {confirmAnnouncement.text}
+                </div>
+              </div>
+
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-2">
+                <div className="text-[11px] font-bold text-slate-300">📡 القنوات المستهدفة:</div>
+                <div className="flex flex-wrap gap-2 text-xs">
+                  {announcementFreeBot && (
+                    <span className="px-2.5 py-1 rounded-lg bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 font-bold">
+                      📢 القناة العامة (@ZadNBFX)
+                    </span>
+                  )}
+                  {announcementVipBot && (
+                    <span className="px-2.5 py-1 rounded-lg bg-amber-950/80 border border-amber-500/40 text-amber-300 font-bold">
+                      👑 قناة VIP الخاصة (Abusalim FX)
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmAnnouncement(null)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold cursor-pointer transition-colors"
+              >
+                إلغاء ✕
+              </button>
+
+              <button
+                type="button"
+                disabled={Boolean(isSendingAnnouncement)}
+                onClick={() => executeSendAnnouncement(confirmAnnouncement.boxId, confirmAnnouncement.text)}
+                className="px-6 py-2.5 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 disabled:opacity-50 text-white font-bold rounded-xl text-xs cursor-pointer shadow-lg shadow-amber-600/30 flex items-center gap-2 transition-all"
+              >
+                {isSendingAnnouncement ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>جاري الإرسال للبوت...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    <span>تأكيد وإرسال الرسالة الآن 📢</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

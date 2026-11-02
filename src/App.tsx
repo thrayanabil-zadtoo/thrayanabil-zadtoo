@@ -266,6 +266,9 @@ export interface LivePairSnapshot {
 
 export interface AutoPilotConfig {
   enabled: boolean;
+  freeBotDailyTargetReached?: boolean;
+  freeBotCelebrationSentDate?: string;
+  freeBotStoppedForToday?: boolean;
   // Bot 1: Free Channel Bot (With Egypt Cairo working hours schedule)
   freeBotEnabled?: boolean;
   botToken: string;
@@ -403,10 +406,12 @@ export default function App() {
   const [subscribers, setSubscribers] = useState<VipSubscriber[]>([]);
   const [quickNotes, setQuickNotes] = useState<QuickNote[]>([]);
   const [dailyStats, setDailyStats] = useState<DailyStatRecord[]>([]);
-  // Admin Statistics Page (A4 Weekly / Monthly) state
-  const [statsPeriod, setStatsPeriod] = useState<'week' | 'month'>('week');
-  const [statsOffset, setStatsOffset] = useState<number>(0); // 0 = current week/month, -1 = previous, etc.
-  const [statsPayoutMode, setStatsPayoutMode] = useState<'net_100' | 'broker_85'>('net_100');
+  // Admin Statistics Page (A4 Weekly / Monthly & Archive) state
+  const [statsPeriod, setStatsPeriod] = useState<'week' | 'month'>('month');
+  const [statsOffset, setStatsOffset] = useState<number>(0); // 0 = current active month (November 2026), -1 = October 2026 (archived), etc.
+  const [archiveSearchQuery, setArchiveSearchQuery] = useState<string>('');
+  const [isArchiveView, setIsArchiveView] = useState<boolean>(false);
+  const [statsPayoutMode, setStatsPayoutMode] = useState<'net_100' | 'broker_85'>('broker_85');
   const [statsShowAllDays, setStatsShowAllDays] = useState<boolean>(true);
   const [editingStatDate, setEditingStatDate] = useState<string | null>(null);
   const [editStatForm, setEditStatForm] = useState<{
@@ -2043,10 +2048,10 @@ export default function App() {
     const winRateWithGale =
       totalCompleted > 0 ? Math.round((totalWinsWithGale / totalCompleted) * 100) : 0;
 
-    // Net Profit on $1 base unit ($1 direct, $2 gale)
-    const netProfitNoGaleUsd = Number((directWins * 1 - firstCandleLossesNoGale * 1).toFixed(2));
+    // Net Profit on $1 base unit with $0.85 payout for winning trades, $1.00 loss
+    const netProfitNoGaleUsd = Number((directWins * 0.85 - firstCandleLossesNoGale * 1.0).toFixed(2));
     const netProfitWithGaleUsd = Number(
-      (directWins * 1 + gale1Wins * 1 - lossesWithGale * 3).toFixed(2)
+      ((directWins + gale1Wins) * 0.85 - lossesWithGale * 1.0).toFixed(2)
     );
 
     // Pair-by-Pair Breakdown for Today's Signals (أكثر زوج ربحاً + أكثر زوج تم اختياره)
@@ -2094,8 +2099,8 @@ export default function App() {
       const comp = p.directWins + p.gale1Wins + p.losses;
       p.totalWins = p.directWins + p.gale1Wins;
       p.winRate = comp > 0 ? Math.round((p.totalWins / comp) * 100) : 0;
-      p.netNoGale = p.directWins - (p.gale1Wins + p.losses);
-      p.netWithGale = p.directWins + p.gale1Wins - p.losses * 3;
+      p.netNoGale = Number((p.directWins * 0.85 - (p.gale1Wins + p.losses) * 1.0).toFixed(2));
+      p.netWithGale = Number(((p.directWins + p.gale1Wins) * 0.85 - p.losses * 1.0).toFixed(2));
       return p;
     });
 
@@ -2287,9 +2292,23 @@ export default function App() {
 
     let datesList: string[] = [];
     let periodLabel = '';
+    const arabicMonths = [
+      'يناير',
+      'فبراير',
+      'مارس',
+      'أبريل',
+      'مايو',
+      'يونيو',
+      'يوليو',
+      'أغسطس',
+      'سبتمبر',
+      'أكتوبر',
+      'نوفمبر',
+      'ديسمبر'
+    ];
 
     if (statsPeriod === 'week') {
-      // 7-day window ending at (today + statsOffset * 7 days) or starting Saturday/Sunday
+      // 7-day window ending at (today + statsOffset * 7 days)
       const endDt = new Date(baseDate.getTime() + statsOffset * 7 * 86400000);
       const startDt = new Date(endDt.getTime() - 6 * 86400000);
       for (let i = 0; i < 7; i++) {
@@ -2298,28 +2317,23 @@ export default function App() {
       }
       periodLabel = `إحصائيات الأسبوع (${formatYMD(startDt)} إلى ${formatYMD(endDt)})`;
     } else {
-      // Full calendar month shifted by statsOffset months
+      // Full calendar month shifted by statsOffset months:
+      // Strictly calculated from Day 1 of the month to Day 1 of the next month, WITHOUT counting Day 1 of the next month!
       const targetMonthDate = new Date(Date.UTC(ty, (tm || 1) - 1 + statsOffset, 1, 12, 0, 0));
       const year = targetMonthDate.getUTCFullYear();
       const month = targetMonthDate.getUTCMonth(); // 0-11
       const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
 
-      const arabicMonths = [
-        'يناير',
-        'فبراير',
-        'مارس',
-        'أبريل',
-        'مايو',
-        'يونيو',
-        'يوليو',
-        'أغسطس',
-        'سبتمبر',
-        'أكتوبر',
-        'نوفمبر',
-        'ديسمبر'
-      ];
-      periodLabel = `إحصائيات شهر ${arabicMonths[month]} ${year}`;
+      const startDateStr = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+      const lastDateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
+      const nextMonthDate = new Date(Date.UTC(year, month + 1, 1, 12, 0, 0));
+      const nextMonthName = arabicMonths[nextMonthDate.getUTCMonth()];
+      const nextMonthFirstStr = formatYMD(nextMonthDate);
 
+      // Label explicitly states: from 1 [Month] to 1 [Next Month] without counting the 1st day of the next month (to last day)
+      periodLabel = `إحصائيات شهر ${arabicMonths[month]} ${year} (من ${startDateStr} حتى 1 ${nextMonthName} [${nextMonthFirstStr}] دون احتسابه: إلى ${lastDateStr})`;
+
+      // List all days of the month from the last day down to day 1 (Day 1 of next month is strictly excluded!)
       for (let d = daysInMonth; d >= 1; d--) {
         const cur = new Date(Date.UTC(year, month, d, 12, 0, 0));
         const ymd = formatYMD(cur);
@@ -2331,13 +2345,12 @@ export default function App() {
       }
     }
 
-    // Build row metrics for each date
-    // Trading rule: $1 initial trade + $2 1-step Martingale
-    // Mode 'net_100': Direct Win = +$1.00 | Gale 1 Win (-$1 + $2) = +$1.00 | Loss (-$1 - $2) = -$3.00
-    // Mode 'broker_85': Direct Win = +$0.85 | Gale 1 Win (-$1 + $1.70) = +$0.70 | Loss (-$1 - $2) = -$3.00
-    const directWinProfitUnit = statsPayoutMode === 'net_100' ? 1.0 : 0.85;
-    const gale1WinProfitUnit = statsPayoutMode === 'net_100' ? 1.0 : 0.7;
-    const lossCostUnit = 3.0; // $1 initial + $2 martingale = $3 lost
+    // Build row metrics for each date WITHOUT ANY MARTINGALE DEDUCTION:
+    // Pure flat trade accounting:
+    // Wins earn winProfitUnit (+$1.00 in net_100, +$0.85 in broker_85).
+    // Losses cost flat 1.0 unit (-$1.00) ONLY — absolutely NO 3.0 or Martingale multiplier penalty!
+    const winProfitUnit = statsPayoutMode === 'net_100' ? 1.0 : 0.85;
+    const lossCostUnit = 1.0; // Strictly 1.0 flat — zero Martingale deduction!
 
     const allRows = datesList.map(dateStr => {
       const rec = mergedDailyStatsMap[dateStr];
@@ -2348,20 +2361,15 @@ export default function App() {
       const totalTrades = totalWins + losses;
       const winRate = totalTrades > 0 ? Math.round((totalWins / totalTrades) * 100) : 0;
 
-      const grossWinUsd = Number((directWins * directWinProfitUnit + gale1Wins * gale1WinProfitUnit).toFixed(2));
+      // Pure Flat Profit / Loss without any Martingale deductions:
+      const grossWinUsd = Number((totalWins * winProfitUnit).toFixed(2));
       const grossLossUsd = Number((losses * lossCostUnit).toFixed(2));
       const netProfitUsd = Number((grossWinUsd - grossLossUsd).toFixed(2));
 
-      // Flat $1 Without Martingale calculation:
-      // Direct Wins win +$1 (or +$0.85), while 1st-candle losses (gale1Wins + losses) lose -$1.00 each without entering $2 Gale
+      // Direct-only statistics for reference
       const firstCandleLosses = gale1Wins + losses;
-      const noGaleGrossWinUsd = Number((directWins * directWinProfitUnit).toFixed(2));
-      const noGaleGrossLossUsd = Number((firstCandleLosses * 1.0).toFixed(2));
-      const noGaleNetProfitUsd = Number((noGaleGrossWinUsd - noGaleGrossLossUsd).toFixed(2));
       const directWinRate = totalTrades > 0 ? Math.round((directWins / totalTrades) * 100) : 0;
-
-      // Total capital staked on that day ($1 per direct win, $1+$2=$3 per gale1 win or loss)
-      const totalStakedUsd = directWins * 1 + gale1Wins * 3 + losses * 3;
+      const totalStakedUsd = totalTrades * 1.0;
 
       return {
         date: dateStr,
@@ -2378,9 +2386,9 @@ export default function App() {
         grossWinUsd,
         grossLossUsd,
         netProfitUsd,
-        noGaleGrossWinUsd,
-        noGaleGrossLossUsd,
-        noGaleNetProfitUsd,
+        noGaleGrossWinUsd: grossWinUsd,
+        noGaleGrossLossUsd: grossLossUsd,
+        noGaleNetProfitUsd: netProfitUsd,
         totalStakedUsd,
         manualOverride: Boolean(rec?.manualOverride)
       };
@@ -2401,9 +2409,9 @@ export default function App() {
         acc.grossWinUsd = Number((acc.grossWinUsd + r.grossWinUsd).toFixed(2));
         acc.grossLossUsd = Number((acc.grossLossUsd + r.grossLossUsd).toFixed(2));
         acc.netProfitUsd = Number((acc.netProfitUsd + r.netProfitUsd).toFixed(2));
-        acc.noGaleGrossWinUsd = Number((acc.noGaleGrossWinUsd + r.noGaleGrossWinUsd).toFixed(2));
-        acc.noGaleGrossLossUsd = Number((acc.noGaleGrossLossUsd + r.noGaleGrossLossUsd).toFixed(2));
-        acc.noGaleNetProfitUsd = Number((acc.noGaleNetProfitUsd + r.noGaleNetProfitUsd).toFixed(2));
+        acc.noGaleGrossWinUsd = Number((acc.noGaleGrossWinUsd + r.grossWinUsd).toFixed(2));
+        acc.noGaleGrossLossUsd = Number((acc.noGaleGrossLossUsd + r.grossLossUsd).toFixed(2));
+        acc.noGaleNetProfitUsd = Number((acc.noGaleNetProfitUsd + r.netProfitUsd).toFixed(2));
         acc.totalStakedUsd += r.totalStakedUsd;
         return acc;
       },
@@ -2436,7 +2444,142 @@ export default function App() {
     };
   }, [deviceNow, statsPeriod, statsOffset, statsPayoutMode, statsShowAllDays, mergedDailyStatsMap]);
 
+  // Trading Week Holiday Stats: Calculates current or most recently completed trading week (Mon-Fri)
+  // especially when the global forex market is on weekend holiday (Saturday & Sunday)
+  const tradingWeekHolidayStats = useMemo(() => {
+    const todayStr = getEgyptDateString(deviceNow);
+    const [ty, tm, td] = todayStr.split('-').map(Number);
+    const nowUtc = new Date(Date.UTC(ty, (tm || 1) - 1, td || 1, 12, 0, 0));
+    const dayOfWeek = nowUtc.getUTCDay(); // 0 = Sun, 1 = Mon, ..., 5 = Fri, 6 = Sat
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+
+    // Find Monday of the trading week:
+    // Sunday (0): Monday was 6 days ago
+    // Saturday (6): Monday was 5 days ago
+    // Weekdays (1-5): Monday is (1 - dayOfWeek) days away
+    const diffToMonday = dayOfWeek === 0 ? -6 : dayOfWeek === 6 ? -5 : (1 - dayOfWeek);
+    const mondayDate = new Date(nowUtc.getTime() + diffToMonday * 86400000);
+    const fridayDate = new Date(mondayDate.getTime() + 4 * 86400000);
+
+    const formatYMD = (dt: Date) => {
+      const y = dt.getUTCFullYear();
+      const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+      const d = String(dt.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    };
+
+    const monStr = formatYMD(mondayDate);
+    const friStr = formatYMD(fridayDate);
+
+    let totalWins = 0;
+    let totalLosses = 0;
+    let daysWithTrades = 0;
+    const winProfitUnit = statsPayoutMode === 'net_100' ? 1.0 : 0.85;
+
+    for (let i = 0; i < 5; i++) {
+      const cur = new Date(mondayDate.getTime() + i * 86400000);
+      const ymd = formatYMD(cur);
+      const rec = mergedDailyStatsMap[ymd];
+      const w = (rec?.directWins || 0) + (rec?.gale1Wins || 0);
+      const l = rec?.losses || 0;
+      if (w > 0 || l > 0) daysWithTrades++;
+      totalWins += w;
+      totalLosses += l;
+    }
+
+    const totalTrades = totalWins + totalLosses;
+    const winRate = totalTrades > 0 ? Math.round((totalWins / totalTrades) * 100) : 0;
+    const netProfitUsd = Number(((totalWins * winProfitUnit) - (totalLosses * 1.0)).toFixed(2));
+
+    return {
+      isWeekend,
+      monStr,
+      friStr,
+      daysWithTrades,
+      totalWins,
+      totalLosses,
+      totalTrades,
+      winRate,
+      netProfitUsd
+    };
+  }, [deviceNow, mergedDailyStatsMap, statsPayoutMode]);
+
+  // Monthly Archive: Pre-calculates archived past months (October 2026, September 2026, etc.)
+  // and allows searching and loading past statistics
+  const archivedMonthsList = useMemo(() => {
+    const todayStr = getEgyptDateString(deviceNow);
+    const [ty, tm, td] = todayStr.split('-').map(Number);
+    const arabicMonths = [
+      'يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو',
+      'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'
+    ];
+    const winProfitUnit = statsPayoutMode === 'net_100' ? 1.0 : 0.85;
+
+    const list = [];
+    // Go through past 12 months (offsets -1, -2, ...)
+    for (let offset = -1; offset >= -12; offset--) {
+      const dt = new Date(Date.UTC(ty, (tm || 1) - 1 + offset, 1, 12, 0, 0));
+      const year = dt.getUTCFullYear();
+      const month = dt.getUTCMonth(); // 0-11
+      const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+      const monthName = arabicMonths[month];
+      const startStr = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+      const endStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(daysInMonth).padStart(2, '0')}`;
+
+      let wins = 0;
+      let losses = 0;
+      let activeDays = 0;
+
+      for (let d = 1; d <= daysInMonth; d++) {
+        const ymd = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        const rec = mergedDailyStatsMap[ymd];
+        const w = (rec?.directWins || 0) + (rec?.gale1Wins || 0);
+        const l = rec?.losses || 0;
+        if (w > 0 || l > 0) activeDays++;
+        wins += w;
+        losses += l;
+      }
+
+      const total = wins + losses;
+      const winRate = total > 0 ? Math.round((wins / total) * 100) : 0;
+      const netProfit = Number(((wins * winProfitUnit) - (losses * 1.0)).toFixed(2));
+
+      list.push({
+        offset,
+        year,
+        month,
+        monthName,
+        monthLabel: `شهر ${monthName} ${year}`,
+        dateRangeLabel: `من ${startStr} إلى ${endStr}`,
+        startStr,
+        endStr,
+        wins,
+        losses,
+        total,
+        winRate,
+        netProfit,
+        activeDays
+      });
+    }
+
+    return list;
+  }, [deviceNow, mergedDailyStatsMap, statsPayoutMode]);
+
+  const filteredArchivedMonths = useMemo(() => {
+    if (!archiveSearchQuery.trim()) return archivedMonthsList;
+    const q = archiveSearchQuery.trim().toLowerCase();
+    return archivedMonthsList.filter(
+      m =>
+        m.monthName.toLowerCase().includes(q) ||
+        String(m.year).includes(q) ||
+        m.monthLabel.toLowerCase().includes(q) ||
+        m.startStr.includes(q) ||
+        m.endStr.includes(q)
+    );
+  }, [archivedMonthsList, archiveSearchQuery]);
+
   // End-of-Month Expected Profit Calculator based on Current Average Daily Performance vs Remaining Trading Days
+  // (All Martingale deductions eliminated — flat fair calculations)
   const monthProjectionData = useMemo(() => {
     const todayStr = getEgyptDateString(deviceNow);
     const [ty, tm, td] = todayStr.split('-').map(Number);
@@ -2464,13 +2607,12 @@ export default function App() {
     ];
     const monthLabel = `${arabicMonths[month]} ${year}`;
 
-    const directWinProfitUnit = statsPayoutMode === 'net_100' ? 1.0 : 0.85;
-    const gale1WinProfitUnit = statsPayoutMode === 'net_100' ? 1.0 : 0.7;
-    const lossCostUnit = 3.0;
+    const winProfitUnit = statsPayoutMode === 'net_100' ? 1.0 : 0.85;
+    const lossCostUnit = 1.0; // Flat 1 unit without Martingale penalty
 
     let elapsedCalendarDays = 0;
     let remainingCalendarDays = 0;
-    let remainingMarketWeekdays = 0; // Mon-Fri (excluding Saturday=6 & Sunday=0, or Friday/Saturday depending on forex close)
+    let remainingMarketWeekdays = 0; // Mon-Fri
     let activeTradingDays = 0;
 
     let currentNetWithGale = 0;
@@ -2500,7 +2642,6 @@ export default function App() {
         elapsedCalendarDays++;
       } else {
         remainingCalendarDays++;
-        // Global Forex market is open Monday(1) through Friday(5)
         if (dow >= 1 && dow <= 5) {
           remainingMarketWeekdays++;
         }
@@ -2513,13 +2654,14 @@ export default function App() {
         lossesSoFar += ls;
         totalTradesSoFar += dayTrades;
 
-        const dayGrossWin = dw * directWinProfitUnit + gw * gale1WinProfitUnit;
+        // Flat trade calculations without Martingale penalty:
+        const dayGrossWin = (dw + gw) * winProfitUnit;
         const dayGrossLoss = ls * lossCostUnit;
         currentGrossWinWithGale += dayGrossWin;
         currentGrossLossWithGale += dayGrossLoss;
         currentNetWithGale += dayGrossWin - dayGrossLoss;
 
-        const dayNoGaleWin = dw * directWinProfitUnit;
+        const dayNoGaleWin = dw * winProfitUnit;
         const dayNoGaleLoss = (gw + ls) * 1.0;
         currentNetNoGale += dayNoGaleWin - dayNoGaleLoss;
       }
@@ -5946,11 +6088,14 @@ export default function App() {
                 <div>
                   <div className="flex items-center gap-2 text-xs text-amber-400 font-semibold mb-1">
                     <Lock className="w-3.5 h-3.5" />
-                    <span>صفحة خاصة للمشرف فقط · سجل الأداء المالي والإحصائي بنظام ورقة A4</span>
+                    <span>صفحة خاصة للمشرف · كشف الأداء المالي والإحصائي للقناة الخاصة VIP بنظام ورقة A4</span>
                   </div>
                   <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                    📊 كشف الإحصائيات اليومية والأسبوعية والشهرية (تداول 1$ أساسي + 2$ مضاعفة)
+                    📊 كشف إحصائيات القناة الخاصة VIP (جلسة التداول الكاملة 09:00 ص - 03:00 م · عائد 0.85$ للربح)
                   </h1>
+                  <p className="text-xs text-slate-400 mt-1">
+                    💡 تحسب الإحصائيات على <strong className="text-amber-300">القناة الخاصة VIP</strong> التي يستمر عملها طوال عدد الساعات المتاحة في الإعدادات (09:00 ص إلى 03:00 م)، وليست ضمن القناة المجانية التي تتوقف مبكراً عند تحقيق الهدف.
+                  </p>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2.5">
@@ -5971,52 +6116,71 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Period Selector (Weekly vs Monthly) + Navigation + Payout Mode */}
+              {/* Period Selector (New Month / Weekly / Historical Archive) + Navigation + Payout Mode */}
               <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
-                {/* 1. Weekly vs Monthly Switch */}
-                <div className="md:col-span-4 flex items-center gap-1.5 p-1 bg-[#0B0F17] border border-slate-800 rounded-lg">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setStatsPeriod('week');
-                      setStatsOffset(0);
-                    }}
-                    className={`flex-1 py-2 px-3 text-xs font-bold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
-                      statsPeriod === 'week'
-                        ? 'bg-amber-400 text-slate-950 shadow-sm'
-                        : 'text-slate-300 hover:text-white'
-                    }`}
-                  >
-                    📅 إحصائيات الأسبوع (7 أيام)
-                  </button>
+                {/* 1. New Month vs Weekly vs Archive Switch */}
+                <div className="md:col-span-5 flex items-center gap-1 p-1 bg-[#0B0F17] border border-slate-800 rounded-lg">
                   <button
                     type="button"
                     onClick={() => {
                       setStatsPeriod('month');
                       setStatsOffset(0);
+                      setIsArchiveView(false);
                     }}
-                    className={`flex-1 py-2 px-3 text-xs font-bold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
-                      statsPeriod === 'month'
+                    className={`flex-1 py-2 px-2.5 text-xs font-bold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                      statsPeriod === 'month' && statsOffset === 0 && !isArchiveView
+                        ? 'bg-emerald-400 text-slate-950 shadow-sm'
+                        : 'text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    🟢 الشهر الجديد (نوفمبر 2026)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStatsPeriod('week');
+                      setStatsOffset(0);
+                      setIsArchiveView(false);
+                    }}
+                    className={`flex-1 py-2 px-2.5 text-xs font-bold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                      statsPeriod === 'week' && !isArchiveView
                         ? 'bg-amber-400 text-slate-950 shadow-sm'
                         : 'text-slate-300 hover:text-white'
                     }`}
                   >
-                    🗓️ إحصائيات الشهر (كشف شهري)
+                    📅 أسبوع التداول (7 أيام)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsArchiveView(prev => !prev)}
+                    className={`py-2 px-3 text-xs font-bold rounded-md transition-colors cursor-pointer whitespace-nowrap ${
+                      isArchiveView || (statsPeriod === 'month' && statsOffset < 0)
+                        ? 'bg-purple-500 text-white shadow-sm'
+                        : 'text-purple-300 hover:text-white bg-purple-950/40 border border-purple-800/40'
+                    }`}
+                  >
+                    🗄️ أرشيف الأشهر
                   </button>
                 </div>
 
                 {/* 2. Period Offset Navigation (Prev / Current / Next) */}
-                <div className="md:col-span-4 flex items-center justify-center gap-2">
+                <div className="md:col-span-3 flex items-center justify-center gap-1.5">
                   <button
                     type="button"
-                    onClick={() => setStatsOffset(prev => prev - 1)}
-                    className="px-3 py-2 text-xs font-semibold bg-[#0B0F17] hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-lg cursor-pointer whitespace-nowrap"
+                    onClick={() => {
+                      setStatsOffset(prev => prev - 1);
+                      setIsArchiveView(false);
+                    }}
+                    className="px-2.5 py-2 text-xs font-semibold bg-[#0B0F17] hover:bg-slate-800 text-slate-200 border border-slate-800 rounded-lg cursor-pointer whitespace-nowrap"
                   >
                     ◀ {statsPeriod === 'week' ? 'الأسبوع السابق' : 'الشهر السابق'}
                   </button>
                   <button
                     type="button"
-                    onClick={() => setStatsOffset(0)}
+                    onClick={() => {
+                      setStatsOffset(0);
+                      setIsArchiveView(false);
+                    }}
                     disabled={statsOffset === 0}
                     className={`px-3 py-2 text-xs font-bold rounded-lg border whitespace-nowrap cursor-pointer ${
                       statsOffset === 0
@@ -6024,15 +6188,18 @@ export default function App() {
                         : 'bg-slate-800 text-white border-slate-700 hover:bg-slate-700'
                     }`}
                   >
-                    {statsPeriod === 'week' ? 'الأسبوع الحالي' : 'الشهر الحالي'}
+                    {statsPeriod === 'week' ? 'الحالي' : 'الشهر الحالي'}
                   </button>
                   <button
                     type="button"
-                    onClick={() => setStatsOffset(prev => Math.min(0, prev + 1))}
+                    onClick={() => {
+                      setStatsOffset(prev => Math.min(0, prev + 1));
+                      setIsArchiveView(false);
+                    }}
                     disabled={statsOffset >= 0}
-                    className="px-3 py-2 text-xs font-semibold bg-[#0B0F17] hover:bg-slate-800 disabled:opacity-40 text-slate-200 border border-slate-800 rounded-lg cursor-pointer whitespace-nowrap"
+                    className="px-2.5 py-2 text-xs font-semibold bg-[#0B0F17] hover:bg-slate-800 disabled:opacity-40 text-slate-200 border border-slate-800 rounded-lg cursor-pointer whitespace-nowrap"
                   >
-                    {statsPeriod === 'week' ? 'الأسبوع التالي' : 'الشهر التالي'} ▶
+                    {statsPeriod === 'week' ? 'التالي' : 'الشهر التالي'} ▶
                   </button>
                 </div>
 
@@ -6043,8 +6210,8 @@ export default function App() {
                     onChange={(e) => setStatsPayoutMode(e.target.value as 'net_100' | 'broker_85')}
                     className="px-3 py-2 text-xs font-semibold bg-[#0B0F17] border border-slate-700 rounded-lg text-slate-200 cursor-pointer"
                   >
-                    <option value="net_100">حساب صافي: ربح +1$ | مضاعفة +1$ | خسارة -3$</option>
-                    <option value="broker_85">عائد كيوتكس 85%: مباشر +0.85$ | مضاعفة +0.70$ | خسارة -3$</option>
+                    <option value="broker_85">حساب صافي الأرباح: ربح +0.85$ (عائد 85%) | خسارة -1.00$</option>
+                    <option value="net_100">حساب كامل: ربح +1.00$ | خسارة -1.00$</option>
                   </select>
 
                   <button
@@ -6052,10 +6219,169 @@ export default function App() {
                     onClick={() => setStatsShowAllDays(prev => !prev)}
                     className="px-3 py-2 text-xs font-semibold bg-[#0B0F17] hover:bg-slate-800 text-slate-300 border border-slate-800 rounded-lg cursor-pointer whitespace-nowrap"
                   >
-                    {statsShowAllDays ? 'عرض أيام التداول فقط' : 'عرض كامل جدول الأيام'}
+                    {statsShowAllDays ? 'أيام التداول فقط' : 'كامل جدول الأيام'}
                   </button>
                 </div>
               </div>
+
+              {/* Historical Month Archive Search & Browser Panel */}
+              {isArchiveView && (
+                <div className="p-4 bg-purple-950/20 border-2 border-purple-500/40 rounded-xl space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-2">
+                      <span className="text-lg">🗄️</span>
+                      <h3 className="text-sm font-extrabold text-purple-200">
+                        أرشيف الأشهر السابقة والبحث في الإحصائيات القديمة
+                      </h3>
+                      <span className="text-xs text-purple-400">
+                        (شهر أكتوبر 2026 تم ترحيله للأرشيف بعد انتهاء الشهر)
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        placeholder="ابحث عن شهر (أكتوبر، 2026، سبتمبر...)"
+                        value={archiveSearchQuery}
+                        onChange={(e) => setArchiveSearchQuery(e.target.value)}
+                        className="px-3 py-1.5 text-xs bg-slate-900 border border-purple-500/50 rounded-lg text-white w-64 placeholder:text-slate-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setIsArchiveView(false)}
+                        className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg cursor-pointer"
+                      >
+                        إغلاق الأرشيف ✕
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Archived Month Cards Grid */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 font-mono-num">
+                    {filteredArchivedMonths.map((m) => {
+                      const isSelected = statsPeriod === 'month' && statsOffset === m.offset;
+                      return (
+                        <div
+                          key={m.offset}
+                          className={`p-3.5 rounded-xl border transition-all ${
+                            isSelected
+                              ? 'bg-purple-900/40 border-purple-400 ring-2 ring-purple-500/50'
+                              : 'bg-slate-900/80 border-slate-800 hover:border-purple-600/50'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                            <span className="text-xs font-extrabold text-white font-sans">
+                              {m.monthLabel}
+                            </span>
+                            <span className="px-2 py-0.5 rounded text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                              مرحّل للأرشيف
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-400 font-sans mt-1">
+                            {m.dateRangeLabel} ({m.activeDays} يوم تداول)
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-1.5 mt-2.5 text-center text-xs">
+                            <div className="p-1.5 bg-slate-950/60 rounded border border-slate-800">
+                              <div className="text-[9px] text-slate-400 font-sans">رابحة</div>
+                              <div className="font-bold text-emerald-400">{m.wins}</div>
+                            </div>
+                            <div className="p-1.5 bg-slate-950/60 rounded border border-slate-800">
+                              <div className="text-[9px] text-slate-400 font-sans">خاسرة</div>
+                              <div className="font-bold text-rose-400">{m.losses}</div>
+                            </div>
+                            <div className="p-1.5 bg-slate-950/60 rounded border border-slate-800">
+                              <div className="text-[9px] text-slate-400 font-sans">صافي الربح</div>
+                              <div className={`font-bold ${m.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {m.netProfit >= 0 ? '+' : '-'}${Math.abs(m.netProfit).toFixed(2)}
+                              </div>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setStatsPeriod('month');
+                              setStatsOffset(m.offset);
+                              setIsArchiveView(false);
+                            }}
+                            className={`w-full mt-3 py-1.5 text-xs font-bold rounded-lg transition-colors cursor-pointer ${
+                              isSelected
+                                ? 'bg-purple-500 text-white'
+                                : 'bg-slate-800 hover:bg-purple-600 hover:text-white text-slate-200'
+                            }`}
+                          >
+                            {isSelected ? '✓ معروض حالياً في الجدول' : '📂 فتح كشف هذا الشهر في جدول A4'}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Weekly Trading Performance Strip (أثناء عطلة البورصة الأسبوعية السبت والأحد) */}
+              <div className="p-3.5 bg-gradient-to-r from-amber-950/40 via-slate-900 to-sky-950/30 border border-amber-500/35 rounded-xl flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="px-2.5 py-1 rounded bg-amber-400 text-slate-950 font-extrabold whitespace-nowrap">
+                    🏖️ ملخص أسبوع التداول المنتهي (مع العطلة الأسبوعية للبورصة)
+                  </span>
+                  <span className="font-mono-num text-slate-200">
+                    أسبوع: <strong className="text-white">{tradingWeekHolidayStats.monStr}</strong> إلى <strong className="text-white">{tradingWeekHolidayStats.friStr}</strong>
+                  </span>
+                  <span className="text-slate-600">|</span>
+                  <span className="font-mono-num text-slate-200">
+                    الصفقات: <strong className="text-emerald-400">{tradingWeekHolidayStats.totalWins} رابحة</strong> / <strong className="text-rose-400">{tradingWeekHolidayStats.totalLosses} خاسرة</strong>
+                  </span>
+                  <span className="text-slate-600">|</span>
+                  <span className="font-mono-num text-slate-200">
+                    نسبة النجاح: <strong className="text-sky-300">{tradingWeekHolidayStats.winRate}%</strong>
+                  </span>
+                  <span className="text-slate-600">|</span>
+                  <span className="font-mono-num text-slate-200">
+                    أرباح الأسبوع:{' '}
+                    <strong className={tradingWeekHolidayStats.netProfitUsd >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                      {tradingWeekHolidayStats.netProfitUsd >= 0 ? '+' : '-'}${Math.abs(tradingWeekHolidayStats.netProfitUsd).toFixed(2)}
+                    </strong>
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                    tradingWeekHolidayStats.isWeekend
+                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                      : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                  }`}>
+                    {tradingWeekHolidayStats.isWeekend ? '🔴 عطلة البورصة الرسمية (السبت والأحد)' : '🟢 البورصة تعمل حالياً'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Information Banner for Month View */}
+              {statsPeriod === 'month' && (
+                <div className="p-3 bg-emerald-950/30 border border-emerald-500/30 rounded-lg flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2 text-emerald-300">
+                    <span className="text-base">🗓️</span>
+                    <span className="font-bold">
+                      {statsOffset === 0 ? 'كشف الشهر الجديد (نوفمبر 2026):' : 'كشف شهري مؤرشف من الأرشيف:'}
+                    </span>
+                    <span>
+                      {statsOffset === 0
+                        ? 'يبدأ الحساب من 1 الشهر (اليوم 2026-11-01) ويكتب ويسجل طوال الشهر حتى 1 ديسمبر دون احتسابه.'
+                        : 'إحصائيات شهر كامل من اليوم الأول حتى اليوم الأول للشهر القادم دون احتسابه.'}
+                    </span>
+                  </div>
+                  {statsOffset < 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setStatsOffset(0)}
+                      className="px-2.5 py-1 text-xs font-bold bg-emerald-400 text-slate-950 rounded cursor-pointer"
+                    >
+                      ↩️ العودة للشهر الجديد الحالي (نوفمبر 2026)
+                    </button>
+                  )}
+                </div>
+              )}
 
               {/* Manual Add / Edit Specific Day Row Form for Admin */}
               <form
@@ -6078,8 +6404,8 @@ export default function App() {
                         const existing = mergedDailyStatsMap[d];
                         setEditStatForm({
                           date: d,
-                          directWins: existing?.directWins ?? 0,
-                          gale1Wins: existing?.gale1Wins ?? 0,
+                          directWins: (existing?.directWins ?? 0) + (existing?.gale1Wins ?? 0),
+                          gale1Wins: 0,
                           losses: existing?.losses ?? 0
                         });
                       }}
@@ -6087,7 +6413,7 @@ export default function App() {
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] text-emerald-400 mb-1">رابحة مباشرة (1$)</label>
+                    <label className="block text-[10px] text-emerald-400 mb-1">الصفقات الرابحة (+0.85$)</label>
                     <input
                       type="number"
                       min={0}
@@ -6099,27 +6425,11 @@ export default function App() {
                           directWins: Math.max(0, Number(e.target.value) || 0)
                         }))
                       }
-                      className="w-20 px-2.5 py-1.5 text-xs bg-slate-900 border border-emerald-500/40 rounded text-white font-mono-num"
+                      className="w-24 px-2.5 py-1.5 text-xs bg-slate-900 border border-emerald-500/40 rounded text-white font-mono-num font-bold"
                     />
                   </div>
                   <div>
-                    <label className="block text-[10px] text-amber-300 mb-1">ربح بالمضاعفة (2$)</label>
-                    <input
-                      type="number"
-                      min={0}
-                      value={editStatForm.gale1Wins}
-                      onChange={(e) =>
-                        setEditStatForm(prev => ({
-                          ...prev,
-                          date: prev.date || getEgyptDateString(deviceNow),
-                          gale1Wins: Math.max(0, Number(e.target.value) || 0)
-                        }))
-                      }
-                      className="w-20 px-2.5 py-1.5 text-xs bg-slate-900 border border-amber-500/40 rounded text-white font-mono-num"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-rose-400 mb-1">خاسرة بالمضاعفة (-3$)</label>
+                    <label className="block text-[10px] text-rose-400 mb-1">الصفقات الخاسرة (-1.00$)</label>
                     <input
                       type="number"
                       min={0}
@@ -6131,7 +6441,7 @@ export default function App() {
                           losses: Math.max(0, Number(e.target.value) || 0)
                         }))
                       }
-                      className="w-20 px-2.5 py-1.5 text-xs bg-slate-900 border border-rose-500/40 rounded text-white font-mono-num"
+                      className="w-24 px-2.5 py-1.5 text-xs bg-slate-900 border border-rose-500/40 rounded text-white font-mono-num font-bold"
                     />
                   </div>
                   <button
@@ -6152,8 +6462,13 @@ export default function App() {
               {/* A4 Sheet Header */}
               <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b-2 border-slate-800 print:border-slate-300">
                 <div>
-                  <div className="text-xs font-bold text-emerald-400 print:text-emerald-700">
-                    نَبض التداول (@ZadNBFX) — التقرير الإحصائي والمالي الرسمي للمشرف (نموذج A4)
+                  <div className="text-xs font-bold text-emerald-400 print:text-emerald-700 flex items-center gap-2">
+                    <span>نَبض التداول (@ZadNBFX) — كشف إحصائيات القناة الخاصة VIP (طوال ساعات عمل الجلسة 09:00 ص - 03:00 م)</span>
+                    {statsOffset < 0 && (
+                      <span className="px-2 py-0.5 text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/30 rounded">
+                        كشف مؤرشف
+                      </span>
+                    )}
                   </div>
                   <h2 className="text-lg sm:text-xl font-bold text-white print:text-slate-900 mt-0.5">
                     {statsPeriodData.periodLabel}
@@ -6162,13 +6477,15 @@ export default function App() {
 
                 <div className="text-left text-xs text-slate-300 print:text-slate-700 space-y-0.5 font-mono-num">
                   <div>
-                    خطة التداول: <strong className="text-white print:text-black">دخول أساسي 1$ + مضاعفة أولى 2$ (إجمالي مخاطرة الصفقة 3$)</strong>
+                    مصدر الإحصائيات: <strong className="text-amber-300 print:text-black">القناة الخاصة VIP (طوال ساعات العمل المتاحة في الإعدادات)</strong>
                   </div>
                   <div>
-                    معادلة الاحتساب:{' '}
-                    {statsPayoutMode === 'net_100'
-                      ? 'ربح مباشر (+1$) | ربح مضاعفة (+1$) | خسارة بالمضاعفة (-3$)'
-                      : 'ربح مباشر (+0.85$) | ربح مضاعفة (+0.70$) | خسارة بالمضاعفة (-3.00$)'}
+                    معادلة صافي الربح:{' '}
+                    <strong className="text-emerald-400 print:text-black">
+                      {statsPayoutMode === 'broker_85'
+                        ? 'ربح الصفقة (+0.85$ لكل دولار رابح) | خسارة الصفقة (-1.00$)'
+                        : 'ربح الصفقة (+1.00$) | خسارة الصفقة (-1.00$)'}
+                    </strong>
                   </div>
                 </div>
               </div>
@@ -6180,11 +6497,11 @@ export default function App() {
                     📋 ملخص ختام تداول اليوم ({endOfDayReportData.todayEgypt} — الساعة {endOfDayReportData.endHourLabel})
                   </span>
                   <span className="font-mono-num text-slate-200 print:text-slate-900">
-                    بدون مضاعفات: <strong className="text-emerald-400 print:text-emerald-700">{endOfDayReportData.directWins}✅</strong> / <strong className="text-rose-400 print:text-rose-700">{endOfDayReportData.firstCandleLossesNoGale}❌</strong> (<strong className="text-sky-300 print:text-sky-800">{endOfDayReportData.winRateNoGale}%</strong>)
+                    مباشر: <strong className="text-emerald-400 print:text-emerald-700">{endOfDayReportData.directWins}✅</strong> / <strong className="text-rose-400 print:text-rose-700">{endOfDayReportData.firstCandleLossesNoGale}❌</strong> (<strong className="text-sky-300 print:text-sky-800">{endOfDayReportData.winRateNoGale}%</strong>)
                   </span>
                   <span className="text-slate-600">|</span>
                   <span className="font-mono-num text-slate-200 print:text-slate-900">
-                    مع مضاعفة: <strong className="text-emerald-400 print:text-emerald-700">{endOfDayReportData.totalWinsWithGale}✅</strong> / <strong className="text-rose-400 print:text-rose-700">{endOfDayReportData.lossesWithGale}❌</strong> (<strong className="text-amber-300 print:text-amber-800">{endOfDayReportData.winRateWithGale}%</strong>)
+                    إجمالي الرابح: <strong className="text-emerald-400 print:text-emerald-700">{endOfDayReportData.totalWinsWithGale}✅</strong> / <strong className="text-rose-400 print:text-rose-700">{endOfDayReportData.lossesWithGale}❌</strong> (<strong className="text-amber-300 print:text-amber-800">{endOfDayReportData.winRateWithGale}%</strong>)
                   </span>
                   <span className="text-slate-600">|</span>
                   <span className="font-mono-num text-slate-200 print:text-slate-900">
@@ -6192,15 +6509,6 @@ export default function App() {
                     <strong className="text-emerald-400 print:text-emerald-700">
                       {endOfDayReportData.bestWinningPair
                         ? `${endOfDayReportData.bestWinningPair.pair} (${endOfDayReportData.bestWinningPair.totalWins}✅ · ${endOfDayReportData.bestWinningPair.winRate}%)`
-                        : '—'}
-                    </strong>
-                  </span>
-                  <span className="text-slate-600">|</span>
-                  <span className="font-mono-num text-slate-200 print:text-slate-900">
-                    🎯 الأكثر اختياراً:{' '}
-                    <strong className="text-amber-300 print:text-amber-800">
-                      {endOfDayReportData.mostSelectedPair
-                        ? `${endOfDayReportData.mostSelectedPair.pair} (${endOfDayReportData.mostSelectedPair.total} صفقات)`
                         : '—'}
                     </strong>
                   </span>
@@ -6216,33 +6524,24 @@ export default function App() {
                 </button>
               </div>
 
-              {/* A4 Single-Line-Per-Day Table */}
+              {/* A4 Single-Line-Per-Day Table (Strictly 7 pristine columns) */}
               <div className="overflow-x-auto">
                 <table className="w-full text-right border-collapse font-mono-num">
                   <thead>
-                    <tr className="bg-slate-900 print:bg-slate-100 border-y-2 border-slate-700 print:border-slate-400 text-[11px] sm:text-xs font-bold text-slate-200 print:text-slate-900 whitespace-nowrap">
+                    <tr className="bg-slate-900 print:bg-slate-100 border-y-2 border-slate-700 print:border-slate-400 text-xs font-bold text-slate-200 print:text-slate-900 whitespace-nowrap">
                       <th className="py-2.5 px-3 border-l border-slate-800 print:border-slate-300">التاريخ اليومي</th>
                       <th className="py-2.5 px-3 border-l border-slate-800 print:border-slate-300">اليوم</th>
                       <th className="py-2.5 px-3 border-l border-slate-800 print:border-slate-300 text-center text-emerald-400 print:text-emerald-700">
-                        الصفقات الرابحة (1$)
-                      </th>
-                      <th className="py-2.5 px-3 border-l border-slate-800 print:border-slate-300 text-center text-amber-300 print:text-amber-700">
-                        الربح بالمضاعفة (2$)
+                        الصفقات الرابحة (+0.85$)
                       </th>
                       <th className="py-2.5 px-3 border-l border-slate-800 print:border-slate-300 text-center text-rose-400 print:text-rose-700">
-                        الخاسرة بالمضاعفة (1$+2$)
+                        الصفقات الخاسرة (-1.00$)
                       </th>
                       <th className="py-2.5 px-3 border-l border-slate-800 print:border-slate-300 text-center">
-                        نسبة الربح اليومي
+                        نسبة النجاح %
                       </th>
-                      <th className="py-2.5 px-3 border-l border-slate-800 print:border-slate-300 text-center">
-                        تفصيل تداول اليوم (1$ / 2$)
-                      </th>
-                      <th className="py-2.5 px-3 border-l border-slate-800 print:border-slate-300 text-center">
-                        النتيجة بالمضاعفة (1$ + 2$)
-                      </th>
-                      <th className="py-2.5 px-3 text-center text-sky-300 print:text-sky-800">
-                        النتيجة بدون مضاعفة (1$ ثابت)
+                      <th className="py-2.5 px-3 text-center text-emerald-400 print:text-emerald-800">
+                        صافي الأرباح (0.85$)
                       </th>
                       <th className="py-2.5 px-2 text-center print:hidden">تعديل</th>
                     </tr>
@@ -6274,7 +6573,7 @@ export default function App() {
                             {row.dayName}
                           </td>
 
-                          {/* 3. Direct Wins ($1) */}
+                          {/* 3. Winning Trades (1$) */}
                           <td className="py-2 px-3 border-l border-slate-800/80 print:border-slate-300 text-center">
                             {isEditing ? (
                               <input
@@ -6287,38 +6586,16 @@ export default function App() {
                                     directWins: Math.max(0, Number(e.target.value) || 0)
                                   }))
                                 }
-                                className="w-16 px-1.5 py-0.5 text-center bg-slate-900 border border-emerald-500 rounded text-white text-xs"
+                                className="w-16 px-1.5 py-0.5 text-center bg-slate-900 border border-emerald-500 rounded text-white text-xs font-mono-num font-bold"
                               />
                             ) : (
-                              <span className="font-bold text-emerald-400 print:text-emerald-700">
-                                {row.directWins}
+                              <span className="font-extrabold text-emerald-400 print:text-emerald-700">
+                                {row.totalWins}
                               </span>
                             )}
                           </td>
 
-                          {/* 4. Wins with 1st Martingale ($2) */}
-                          <td className="py-2 px-3 border-l border-slate-800/80 print:border-slate-300 text-center">
-                            {isEditing ? (
-                              <input
-                                type="number"
-                                min={0}
-                                value={editStatForm.gale1Wins}
-                                onChange={(e) =>
-                                  setEditStatForm(prev => ({
-                                    ...prev,
-                                    gale1Wins: Math.max(0, Number(e.target.value) || 0)
-                                  }))
-                                }
-                                className="w-16 px-1.5 py-0.5 text-center bg-slate-900 border border-amber-500 rounded text-white text-xs"
-                              />
-                            ) : (
-                              <span className="font-bold text-amber-300 print:text-amber-700">
-                                {row.gale1Wins}
-                              </span>
-                            )}
-                          </td>
-
-                          {/* 5. Losses with Martingale (-$3) */}
+                          {/* 4. Losing Trades (1$) */}
                           <td className="py-2 px-3 border-l border-slate-800/80 print:border-slate-300 text-center">
                             {isEditing ? (
                               <input
@@ -6331,16 +6608,16 @@ export default function App() {
                                     losses: Math.max(0, Number(e.target.value) || 0)
                                   }))
                                 }
-                                className="w-16 px-1.5 py-0.5 text-center bg-slate-900 border border-rose-500 rounded text-white text-xs"
+                                className="w-16 px-1.5 py-0.5 text-center bg-slate-900 border border-rose-500 rounded text-white text-xs font-mono-num font-bold"
                               />
                             ) : (
-                              <span className="font-bold text-rose-400 print:text-rose-700">
+                              <span className="font-extrabold text-rose-400 print:text-rose-700">
                                 {row.losses}
                               </span>
                             )}
                           </td>
 
-                          {/* 6. Daily Win Rate % */}
+                          {/* 5. Daily Win Rate % */}
                           <td className="py-2 px-3 border-l border-slate-800/80 print:border-slate-300 text-center">
                             {row.totalTrades > 0 ? (
                               <span
@@ -6362,65 +6639,26 @@ export default function App() {
                             )}
                           </td>
 
-                          {/* 7. Daily $1 + $2 Martingale Breakdown */}
-                          <td className="py-2 px-3 border-l border-slate-800/80 print:border-slate-300 text-center text-[11px] text-slate-300 print:text-slate-700">
-                            {row.totalTrades > 0 ? (
-                              <span>
-                                ربح: <strong className="text-emerald-400 print:text-emerald-700">+${row.grossWinUsd.toFixed(2)}</strong>
-                                {' · '}
-                                خسارة: <strong className="text-rose-400 print:text-rose-700">-${row.grossLossUsd.toFixed(2)}</strong>
-                              </span>
-                            ) : (
-                              <span className="text-slate-500">لا يوجد تداول</span>
-                            )}
-                          </td>
-
-                          {/* 8. Net Daily Profit / Loss WITH Martingale ($1 + $2) */}
-                          <td className="py-2 px-3 border-l border-slate-800/80 print:border-slate-300 text-center">
+                          {/* 6. Net Profit */}
+                          <td className="py-2 px-3 text-center bg-emerald-950/15 print:bg-emerald-50/60 font-bold">
                             {row.totalTrades === 0 ? (
                               <span className="text-slate-500 font-normal">$0.00</span>
                             ) : row.netProfitUsd > 0 ? (
-                              <span className="font-bold text-emerald-400 print:text-emerald-700">
-                                ربح: +${row.netProfitUsd.toFixed(2)}
+                              <span className="text-emerald-400 print:text-emerald-700 font-extrabold">
+                                +${row.netProfitUsd.toFixed(2)}
                               </span>
                             ) : row.netProfitUsd < 0 ? (
-                              <span className="font-bold text-rose-400 print:text-rose-700">
-                                خسارة: -${Math.abs(row.netProfitUsd).toFixed(2)}
+                              <span className="text-rose-400 print:text-rose-700 font-extrabold">
+                                -${Math.abs(row.netProfitUsd).toFixed(2)}
                               </span>
                             ) : (
-                              <span className="font-bold text-amber-300 print:text-amber-700">
-                                تعادل: $0.00
+                              <span className="text-amber-300 print:text-amber-700">
+                                $0.00
                               </span>
                             )}
                           </td>
 
-                          {/* 9. Net Daily Profit / Loss WITHOUT Martingale ($1 Flat Only) */}
-                          <td className="py-2 px-3 text-center bg-sky-950/15 print:bg-sky-50/60">
-                            {row.totalTrades === 0 ? (
-                              <span className="text-slate-500 font-normal">$0.00</span>
-                            ) : (
-                              <div className="flex flex-col items-center leading-tight">
-                                {row.noGaleNetProfitUsd > 0 ? (
-                                  <span className="font-bold text-emerald-400 print:text-emerald-700">
-                                    ربح صافي: +${row.noGaleNetProfitUsd.toFixed(2)}
-                                  </span>
-                                ) : row.noGaleNetProfitUsd < 0 ? (
-                                  <span className="font-bold text-rose-400 print:text-rose-700">
-                                    خسارة: -${Math.abs(row.noGaleNetProfitUsd).toFixed(2)}
-                                  </span>
-                                ) : (
-                                  <span className="font-bold text-amber-300 print:text-amber-700">
-                                    تعادل: $0.00
-                                  </span>
-                                )}
-                                <span className="text-[10px] text-slate-400 print:text-slate-600 font-normal mt-0.5">
-                                  ({row.directWins} ربح / {row.firstCandleLosses} خسارة · {row.directWinRate}%)
-                                </span>
-                              </div>
-                            )}
-                          </td>
-
-                          {/* 9. Quick Inline Edit Action (Hidden on Print) */}
+                          {/* 7. Quick Inline Edit Action (Hidden on Print) */}
                           <td className="py-2 px-2 text-center print:hidden">
                             {isEditing ? (
                               <div className="flex items-center justify-center gap-1">
@@ -6446,8 +6684,8 @@ export default function App() {
                                   setEditingStatDate(row.date);
                                   setEditStatForm({
                                     date: row.date,
-                                    directWins: row.directWins,
-                                    gale1Wins: row.gale1Wins,
+                                    directWins: row.totalWins,
+                                    gale1Wins: 0,
                                     losses: row.losses
                                   });
                                 }}
@@ -6467,13 +6705,10 @@ export default function App() {
                   <tfoot>
                     <tr className="bg-slate-900 print:bg-slate-200 border-t-2 border-slate-600 print:border-slate-500 text-xs sm:text-sm font-bold text-white print:text-slate-950 whitespace-nowrap">
                       <td className="py-3 px-3 border-l border-slate-800 print:border-slate-400" colSpan={2}>
-                        إجمالي {statsPeriod === 'week' ? 'الأسبوع' : 'الشهر'} ({statsPeriodData.rows.length} يوم)
+                        إجمالي {statsPeriod === 'week' ? 'الأسبوع' : statsOffset < 0 ? 'الشهر المؤرشف' : 'الشهر الحالي'} ({statsPeriodData.rows.length} يوم)
                       </td>
                       <td className="py-3 px-3 border-l border-slate-800 print:border-slate-400 text-center text-emerald-400 print:text-emerald-800">
-                        {statsPeriodData.summary.directWins} صفقة
-                      </td>
-                      <td className="py-3 px-3 border-l border-slate-800 print:border-slate-400 text-center text-amber-300 print:text-amber-800">
-                        {statsPeriodData.summary.gale1Wins} صفقة
+                        {statsPeriodData.summary.totalWins} صفقة
                       </td>
                       <td className="py-3 px-3 border-l border-slate-800 print:border-slate-400 text-center text-rose-400 print:text-rose-800">
                         {statsPeriodData.summary.losses} صفقة
@@ -6483,32 +6718,14 @@ export default function App() {
                           ? `${statsPeriodData.summary.winRate}% (${statsPeriodData.summary.totalWins}/${statsPeriodData.summary.totalTrades})`
                           : '—'}
                       </td>
-                      <td className="py-3 px-3 border-l border-slate-800 print:border-slate-400 text-center text-xs">
-                        <span>
-                          إجمالي الربح: <span className="text-emerald-400 print:text-emerald-800">+${statsPeriodData.summary.grossWinUsd.toFixed(2)}</span>
-                          {' | '}
-                          الخسارة: <span className="text-rose-400 print:text-rose-800">-${statsPeriodData.summary.grossLossUsd.toFixed(2)}</span>
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 border-l border-slate-800 print:border-slate-400 text-center text-sm">
+                      <td className="py-3 px-3 text-center text-sm font-extrabold bg-emerald-950/25 print:bg-emerald-100">
                         {statsPeriodData.summary.netProfitUsd >= 0 ? (
                           <span className="text-emerald-400 print:text-emerald-800">
-                            بالمضاعفة: +${statsPeriodData.summary.netProfitUsd.toFixed(2)}
+                            صافي الأرباح: +${statsPeriodData.summary.netProfitUsd.toFixed(2)}
                           </span>
                         ) : (
                           <span className="text-rose-400 print:text-rose-800">
-                            بالمضاعفة: -${Math.abs(statsPeriodData.summary.netProfitUsd).toFixed(2)}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-3 px-3 text-center text-sm bg-sky-950/25 print:bg-sky-100">
-                        {statsPeriodData.summary.noGaleNetProfitUsd >= 0 ? (
-                          <span className="text-emerald-400 print:text-emerald-800">
-                            بدون مضاعفة: +${statsPeriodData.summary.noGaleNetProfitUsd.toFixed(2)}
-                          </span>
-                        ) : (
-                          <span className="text-rose-400 print:text-rose-800">
-                            بدون مضاعفة: -${Math.abs(statsPeriodData.summary.noGaleNetProfitUsd).toFixed(2)}
+                            صافي الخسائر: -${Math.abs(statsPeriodData.summary.netProfitUsd).toFixed(2)}
                           </span>
                         )}
                       </td>
@@ -6786,17 +7003,17 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Detailed Side-by-Side End-of-Month Projection Cards (With Martingale vs Without Martingale) */}
+                {/* Detailed Side-by-Side End-of-Month Projection Cards (Total Wins vs Direct Wins) */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {/* Card A: End-of-Month Projection WITH 1-Step Martingale ($1 + $2) */}
+                  {/* Card A: End-of-Month Projection Based on Total Wins (Direct + Gale1) */}
                   <div className="p-4 bg-slate-900/80 print:bg-slate-50 border border-slate-800 print:border-slate-300 rounded-xl space-y-3">
                     <div className="flex items-center justify-between border-b border-slate-800 print:border-slate-300 pb-2.5">
                       <div>
                         <span className="text-xs font-extrabold text-amber-300 print:text-amber-800">
-                          📊 السيناريو الأول: التوقع الشهري بالمضاعفة (${monthProjectionData.stakeMultiplier} أساسي + ${monthProjectionData.stakeMultiplier * 2} مضاعفة)
+                          📊 السيناريو الأول: التوقع الشهري الشامل (إجمالي الصفقات الرابحة بـ ${monthProjectionData.stakeMultiplier} ثابت)
                         </span>
                         <p className="text-[11px] text-slate-400 print:text-slate-600 mt-0.5">
-                          الربح المحقق حتى الآن + (متوسط اليوم × {monthProjectionData.effectiveRemainingDays} يوم متبقي)
+                          الربح المحقق حتى الآن + (متوسط اليوم × {monthProjectionData.effectiveRemainingDays} يوم متبقي) بدون أي خصم للمضاعفات
                         </p>
                       </div>
                       <span
@@ -6862,15 +7079,15 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Card B: End-of-Month Projection WITHOUT Martingale ($1 Flat Only) */}
+                  {/* Card B: End-of-Month Projection with Direct Wins Only */}
                   <div className="p-4 bg-sky-950/20 print:bg-sky-50 border border-sky-500/30 print:border-sky-300 rounded-xl space-y-3">
                     <div className="flex items-center justify-between border-b border-slate-800 print:border-slate-300 pb-2.5">
                       <div>
                         <span className="text-xs font-extrabold text-sky-300 print:text-sky-800">
-                          🛡️ السيناريو الثاني: التوقع الشهري بدون مضاعفة (${monthProjectionData.stakeMultiplier} ثابت فقط)
+                          🛡️ السيناريو الثاني: التوقع بالصفقات المباشرة فقط (${monthProjectionData.stakeMultiplier} ثابت)
                         </span>
                         <p className="text-[11px] text-slate-400 print:text-slate-600 mt-0.5">
-                          دخول مباشر بدون تعويض مضاعفة (الخسارة تتوقف عند ${monthProjectionData.stakeMultiplier} فقط بدلاً من ${monthProjectionData.stakeMultiplier * 3})
+                          دخول مباشر 1$ دون احتساب تعويض الشمعة الثانية
                         </p>
                       </div>
                       <span

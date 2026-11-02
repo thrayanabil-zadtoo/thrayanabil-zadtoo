@@ -34,6 +34,11 @@ const FIREBASE_CONFIG_FILE = path.join(process.cwd(), 'firebase-applet-config.js
 
 setLogLevel('silent');
 
+export const DEFAULT_FREE_BOT_TOKEN = '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U';
+export const DEFAULT_FREE_CHAT_ID = '@ZadNBFX';
+export const DEFAULT_VIP_BOT_TOKEN = '8814918920:AAGeXmZrTy03s9gozdDAOj3hkIijHm9yJHM';
+export const DEFAULT_VIP_CHAT_ID = '-1004323890544';
+
 let serverFirestoreDb: ReturnType<typeof initializeFirestore> | null = null;
 try {
   if (fs.existsSync(FIREBASE_CONFIG_FILE)) {
@@ -143,6 +148,7 @@ export interface AutoPilotConfig {
   warmupMinutes?: number; // Warmup and deep scanning delay before sending first signal (10 minutes)
   freeBotDailyTargetReached?: boolean; // Whether Bot 1 (Free channel) has hit its 3:1 win/loss target today
   freeBotCelebrationSentDate?: string; // Cairo date (YYYY-MM-DD) when celebration was sent to Free channel
+  freeBotStoppedForToday?: boolean; // Hard-lock latch: When true, Free Bot is completely stopped for the rest of today
   // Bot 1: Free Channel Bot (Closes only upon achieving 3 wins:1 loss ratio or 3 wins with 0 losses)
   freeBotEnabled?: boolean;
   botToken: string;
@@ -322,6 +328,7 @@ const defaultAutoPilot: AutoPilotConfig = {
   warmupMinutes: 10,
   freeBotDailyTargetReached: false,
   freeBotCelebrationSentDate: '',
+  freeBotStoppedForToday: false,
   freeBotEnabled: true,
   botToken: '',
   chatId: '@ZadNBFX',
@@ -504,6 +511,9 @@ function enforceDailySignalReset(): boolean {
   if (autoPilot.lastResetEgyptDate !== todayEgypt) {
     autoPilot.lastResetEgyptDate = todayEgypt;
     autoPilot.totalAutoSent = signalsStore.filter(s => s.autoSent).length;
+    autoPilot.freeBotDailyTargetReached = false;
+    autoPilot.freeBotCelebrationSentDate = '';
+    autoPilot.freeBotStoppedForToday = false;
     changed = true;
   }
 
@@ -597,14 +607,27 @@ function getFreeBotTargetStatus(): {
   const winRate = totalCompleted > 0 ? Math.round((wins / totalCompleted) * 100) : 0;
 
   // Target Condition:
+  // Latch Check: If celebration was sent today, or target was reached today, or bot was stopped today:
+  // It remains PERMANENTLY REACHED/STOPPED for the entire day and CANNOT un-reach even if older/newer stats fluctuate!
+  const isAlreadyStoppedToday =
+    autoPilot.freeBotCelebrationSentDate === todayEgypt ||
+    autoPilot.freeBotDailyTargetReached === true ||
+    Boolean(autoPilot.freeBotStoppedForToday);
+
   // Requires at least 3 completed trades and reaching a win rate between 70% and 75% or higher (e.g. 3/3=100%, 3/4=75%, 4/5=80%, etc.)
-  // When this target (70% - 75%+) is reached, immediately close signals for the day!
-  const isTargetReached = totalCompleted >= 3 && winRate >= 70;
+  // When this target (70% - 75%+) is reached, immediately lock shutdown of signals for today!
+  const isTargetReached = isAlreadyStoppedToday || (totalCompleted >= 3 && winRate >= 70);
+
+  if (isTargetReached && (!autoPilot.freeBotDailyTargetReached || !autoPilot.freeBotStoppedForToday)) {
+    autoPilot.freeBotDailyTargetReached = true;
+    autoPilot.freeBotStoppedForToday = true;
+  }
+
   const currentEgyptH = getCurrentEgyptHour();
   const isSessionClosed = currentEgyptH >= 15;
 
   const statusDescription = isTargetReached
-    ? `تم تحقيق نسبة الأرباح المستهدفة بنجاح (${winRate}% - ${wins} ربح / ${losses} خسارة) — تم فوراً إيقاف بث القناة العامة لليوم وإرسال النتيجة والمباركة`
+    ? `تم تحقيق نسبة الأرباح المستهدفة بنجاح (${winRate}% - ${wins} ربح / ${losses} خسارة) — تم إيقاف بث القناة العامة نهائياً لليوم بعد إرسال التقرير والمباركة 🎯🛑`
     : isSessionClosed
     ? `انتهت جلسة اليوم الرسمية (03:00 عصراً) — تم إيقاف البوت وإرسال التقرير اليومي النهائي`
     : currentEgyptH < 9
@@ -687,6 +710,7 @@ async function checkAndSendFreeBotTargetCelebration(): Promise<boolean> {
     if (res.ok) {
       autoPilot.freeBotCelebrationSentDate = todayEgypt;
       autoPilot.freeBotDailyTargetReached = true;
+      autoPilot.freeBotStoppedForToday = true;
       await saveState();
       return true;
     }
@@ -729,6 +753,14 @@ function isSignalWithinEgyptTradingHours(dateObj: Date): boolean {
  */
 function isFreeBotActiveNow(cfg: AutoPilotConfig): boolean {
   if (cfg.freeBotEnabled === false) return false;
+  const todayEgypt = getCurrentEgyptDateString(new Date());
+  if (
+    cfg.freeBotCelebrationSentDate === todayEgypt ||
+    cfg.freeBotDailyTargetReached === true ||
+    Boolean(cfg.freeBotStoppedForToday)
+  ) {
+    return false;
+  }
   const freeStatus = getFreeBotTargetStatus();
   if (freeStatus.isTargetReached) return false;
   // Trading starts at 09:00 AM Cairo Time and closes at 03:00 PM (15:00)
@@ -916,6 +948,16 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       ...defaultAutoPilot,
       ...autoPilot,
       ...parsed.autopilot,
+      freeBotDailyTargetReached:
+        typeof parsed.autopilot.freeBotDailyTargetReached === 'boolean'
+          ? parsed.autopilot.freeBotDailyTargetReached
+          : Boolean(autoPilot.freeBotDailyTargetReached),
+      freeBotCelebrationSentDate:
+        parsed.autopilot.freeBotCelebrationSentDate || autoPilot.freeBotCelebrationSentDate || '',
+      freeBotStoppedForToday:
+        typeof parsed.autopilot.freeBotStoppedForToday === 'boolean'
+          ? parsed.autopilot.freeBotStoppedForToday
+          : Boolean(autoPilot.freeBotStoppedForToday),
       quotexReferralLink: resolvedQxLink,
       botToken: parsed.autopilot.botToken || autoPilot.botToken,
       chatId: parsed.autopilot.chatId || autoPilot.chatId,
@@ -933,8 +975,8 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       vipWinImageUrl: parsed.autopilot.vipWinImageUrl !== undefined ? parsed.autopilot.vipWinImageUrl : (autoPilot.vipWinImageUrl || ''),
       vipWinGale1ImageUrl: parsed.autopilot.vipWinGale1ImageUrl !== undefined ? parsed.autopilot.vipWinGale1ImageUrl : (autoPilot.vipWinGale1ImageUrl || ''),
       vipLossImageUrl: parsed.autopilot.vipLossImageUrl !== undefined ? parsed.autopilot.vipLossImageUrl : (autoPilot.vipLossImageUrl || ''),
-      freeStartHourEgypt: Number(parsed.autopilot.freeStartHourEgypt ?? autoPilot.freeStartHourEgypt ?? 10),
-      freeEndHourEgypt: Number(parsed.autopilot.freeEndHourEgypt ?? autoPilot.freeEndHourEgypt ?? 18),
+      freeStartHourEgypt: Number(parsed.autopilot.freeStartHourEgypt ?? autoPilot.freeStartHourEgypt ?? 9),
+      freeEndHourEgypt: Number(parsed.autopilot.freeEndHourEgypt ?? autoPilot.freeEndHourEgypt ?? 15),
       oneGaleEnabled:
         typeof parsed.autopilot.oneGaleEnabled === 'boolean'
           ? parsed.autopilot.oneGaleEnabled
@@ -964,16 +1006,16 @@ function applyParsedState(parsed: Partial<PersistedState>) {
     };
   }
   if (parsed.forexNews && Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0) {
-    const savedMap = new Map(parsed.forexNews.map(n => [n.id, n]));
-    forexNewsStore = INITIAL_WEEKLY_FOREX_NEWS.map(canonical => {
-      const saved = savedMap.get(canonical.id);
-      return saved
-        ? {
-            ...canonical,
-            actual: saved.actual || canonical.actual,
-            isBroadcasted: saved.isBroadcasted ?? canonical.isBroadcasted
-          }
-        : canonical;
+    const canonicalMap = new Map(INITIAL_WEEKLY_FOREX_NEWS.map(n => [n.id, n]));
+    forexNewsStore = parsed.forexNews.map((saved: any) => {
+      const canonical = canonicalMap.get(saved.id);
+      return {
+        ...(canonical || {}),
+        ...saved,
+        recommendation: saved.recommendation
+          ? { ...(canonical?.recommendation || {}), ...saved.recommendation }
+          : (canonical?.recommendation || undefined)
+      };
     });
   } else {
     forexNewsStore = [...INITIAL_WEEKLY_FOREX_NEWS];
@@ -2906,12 +2948,22 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
   let vipTelegramMessageId: number | undefined;
   let telegramError: string | undefined;
 
-  // 1. Check Free Bot: Send if Free Bot is enabled, credentials exist, AND (it's a manual trigger OR (not reached 70%-75% target yet AND Cairo time between 09:00 AM and 03:00 PM))
+  // 1. Check Free Bot: Hard Stop if target reached (70%-75%+ or 3 wins) / celebration sent / outside 09:00 - 15:00
   const freeTargetStatus = getFreeBotTargetStatus();
   const cairoH = getCurrentEgyptHour();
+  const todayEgyptStr = getCurrentEgyptDateString(new Date());
+  const isFreeBotStoppedForToday =
+    autoPilot.freeBotCelebrationSentDate === todayEgyptStr ||
+    autoPilot.freeBotDailyTargetReached === true ||
+    autoPilot.freeBotStoppedForToday === true ||
+    freeTargetStatus.isTargetReached;
+
+  // Free Bot is strictly STOPPED once target is achieved / celebration sent today / outside 09:00 - 15:00
   const canSendToFreeBot =
     autoPilot.freeBotEnabled !== false &&
-    (!isAuto || (!freeTargetStatus.isTargetReached && cairoH >= 9 && cairoH < 15));
+    !isFreeBotStoppedForToday &&
+    cairoH >= 9 &&
+    cairoH < 15;
 
   if (canSendToFreeBot && autoPilot.botToken.trim() && autoPilot.chatId.trim()) {
     try {
@@ -2927,15 +2979,16 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
   }
 
   // 2. Check VIP Bot: Operates strictly 09:00 AM to 03:00 PM Cairo Time regardless of win/loss quota
-  // IMPORTANT: If vipChatId is identical to Free Bot chatId and Free Bot already sent it, DO NOT send twice to the same channel!
-  const activeVipToken = (autoPilot.vipBotToken || autoPilot.botToken).trim();
-  const activeVipChat = (autoPilot.vipChatId || '').trim();
-  const isSameChannelAsFree =
-    canSendToFreeBot &&
-    activeVipChat.toLowerCase() === autoPilot.chatId.trim().toLowerCase() &&
-    Boolean(telegramMessageId);
+  // Fallback to configured VIP token and chat (-1004323890544)
+  const activeVipToken = (autoPilot.vipBotToken || '8814918920:AAGeXmZrTy03s9gozdDAOj3hkIijHm9yJHM').trim();
+  const activeVipChat = (autoPilot.vipChatId || '-1004323890544').trim();
+  const freeChatNormalized = (autoPilot.chatId || '@ZadNBFX').trim().toLowerCase();
+  const isVipChatTargetingFreeChannel = activeVipChat.toLowerCase() === freeChatNormalized;
+  const isSameChannelAsFree = isVipChatTargetingFreeChannel && Boolean(telegramMessageId);
   const canSendToVipBot =
-    autoPilot.vipEnabled && (!isAuto || isVipBotActiveNow());
+    autoPilot.vipEnabled &&
+    (!isAuto || isVipBotActiveNow()) &&
+    (!isVipChatTargetingFreeChannel || canSendToFreeBot);
 
   if (canSendToVipBot && activeVipToken && activeVipChat && !isSameChannelAsFree) {
     try {
@@ -3164,10 +3217,10 @@ function buildEndOfDayFinalReport(customDateStr?: string): EndOfDayFinalReport {
   const winRateNoGale =
     totalCompleted > 0 ? Math.round((directWins / totalCompleted) * 100) : 0;
 
-  // Net Profit on $1 base unit ($1 direct, $2 gale)
-  const netProfitNoGale1Usd = Number((directWins * 1 - firstCandleLossesNoGale * 1).toFixed(2));
+  // Net Profit on $1 base unit with $0.85 broker payout per win, $1.00 loss
+  const netProfitNoGale1Usd = Number((directWins * 0.85 - firstCandleLossesNoGale * 1.0).toFixed(2));
   const netProfitWithGale1Usd = Number(
-    (directWins * 1 + gale1Wins * 1 - lossesWithGale * 3).toFixed(2)
+    ((directWins + gale1Wins) * 0.85 - lossesWithGale * 1.0).toFixed(2)
   );
 
   // Group signals by currency pair to find the Most Profitable Pair & Most Selected Pair
@@ -3200,8 +3253,8 @@ function buildEndOfDayFinalReport(customDateStr?: string): EndOfDayFinalReport {
     const completedPair = p.directWins + p.gale1Wins + p.losses;
     p.totalWins = p.directWins + p.gale1Wins;
     p.winRate = completedPair > 0 ? Math.round((p.totalWins / completedPair) * 100) : 0;
-    p.netUnitsNoGale = p.directWins - (p.gale1Wins + p.losses);
-    p.netUnitsWithGale = p.directWins + p.gale1Wins - p.losses * 3;
+    p.netUnitsNoGale = Number((p.directWins * 0.85 - (p.gale1Wins + p.losses) * 1.0).toFixed(2));
+    p.netUnitsWithGale = Number(((p.directWins + p.gale1Wins) * 0.85 - p.losses * 1.0).toFixed(2));
     return p;
   });
 
@@ -3549,6 +3602,23 @@ async function pollTelegramBotIncomingForwards() {
         }
 
         if (/([A-Z]{3}\/[A-Z]{3}|CALL|PUT|UP|DOWN|M1|\d{1,2}:\d{2})/i.test(msg.text)) {
+          const freeTarget = getFreeBotTargetStatus();
+          const cairoH = getCurrentEgyptHour();
+          const canSendFree =
+            autoPilot.freeBotEnabled !== false &&
+            !freeTarget.isTargetReached &&
+            cairoH >= 9 &&
+            cairoH < 15;
+
+          if (!canSendFree) {
+            await sendTelegramMessage(
+              autoPilot.botToken,
+              String(msg.chat.id),
+              '⚠️ تم إيقاف بث القناة العامة حالياً (محققاً المستهدف اليومي 70% - 75% أو خارج فترة العمل 09:00 ص - 03:00 م).'
+            );
+            continue;
+          }
+
           const parsed = parseRawQuotexSignal(msg.text, appSettings);
           const formattedMessage = formatSignalMessage(parsed, appSettings);
           const tgData = await sendTelegramMessage(autoPilot.botToken, autoPilot.chatId, formattedMessage);
@@ -5083,10 +5153,10 @@ async function startServer() {
       let telegramError: string | undefined;
       let vipTelegramError: string | undefined;
 
-      const freeToken = (autoPilot.botToken || '').trim();
-      const freeChat = (autoPilot.chatId || '@ZadNBFX').trim();
-      const vipToken = (autoPilot.vipBotToken || freeToken).trim();
-      const vipChat = (autoPilot.vipChatId || '-1004323890544').trim();
+      const freeToken = (autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
+      const freeChat = (autoPilot.chatId || DEFAULT_FREE_CHAT_ID).trim();
+      const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
+      const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
 
       if (type === 'signal') {
         const now = new Date();
@@ -5413,21 +5483,53 @@ async function startServer() {
 
   // Update news item (Admin)
   app.put('/api/forex-news/:id', async (req, res) => {
-    const rawId = String(req.params?.id || '');
-    const cleanId = decodeURIComponent(rawId);
-    const idx = forexNewsStore.findIndex(n => n.id === cleanId || n.id === rawId);
-    if (idx === -1) {
-      return res.status(404).json({ ok: false, error: 'الخبر المطلوب تعديله غير موجود في السيرفر' });
+    try {
+      const rawId = String(req.params?.id || '');
+      const cleanId = decodeURIComponent(rawId);
+      const idx = forexNewsStore.findIndex(n => n.id === cleanId || n.id === rawId);
+      const body = req.body || {};
+      let updatedItem: ForexNewsItem;
+
+      if (idx !== -1) {
+        const existing = forexNewsStore[idx];
+        updatedItem = {
+          ...existing,
+          ...body,
+          id: existing.id,
+          updatedAt: new Date().toISOString()
+        };
+        forexNewsStore[idx] = updatedItem;
+      } else {
+        updatedItem = {
+          id: cleanId || `news-${Date.now()}`,
+          title: String(body.title || 'خبر اقتصادي عاجل').trim(),
+          currency: body.currency || 'USD',
+          impact: body.impact || 'high',
+          category: body.category || 'أخبار اقتصادية',
+          eventDate: body.eventDate || new Date().toISOString().split('T')[0],
+          eventDayArabic: body.eventDayArabic || 'اليوم',
+          timeGmt: body.timeGmt || '12:00',
+          timeCairo: body.timeCairo || '14:00',
+          timeMecca: body.timeMecca || '15:00',
+          targetEpochMs: Number(body.targetEpochMs) || Date.now() + 3600000,
+          previous: body.previous || '',
+          forecast: body.forecast || '',
+          actual: body.actual || '',
+          expectedImpact: body.expectedImpact || 'usd_bullish',
+          expectedMoveSummary: String(body.expectedMoveSummary || '').trim(),
+          recommendation: body.recommendation || undefined,
+          isBroadcasted: Boolean(body.isBroadcasted),
+          createdAt: body.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+        forexNewsStore.unshift(updatedItem);
+      }
+
+      await saveState();
+      res.json({ ok: true, item: updatedItem });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err.message || 'خطأ أثناء حفظ وتعديل الخبر' });
     }
-    const existing = forexNewsStore[idx];
-    forexNewsStore[idx] = {
-      ...existing,
-      ...req.body,
-      id: existing.id,
-      updatedAt: new Date().toISOString()
-    };
-    await saveState();
-    res.json({ ok: true, item: forexNewsStore[idx] });
   });
 
   // Delete news item (Admin)
@@ -5450,92 +5552,140 @@ async function startServer() {
   });
 
   // Broadcast news as recommendation to Telegram (Admin)
-  app.post('/api/forex-news/:id/broadcast', async (req, res) => {
-    const rawId = String(req.params?.id || '');
-    const cleanId = decodeURIComponent(rawId);
-    const item = forexNewsStore.find(n => n.id === cleanId || n.id === rawId);
-    if (!item) {
-      return res.status(404).json({ ok: false, error: 'الخبر المطلوب نشره غير موجود في السيرفر' });
-    }
+  app.post(['/api/forex-news/:id/broadcast', '/api/forex-news/broadcast'], async (req, res) => {
+    try {
+      const rawId = String(req.params?.id || req.body?.id || req.body?.item?.id || '');
+      const cleanId = decodeURIComponent(rawId);
+      let item = forexNewsStore.find(n => n.id === cleanId || n.id === rawId);
 
-    const impactBadge = item.impact === 'high' ? '🔴 عالي الأهمية (High Impact) 🔥' : item.impact === 'medium' ? '🟡 متوسط الأهمية' : '🟢 منخفض الأهمية';
-    const impactEmoji = item.expectedImpact.includes('bullish') ? '🟢 صعود متوقع ↗️' : item.expectedImpact.includes('bearish') ? '🔴 هبوط متوقع ↘️' : '⚖️ محايد / تذبذب';
-    const recActionText = item.recommendation?.action === 'BUY' ? '🟢 شراء (BUY) 📈' : '🔴 بيع (SELL) 📉';
-
-    const lines = [
-      `🚨 خبر عاجل وتوصية فوركس حصرية | ${appSettings.channelTitle || 'نَبض التداول'}`,
-      `━━━━━━━━━━━━━━━━━━━━`,
-      `📌 الحدث: ${item.title}`,
-      `⚡ العملة المتأثرة: ${item.currency} | ${impactBadge}`,
-      `📅 الموعد: ${item.eventDayArabic} (${item.eventDate})`,
-      ``,
-      `⏰ توقيت الصدور بدقة:`,
-      `• 🇪🇬 توقيت مصر (القاهرة): ${item.timeCairo}`,
-      `• 🕋 توقيت مكة المكرمة: ${item.timeMecca}`,
-      `• 🌍 توقيت غرينتش (GMT): ${item.timeGmt}`,
-      ``,
-      item.previous ? `📊 القراءة السابقة: ${item.previous}` : '',
-      item.forecast ? `🎯 التوقع التقديري: ${item.forecast}` : '',
-      item.actual ? `⚡ النتيجة الفعلية: ${item.actual}` : '',
-      `🔮 اتجاه الحركة المتوقع: ${impactEmoji}`,
-      item.expectedMoveSummary ? `💡 التحليل وتأثير الخبر: ${item.expectedMoveSummary}` : '',
-      `━━━━━━━━━━━━━━━━━━━━`
-    ].filter(Boolean);
-
-    if (item.recommendation) {
-      lines.push(
-        `🎯 توصية التداول المباشرة:`,
-        `• الزوج الموصى به: ${item.recommendation.pair}`,
-        `• القرار: ${recActionText}`,
-        item.recommendation.entryStrategy ? `• الاستراتيجية: ${item.recommendation.entryStrategy}` : ''
-      );
-    }
-
-    lines.push(
-      `━━━━━━━━━━━━━━━━━━━━`,
-      `📢 القناة الرسمية: @ZadNBFX`,
-      `${appSettings.channelSignature || '💡 إدارة رأس المال سر النجاح — تداول بذكاء'}`
-    );
-
-    const messageText = lines.filter(Boolean).join('\n');
-
-    let sentFree = false;
-    let sentVip = false;
-    let error: string | undefined;
-
-    // Send to Free Bot
-    if (autoPilot.botToken.trim() && autoPilot.chatId.trim()) {
-      try {
-        const tgRes = await sendTelegramMessage(autoPilot.botToken, autoPilot.chatId, messageText);
-        if (tgRes.ok) sentFree = true;
-        else error = tgRes.description;
-      } catch (e: any) {
-        error = e.message;
+      // If item was sent in body (e.g. freshly created or edited on client), prefer or upsert it
+      if (req.body?.item) {
+        item = { ...(item || {}), ...req.body.item };
       }
-    }
 
-    // Send to VIP if enabled
-    const vipToken = (autoPilot.vipBotToken || autoPilot.botToken).trim();
-    const vipChat = (autoPilot.vipChatId || '').trim();
-    if (autoPilot.vipEnabled && vipToken && vipChat && vipChat.toLowerCase() !== autoPilot.chatId.trim().toLowerCase()) {
-      try {
-        const tgVip = await sendTelegramMessage(vipToken, vipChat, messageText);
-        if (tgVip.ok) sentVip = true;
-      } catch (_e) {}
-    }
+      if (!item) {
+        return res.status(404).json({ ok: false, error: 'الخبر المطلوب نشره غير موجود في السيرفر' });
+      }
 
-    if (sentFree || sentVip) {
-      item.isBroadcasted = true;
-      item.broadcastedAt = new Date().toISOString();
-      await saveState();
-    }
+      const impactBadge = item.impact === 'high' ? '🔴 عالي الأهمية (High Impact) 🔥' : item.impact === 'medium' ? '🟡 متوسط الأهمية' : '🟢 منخفض الأهمية';
+      const impactEmoji = item.expectedImpact.includes('bullish') ? '🟢 صعود متوقع ↗️' : item.expectedImpact.includes('bearish') ? '🔴 هبوط متوقع ↘️' : '⚖️ محايد / تذبذب';
+      const recActionText = item.recommendation?.action === 'BUY' ? '🟢 شراء (BUY) 📈' : '🔴 بيع (SELL) 📉';
 
-    res.json({
-      ok: sentFree || sentVip,
-      sentFree,
-      sentVip,
-      error: (sentFree || sentVip) ? undefined : error || 'يرجى التأكد من إدخال توكن البوت ومعرف القناة في إعدادات البوت'
-    });
+      const lines = [
+        `🚨 خبر عاجل وتوصية فوركس حصرية | ${appSettings.channelTitle || 'نَبض التداول'}`,
+        `━━━━━━━━━━━━━━━━━━━━`,
+        `📌 الحدث: ${item.title}`,
+        `⚡ العملة المتأثرة: ${item.currency} | ${impactBadge}`,
+        `📅 الموعد: ${item.eventDayArabic} (${item.eventDate})`,
+        ``,
+        `⏰ توقيت الصدور بدقة:`,
+        `• 🇪🇬 توقيت مصر (القاهرة): ${item.timeCairo}`,
+        `• 🕋 توقيت مكة المكرمة: ${item.timeMecca}`,
+        `• 🌍 توقيت غرينتش (GMT): ${item.timeGmt}`,
+        ``,
+        item.previous ? `📊 القراءة السابقة: ${item.previous}` : '',
+        item.forecast ? `🎯 التوقع التقديري: ${item.forecast}` : '',
+        item.actual ? `⚡ النتيجة الفعلية: ${item.actual}` : '',
+        `🔮 اتجاه الحركة المتوقع: ${impactEmoji}`,
+        item.expectedMoveSummary ? `💡 التحليل وتأثير الخبر: ${item.expectedMoveSummary}` : '',
+        `━━━━━━━━━━━━━━━━━━━━`
+      ].filter(Boolean);
+
+      if (item.recommendation) {
+        lines.push(
+          `🎯 توصية التداول المباشرة:`,
+          `• الزوج الموصى به: ${item.recommendation.pair}`,
+          `• القرار: ${recActionText}`,
+          item.recommendation.entryStrategy ? `• الاستراتيجية: ${item.recommendation.entryStrategy}` : ''
+        );
+      }
+
+      lines.push(
+        `━━━━━━━━━━━━━━━━━━━━`,
+        `📢 القناة العامة: @ZadNBFX`,
+        `👑 قناة VIP الخاصة: متاح الانضمام عبر الرابط الرسمي`,
+        `${appSettings.channelSignature || '💡 إدارة رأس المال سر النجاح — تداول بذكاء'}`
+      );
+
+      const messageText = lines.filter(Boolean).join('\n');
+
+      const targetBots = req.body?.targetBots || { freeBot: true, vipBot: true };
+      const sendToFree = targetBots.freeBot !== false;
+      const sendToVip = targetBots.vipBot !== false;
+
+      const freeToken = (req.body?.freeToken || autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
+      const freeChat = (req.body?.freeChatId || autoPilot.chatId || DEFAULT_FREE_CHAT_ID).trim();
+      const vipToken = (req.body?.vipToken || autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
+      const vipChat = (req.body?.vipChatId || autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
+
+      let sentFree = false;
+      let sentVip = false;
+      let freeError: string | undefined;
+      let vipError: string | undefined;
+
+      const dispatchTasks: Promise<void>[] = [];
+
+      // 1. Dispatch to Free Bot
+      if (sendToFree && freeToken && freeChat) {
+        dispatchTasks.push(
+          sendTelegramMessage(freeToken, freeChat, messageText)
+            .then(resFree => {
+              if (resFree.ok) sentFree = true;
+              else freeError = resFree.description || 'فشل الإرسال للبوت المجاني';
+            })
+            .catch(err => {
+              freeError = err.message || 'خطأ في الاتصال بالبوت المجاني';
+            })
+        );
+      }
+
+      // 2. Dispatch to VIP Bot
+      if (sendToVip && vipToken && vipChat) {
+        dispatchTasks.push(
+          sendTelegramMessage(vipToken, vipChat, messageText)
+            .then(resVip => {
+              if (resVip.ok) sentVip = true;
+              else vipError = resVip.description || 'فشل الإرسال لبوت VIP';
+            })
+            .catch(err => {
+              vipError = err.message || 'خطأ في الاتصال ببوت VIP';
+            })
+        );
+      }
+
+      if (dispatchTasks.length > 0) {
+        await Promise.allSettled(dispatchTasks);
+      }
+
+      const destinations: string[] = [];
+      if (sentFree) destinations.push('القناة العامة (@ZadNBFX)');
+      if (sentVip) destinations.push('قناة VIP (Abusalim FX VIP)');
+
+      if (sentFree || sentVip) {
+        item.isBroadcasted = true;
+        item.broadcastedAt = new Date().toISOString();
+        const existingIdx = forexNewsStore.findIndex(n => n.id === item!.id);
+        if (existingIdx !== -1) {
+          forexNewsStore[existingIdx] = { ...item };
+        } else {
+          forexNewsStore.unshift({ ...item });
+        }
+        await saveState();
+      }
+
+      return res.json({
+        ok: sentFree || sentVip,
+        sentFree,
+        sentVip,
+        destinations,
+        freeError,
+        vipError,
+        error: (sentFree || sentVip) ? undefined : (freeError || vipError || 'تعذر الإرسال عبر البوتات المحددة')
+      });
+    } catch (err: any) {
+      console.error('[News Broadcast Error]', err);
+      res.status(500).json({ ok: false, error: err.message || 'خطأ أثناء تنفيذ نشر الخبر' });
+    }
   });
 
   // -------------------------------------------------------------

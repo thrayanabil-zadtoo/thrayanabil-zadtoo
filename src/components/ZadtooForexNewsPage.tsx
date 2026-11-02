@@ -277,7 +277,6 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
 
     setBroadcastingId(item.id);
     setBroadcastFeedback(null);
-    setConfirmBroadcastItem(null);
 
     const messageText = buildNewsTelegramMessage(item);
     const freeToken = (localStorage.getItem('tg_bot_token') || DEFAULT_FREE_BOT_TOKEN).trim();
@@ -286,50 +285,84 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
     const vipChat = (localStorage.getItem('tg_vip_chat_id') || DEFAULT_VIP_CHAT_ID).trim();
 
     const destParts: string[] = [];
-    const tasks: Promise<void>[] = [];
     let freeErr: string | undefined;
     let vipErr: string | undefined;
+    let serverOk = false;
 
-    // Direct Client Dispatch to Telegram (Guaranteed on fx.zadtoo.com & incognito)
-    if (sendFree && freeToken && freeChat) {
-      tasks.push(
-        sendTelegramDirect(freeToken, freeChat, messageText)
-          .then(r => {
-            if (r.ok) destParts.push('القناة العامة (@ZadNBFX)');
-            else freeErr = r.description;
-          })
-          .catch(e => {
-            freeErr = e?.message;
-          })
-      );
-    }
-
-    if (sendVip && vipToken && vipChat) {
-      tasks.push(
-        sendTelegramDirect(vipToken, vipChat, messageText)
-          .then(r => {
-            if (r.ok) destParts.push('قناة VIP (Abusalim FX VIP)');
-            else vipErr = r.description;
-          })
-          .catch(e => {
-            vipErr = e?.message;
-          })
-      );
-    }
-
-    // Also trigger server route in background if available
+    // Step 1: Call Backend Server API (Reliable in cloud, never blocked by local ISP)
     try {
-      fetch(`/api/forex-news/${encodeURIComponent(item.id)}/broadcast`, {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 9000);
+      const res = await fetch(`/api/forex-news/${encodeURIComponent(item.id)}/broadcast`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' }
-      }).catch(() => {});
-    } catch (_e) {}
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          item,
+          targetBots: { freeBot: sendFree, vipBot: sendVip },
+          freeToken,
+          freeChatId: freeChat,
+          vipToken,
+          vipChatId: vipChat
+        })
+      });
+      clearTimeout(timeoutId);
 
-    if (tasks.length > 0) {
-      await Promise.allSettled(tasks);
+      if (res.ok) {
+        const d = await res.json();
+        if (d && d.ok) {
+          serverOk = true;
+          if (Array.isArray(d.destinations) && d.destinations.length > 0) {
+            destParts.push(...d.destinations);
+          } else {
+            if (d.sentFree) destParts.push('القناة العامة (@ZadNBFX)');
+            if (d.sentVip) destParts.push('قناة VIP (Abusalim FX VIP)');
+          }
+        } else if (d && d.error) {
+          freeErr = d.error;
+        }
+      }
+    } catch (_serverErr: any) {
+      // Backend route unreachable, will try direct client dispatch below
+    }
+
+    // Step 2: Fallback to Direct Client Dispatch to Telegram if server route was unavailable
+    if (!serverOk) {
+      const clientTasks: Promise<void>[] = [];
+
+      if (sendFree && freeToken && freeChat) {
+        clientTasks.push(
+          sendTelegramDirect(freeToken, freeChat, messageText)
+            .then(r => {
+              if (r.ok) destParts.push('القناة العامة (@ZadNBFX)');
+              else freeErr = r.description;
+            })
+            .catch(e => {
+              freeErr = e?.message;
+            })
+        );
+      }
+
+      if (sendVip && vipToken && vipChat) {
+        clientTasks.push(
+          sendTelegramDirect(vipToken, vipChat, messageText)
+            .then(r => {
+              if (r.ok) destParts.push('قناة VIP (Abusalim FX VIP)');
+              else vipErr = r.description;
+            })
+            .catch(e => {
+              vipErr = e?.message;
+            })
+        );
+      }
+
+      if (clientTasks.length > 0) {
+        await Promise.allSettled(clientTasks);
+      }
     }
 
     setBroadcastingId(null);
+    setConfirmBroadcastItem(null);
 
     if (destParts.length > 0) {
       const updatedItem: ForexNewsItem = {
@@ -416,42 +449,46 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
       let savedItem: ForexNewsItem | null = null;
       const isEditing = Boolean(editingItem);
 
-      // Try server endpoint in background
+      // 1. Persist directly to Server backend endpoint
       try {
-        if (editingItem) {
-          fetch(`/api/forex-news/${encodeURIComponent(editingItem.id)}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify(payload)
-          }).catch(() => {});
-        } else {
-          fetch('/api/forex-news', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify(payload)
-          }).catch(() => {});
+        const url = editingItem
+          ? `/api/forex-news/${encodeURIComponent(editingItem.id)}`
+          : '/api/forex-news';
+        const method = editingItem ? 'PUT' : 'POST';
+        const sRes = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (sRes.ok) {
+          const sJson = await sRes.json();
+          if (sJson.ok && sJson.item) {
+            savedItem = sJson.item;
+          }
         }
       } catch (_serverErr) {}
 
-      // Create or update item in client state
-      if (editingItem) {
-        savedItem = {
-          ...editingItem,
-          ...(payload as any),
-          id: editingItem.id,
-          updatedAt: new Date().toISOString()
-        };
-      } else {
-        savedItem = {
-          ...(payload as any),
-          id: `news-${Date.now()}`,
-          isBroadcasted: false,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        };
+      // Fallback local creation if server offline
+      if (!savedItem) {
+        if (editingItem) {
+          savedItem = {
+            ...editingItem,
+            ...(payload as any),
+            id: editingItem.id,
+            updatedAt: new Date().toISOString()
+          };
+        } else {
+          savedItem = {
+            ...(payload as any),
+            id: `news-${Date.now()}`,
+            isBroadcasted: false,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+        }
       }
 
-      // Update React state & localStorage
+      // 2. Update React state & localStorage
       setNews(prev => {
         const exists = prev.some(n => n.id === savedItem!.id);
         const nextList = exists
@@ -463,7 +500,7 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
         return nextList;
       });
 
-      // Sync to persistent Firestore (doc: zad_main_state_v1)
+      // 3. Sync to persistent Firestore (doc: zad_main_state_v1)
       try {
         const docRef = doc(db, 'system_state', 'zad_main_state_v1');
         const snap = await getDoc(docRef);
@@ -492,7 +529,7 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
         setBroadcastFeedback({
           id: savedItem?.id || editingItem?.id || 'saved',
           success: true,
-          msg: isEditing ? '✅ تم حفظ وتحديث بيانات الخبر بنجاح في الأجندة الاقتصادية!' : '✅ تم إضافة وحفظ الخبر العاجل بنجاح في الأجندة!'
+          msg: isEditing ? '✅ تم حفظ وتأكيد تعديلات الخبر بنجاح في الأجندة الاقتصادية والسيرفر!' : '✅ تم إضافة وحفظ الخبر العاجل بنجاح في الأجندة الاقتصادية!'
         });
         setTimeout(() => setBroadcastFeedback(null), 7000);
       }
