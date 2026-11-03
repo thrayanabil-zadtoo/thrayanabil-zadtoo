@@ -13,6 +13,7 @@ export interface ParsedSignal {
   superTrend?: string;
   fractalPattern?: string;
   supportResistance?: string;
+  conditionsMetText?: string;
 }
 
 export interface FormatterOptions {
@@ -34,11 +35,10 @@ export const DEFAULT_CUSTOM_TEMPLATE = `✨ {العنوان} ✨
 ⏱ المدة: {المدة}
 ⏰ وقت الدخول: الدقيقة :{الدقيقة} (حسب ساعة جهازك)
 {الاتجاه}
-📈 السعر: {السعر} | مؤشر RSI (9): {RSI}
-🧭 سوبر تريند: {السوبر_تريند}
-📐 الفركتال: {الفركتال}
-🧱 الدعم والمقاومة: {الدعم_والمقاومة}
+🎯 شروط الدخول: {شروط_الدخول}
 ━━━━━━━━━━━━━━
+🎙️ بث حي لأخذ الصفقات مباشر يومياً الساعة 6:00 مساءً
+🎁 احصل على عضوية القناة الخاصة مع روبوت التداول مجاناً
 📢 قناتنا المجانية: @ZadNBFX
 {التوقيع}`;
 
@@ -52,7 +52,8 @@ export function convertEditedMessageToCustomPattern(
   parsed: ParsedSignal
 ): string {
   let pattern = editedText;
-  const pairLabel = `${parsed.asset} (السوق العالمي 🌍)`;
+  const pairLabel = `${parsed.asset} (🌐)`;
+  const oldPairLabel = `${parsed.asset} (السوق العالمي 🌍)`;
   const minuteOnly = extractMinuteOnly(parsed.entryMinute || parsed.entryTime);
   const directionArabic =
     parsed.direction === 'CALL'
@@ -65,6 +66,8 @@ export function convertEditedMessageToCustomPattern(
 
   if (pairLabel && pattern.includes(pairLabel)) {
     pattern = pattern.split(pairLabel).join('{الزوج_كامل}');
+  } else if (oldPairLabel && pattern.includes(oldPairLabel)) {
+    pattern = pattern.split(oldPairLabel).join('{الزوج_كامل}');
   } else if (parsed.asset && pattern.includes(parsed.asset)) {
     pattern = pattern.split(parsed.asset).join('{الزوج}');
   }
@@ -248,7 +251,7 @@ export function parseRawQuotexSignal(rawText: string, options: FormatterOptions)
     timeframe,
     entryMinute,
     entryTime,
-    payout: 'السوق العالمي',
+    payout: '(🌐)',
     removedItems,
     livePrice: priceMatch ? priceMatch[1] : undefined,
     rsiValue: rsiMatch ? parseFloat(rsiMatch[1]) : undefined
@@ -256,8 +259,8 @@ export function parseRawQuotexSignal(rawText: string, options: FormatterOptions)
 }
 
 export function formatSignalMessage(parsed: ParsedSignal, options: FormatterOptions): string {
-  // Strictly Global Market (No OTC)
-  const pairLabel = `${parsed.asset} (السوق العالمي 🌍)`;
+  // Strictly Global Market - globe emoji between parentheses only (🌐) as requested
+  const pairLabel = `${parsed.asset} (🌐)`;
   const minuteOnly = extractMinuteOnly(parsed.entryMinute || parsed.entryTime);
 
   const directionArabic = parsed.direction === 'CALL'
@@ -268,23 +271,43 @@ export function formatSignalMessage(parsed: ParsedSignal, options: FormatterOpti
     ? '🟢 صعود (شراء ⬆️)'
     : '🔴 هبوط (بيع ⬇️)';
 
-  const showAnalysis = options.includeLiveAnalysis !== false;
+  const conditionsText = parsed.conditionsMetText || 'محققة بنجاح (3 من 4 شروط فنية معتمدة ✅)';
+  const conditionsLine = `\n🎯 شروط الدخول: ${conditionsText}`;
 
-  const liveDetailsLine =
-    showAnalysis && parsed.livePrice
-      ? `\n📈 السعر: ${parsed.livePrice}${parsed.rsiValue !== undefined ? ` | مؤشر RSI (9): ${parsed.rsiValue}` : ''}${parsed.superTrend ? `\n🧭 سوبر تريند: ${parsed.superTrend}` : ''}${parsed.fractalPattern ? `\n📐 الفركتال: ${parsed.fractalPattern}` : ''}${parsed.supportResistance ? `\n🧱 الدعم والمقاومة: ${parsed.supportResistance}` : ''}`
-      : '';
-
-  const reasonLine =
-    showAnalysis && parsed.analysisReason
-      ? `\n🎯 سبب الدخول: ${parsed.analysisReason}`
-      : '';
+  const liveStreamingLine = '🎙️ بث حي لأخذ الصفقات مباشر يومياً الساعة 6:00 مساءً';
+  const freeVipRobotLine = '🎁 احصل على عضوية القناة الخاصة مع روبوت التداول مجاناً';
 
   let output = '';
 
   if (options.templateStyle === 'custom' && options.customTemplatePattern?.trim()) {
-    output = options.customTemplatePattern
-      .replace(/\{العنوان\}/g, options.channelTitle || 'نَبض التداول | السوق العالمي')
+    let pat = options.customTemplatePattern;
+    // Clean up any old lines that had price, RSI, superTrend, fractal, SR or reason
+    pat = pat
+      .replace(/\n*📈 السعر:[^\n]*/g, '')
+      .replace(/\n*🧭 سوبر تريند:[^\n]*/g, '')
+      .replace(/\n*📐 الفركتال:[^\n]*/g, '')
+      .replace(/\n*🧱 الدعم والمقاومة:[^\n]*/g, '')
+      .replace(/\n*🎯 سبب الدخول:[^\n]*/g, '')
+      .replace(/\(السوق العالمي 🌍\)|\(السوق العالمي\)|\(سوق عالمي\)/g, '(🌐)');
+
+    if (!pat.includes('{شروط_الدخول}') && !pat.includes('شروط الدخول')) {
+      if (pat.includes('{الاتجاه}')) {
+        pat = pat.replace('{الاتجاه}', '{الاتجاه}\n🎯 شروط الدخول: {شروط_الدخول}');
+      } else if (pat.includes('{الاتجاه_مختصر}')) {
+        pat = pat.replace('{الاتجاه_مختصر}', '{الاتجاه_مختصر}\n🎯 شروط الدخول: {شروط_الدخول}');
+      }
+    }
+
+    if (!pat.includes('بث حي لأخذ الصفقات')) {
+      if (pat.includes('📢 قناتنا المجانية') || pat.includes('📢 القناة المجانية')) {
+        pat = pat.replace(/📢 قناتنا المجانية|📢 القناة المجانية/, `${liveStreamingLine}\n${freeVipRobotLine}\n$&`);
+      } else {
+        pat = `${pat}\n${liveStreamingLine}\n${freeVipRobotLine}`;
+      }
+    }
+
+    output = pat
+      .replace(/\{العنوان\}/g, options.channelTitle || 'نَبض التداول')
       .replace(/\{الزوج\}/g, parsed.asset)
       .replace(/\{الزوج_كامل\}/g, pairLabel)
       .replace(/\{المدة\}/g, parsed.timeframe)
@@ -292,41 +315,49 @@ export function formatSignalMessage(parsed: ParsedSignal, options: FormatterOpti
       .replace(/\{الوقت\}/g, parsed.entryTime)
       .replace(/\{الاتجاه\}/g, directionArabic)
       .replace(/\{الاتجاه_مختصر\}/g, directionShort)
-      .replace(/\{السعر\}/g, parsed.livePrice || '')
-      .replace(/\{RSI\}/g, parsed.rsiValue !== undefined ? String(parsed.rsiValue) : '')
-      .replace(/\{السوبر_تريند\}/g, parsed.superTrend || '')
-      .replace(/\{الفركتال\}/g, parsed.fractalPattern || '')
-      .replace(/\{الدعم_والمقاومة\}/g, parsed.supportResistance || '')
-      .replace(/\{السبب\}/g, parsed.analysisReason || '')
+      .replace(/\{شروط_الدخول\}/g, conditionsText)
+      .replace(/\{السعر\}/g, '')
+      .replace(/\{RSI\}/g, '')
+      .replace(/\{السوبر_تريند\}/g, '')
+      .replace(/\{الفركتال\}/g, '')
+      .replace(/\{الدعم_والمقاومة\}/g, '')
+      .replace(/\{السبب\}/g, '')
       .replace(/\{التوقيع\}/g, options.channelSignature || '');
-  } else if (options.templateStyle === 'elegant') {
-    output = `✨ ${options.channelTitle || 'نَبض التداول | السوق العالمي'} ✨
+  } else if (options.templateStyle === 'minimal') {
+    output = `⚡ فرصة مركّزة (🌐) | ${parsed.asset}
+• الاتجاه: ${directionShort}
+• المدة: ${parsed.timeframe}
+• الدخول عند الدقيقة: :${minuteOnly} (بتوقيت جهازك)${conditionsLine}
+
+${liveStreamingLine}
+${freeVipRobotLine}
+📢 تابعنا مجاناً: @ZadNBFX
+${options.channelSignature || '💡 التزم بإدارة رأس المال الحكيمة'}`;
+  } else if (options.templateStyle === 'pro') {
+    output = `🎯 قناص الصفقات | ${options.channelTitle || 'فرصة مؤكدة'}
+┌───────────────────
+│ 🌐 الزوج: ${pairLabel}
+│ ⏳ الفريم: ${parsed.timeframe}
+│ 🕒 الدخول: الدقيقة :${minuteOnly} (بتوقيتك)
+│ 🚀 القرار: ${directionShort}${conditionsLine}
+└───────────────────
+${liveStreamingLine}
+${freeVipRobotLine}
+📢 القناة المجانية: @ZadNBFX
+${options.channelSignature || '💡 إدارة رأس المال سر النجاح'}`;
+  } else {
+    // 'elegant' (Default)
+    output = `✨ ${options.channelTitle || 'نَبض التداول'} ✨
 ━━━━━━━━━━━━━━
 📊 الزوج: ${pairLabel}
 ⏱ المدة: ${parsed.timeframe}
 ⏰ وقت الدخول: الدقيقة :${minuteOnly} (حسب ساعة جهازك)
-${directionArabic}${liveDetailsLine}${reasonLine}
+${directionArabic}${conditionsLine}
 ━━━━━━━━━━━━━━
+${liveStreamingLine}
+${freeVipRobotLine}
 📢 قناتنا المجانية: @ZadNBFX
 ${options.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`;
-  } else if (options.templateStyle === 'minimal') {
-    output = `⚡ فرصة مركّزة (سوق عالمي) | ${parsed.asset}
-• الاتجاه: ${directionShort}
-• المدة: ${parsed.timeframe}
-• الدخول عند الدقيقة: :${minuteOnly} (بتوقيت جهازك)${liveDetailsLine}${reasonLine}
-
-📢 تابعنا مجاناً: @ZadNBFX
-${options.channelSignature || '💡 التزم بإدارة رأس المال الحكيمة'}`;
-  } else {
-    output = `🎯 قناص السوق العالمي | ${options.channelTitle || 'فرصة مؤكدة'}
-┌───────────────────
-│ 🌍 الزوج: ${parsed.asset} (سوق عالمي)
-│ ⏳ الفريم: ${parsed.timeframe}
-│ 🕒 الدخول: الدقيقة :${minuteOnly} (بتوقيتك)
-│ 🚀 القرار: ${directionShort}${liveDetailsLine ? `\n│ 📊 السعر: ${parsed.livePrice}` : ''}
-└───────────────────
-📢 القناة المجانية: @ZadNBFX
-${options.channelSignature || '💡 إدارة رأس المال سر النجاح'}`;
   }
 
   for (const word of options.blockedWords) {

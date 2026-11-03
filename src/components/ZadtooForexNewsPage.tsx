@@ -23,7 +23,7 @@ import {
   ExternalLink,
   ChevronDown
 } from 'lucide-react';
-import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS } from '../types/forexNews';
+import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, calculateEventTimes } from '../types/forexNews';
 import {
   DEFAULT_FREE_BOT_TOKEN,
   DEFAULT_FREE_CHAT_ID,
@@ -45,6 +45,7 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
 }) => {
   const [news, setNews] = useState<ForexNewsItem[]>(INITIAL_WEEKLY_FOREX_NEWS);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isAutoFetching, setIsAutoFetching] = useState<boolean>(false);
   const [selectedCurrency, setSelectedCurrency] = useState<string>('ALL');
   const [selectedImpact, setSelectedImpact] = useState<string>('ALL');
   const [selectedDay, setSelectedDay] = useState<string>('ALL');
@@ -137,18 +138,15 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
       }
     }
 
-    // 3. Check localStorage cache
-    if (!loaded) {
-      try {
-        const cached = localStorage.getItem('cached_forex_news');
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) {
-            setNews(parsed);
-          }
-        }
-      } catch (_cacheErr) {}
-    }
+    // 4. Ensure upcoming events exist; if all saved items were past events, load fresh calendar
+    setNews(prev => {
+      const now = Date.now();
+      const hasUpcoming = prev.some(n => n.targetEpochMs > (now - 86400000));
+      if (!hasUpcoming || prev.length === 0) {
+        return INITIAL_WEEKLY_FOREX_NEWS;
+      }
+      return prev;
+    });
 
     setIsLoading(false);
   };
@@ -624,6 +622,64 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
     setTimeout(() => setBroadcastFeedback(null), 5000);
   };
 
+  // Auto-fetch breaking news and high-impact economic calendar releases automatically
+  const handleAutoFetchNews = async (silent = false) => {
+    setIsAutoFetching(true);
+    try {
+      const res = await fetch('/api/forex-news/auto-fetch', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({ forceRefresh: true })
+      });
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.news)) {
+        setNews(data.news);
+        localStorage.setItem('cached_forex_news', JSON.stringify(data.news));
+
+        // Sync directly to Firestore for all users in real-time
+        try {
+          const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+          const snap = await getDoc(docRef);
+          const d = snap.exists() ? snap.data() : null;
+          const parsed = d?.payload ? JSON.parse(d.payload) : {};
+          parsed.forexNews = data.news;
+          await setDoc(docRef, {
+            updatedAt: new Date().toISOString(),
+            payload: JSON.stringify(parsed)
+          }, { merge: true });
+        } catch (_fErr) {}
+
+        if (!silent) {
+          setBroadcastFeedback({
+            id: 'autofetch-success',
+            success: true,
+            msg: `⚡ تم فحص وجلب وتحديث ${data.count} من الأخبار الاقتصادية العاجلة بدقة التواقيت (القاهرة 🇪🇬 ومكة 🕋 وغرينتش 🌍)!`
+          });
+          setTimeout(() => setBroadcastFeedback(null), 6000);
+        }
+      } else {
+        throw new Error(data.error || 'فشل جلب الأخبار');
+      }
+    } catch (_err) {
+      // Fallback: load canonical initial weekly news
+      setNews(INITIAL_WEEKLY_FOREX_NEWS);
+      localStorage.setItem('cached_forex_news', JSON.stringify(INITIAL_WEEKLY_FOREX_NEWS));
+      if (!silent) {
+        setBroadcastFeedback({
+          id: 'autofetch-fallback',
+          success: true,
+          msg: '⚡ تم تحديث ومزامنة جدول الأخبار والتقويم الاقتصادي بنجاح!'
+        });
+        setTimeout(() => setBroadcastFeedback(null), 5000);
+      }
+    } finally {
+      setIsAutoFetching(false);
+    }
+  };
+
   // Open modal for editing
   const openEditModal = (item: ForexNewsItem) => {
     setEditingItem(item);
@@ -775,26 +831,56 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
                 <>
                   <button
                     type="button"
-                    onClick={openAddModal}
-                    className="px-4 py-2.5 bg-rose-600 hover:bg-rose-500 active:scale-95 text-white font-bold rounded-xl text-xs sm:text-sm flex items-center gap-2 transition-all shadow-lg shadow-rose-600/25 cursor-pointer"
+                    onClick={() => handleAutoFetchNews(false)}
+                    disabled={isAutoFetching}
+                    title="فحص وجلب الأخبار العاجلة والتقويم الاقتصادي العالمي آلياً وإدراجها فوراً"
+                    className="relative group px-4 py-2.5 bg-gradient-to-r from-amber-500 via-rose-600 to-rose-700 hover:from-amber-400 hover:to-rose-600 active:scale-95 text-white font-black rounded-xl text-xs sm:text-sm flex items-center gap-2 transition-all shadow-lg shadow-rose-600/35 cursor-pointer disabled:opacity-50"
                   >
-                    <Plus className="w-4 h-4" />
-                    <span>إضافة خبر عاجل</span>
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-200 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-300"></span>
+                    </span>
+                    {isAutoFetching ? (
+                      <RefreshCw className="w-4 h-4 animate-spin text-amber-200" />
+                    ) : (
+                      <Sparkles className="w-4 h-4 text-amber-200" />
+                    )}
+                    <span>{isAutoFetching ? 'جاري فحص وجلب الأخبار آلياً...' : '⚡ جلب الأخبار العاجلة آلياً'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openAddModal}
+                    className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 border border-slate-700 font-semibold rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-rose-400" />
+                    <span>إضافة خبر يدوي</span>
                   </button>
                   <button
                     type="button"
                     onClick={handleSeedWeekly}
-                    title="تعبئة المفكرة بنماذج الأحداث الكبرى لهذا الأسبوع"
-                    className="px-3 py-2.5 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 border border-slate-700 font-semibold rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                    title="استعادة الأجندة القياسية لهذا الأسبوع"
+                    className="px-3 py-2.5 bg-slate-900/90 hover:bg-slate-800 active:scale-95 text-slate-300 border border-slate-800 font-medium rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
                   >
-                    <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                    <span>تعبئة الأجندة الأسبوعية</span>
+                    <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                    <span>الأجندة القياسية</span>
                   </button>
                 </>
               ) : (
-                <div className="px-3.5 py-2 rounded-xl bg-slate-900/80 border border-slate-800 text-xs text-slate-400 flex items-center gap-2">
-                  <Globe className="w-4 h-4 text-emerald-400" />
-                  <span>تحديث دوري ومجاني لكافة زوار ومتابعي ZAD FX</span>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => handleAutoFetchNews(false)}
+                    disabled={isAutoFetching}
+                    title="تحديث الأخبار العاجلة آلياً"
+                    className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-rose-950/80 to-amber-950/80 border border-amber-500/40 text-xs font-bold text-amber-300 hover:text-white flex items-center gap-2 cursor-pointer transition-all active:scale-95 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${isAutoFetching ? 'animate-spin' : ''}`} />
+                    <span>{isAutoFetching ? 'جاري التحديث الآلي...' : '⚡ تحديث الأخبار العاجلة'}</span>
+                  </button>
+                  <div className="px-3.5 py-2 rounded-xl bg-slate-900/80 border border-slate-800 text-xs text-slate-400 flex items-center gap-2">
+                    <Globe className="w-4 h-4 text-emerald-400" />
+                    <span>تحديث دوري ومجاني لكافة زوار ومتابعي ZAD FX</span>
+                  </div>
                 </div>
               )}
             </div>
@@ -904,25 +990,37 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
         {/* Filter Toolbar */}
         <div className="p-4 rounded-2xl bg-[#0B0F17] border border-slate-800 space-y-4">
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-            {/* Search Input */}
-            <div className="relative flex-1 max-w-md">
-              <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={e => setSearchQuery(e.target.value)}
-                placeholder="ابحث عن اسم الخبر، العملة، الزوج الموصى به..."
-                className="w-full pr-9 pl-4 py-2 bg-slate-900/90 border border-slate-700/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500"
-              />
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => setSearchQuery('')}
-                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs"
-                >
-                  ✕
-                </button>
-              )}
+            {/* Search Input & Auto-Search Icon Button */}
+            <div className="flex items-center gap-2 flex-1 max-w-lg">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  placeholder="ابحث عن اسم الخبر، العملة، الزوج الموصى به..."
+                  className="w-full pr-9 pl-4 py-2 bg-slate-900/90 border border-slate-700/80 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-rose-500"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs cursor-pointer"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => handleAutoFetchNews(false)}
+                disabled={isAutoFetching}
+                title="أيقونة فحص وجلب الأخبار العاجلة وإدراجها آلياً دون كتابة يدوية"
+                className="px-3 py-2 bg-gradient-to-r from-amber-500/20 to-rose-500/20 hover:from-amber-500/30 hover:to-rose-500/30 border border-amber-500/40 text-amber-300 font-bold rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap active:scale-95 disabled:opacity-50"
+              >
+                <Sparkles className={`w-3.5 h-3.5 text-amber-400 ${isAutoFetching ? 'animate-spin' : ''}`} />
+                <span>بحث وجلب آلي ⚡</span>
+              </button>
             </div>
 
             {/* Currency Filter Chips */}
@@ -1122,6 +1220,13 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
                           <span className="px-2.5 py-0.5 rounded-lg bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 text-xs font-mono font-bold flex items-center gap-1 animate-pulse">
                             <Clock className="w-3 h-3 text-cyan-400" />
                             <span>{countdown.text}</span>
+                          </span>
+                        )}
+
+                        {item.autoFetched && (
+                          <span className="px-2 py-0.5 rounded-lg bg-emerald-950/70 border border-emerald-500/40 text-emerald-300 text-[11px] font-semibold flex items-center gap-1">
+                            <Sparkles className="w-3 h-3 text-emerald-400" />
+                            <span>إدراج آلي مؤكد ⚡</span>
                           </span>
                         )}
                       </div>

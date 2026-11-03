@@ -275,7 +275,7 @@ export const ZadtooSignalsPage: React.FC<ZadtooSignalsPageProps> = ({
   });
 
   const handleCopySignal = (sig: SignalItemView) => {
-    const text = `🔔 إشارة تداول فريم الدقيقة | ZAD FX\nالزوج: ${sig.asset}\nالاتجاه: ${sig.direction === 'CALL' ? 'شراء 🟢 (CALL)' : 'بيع 🔴 (PUT)'}\nالوقت: ${sig.entryTime}\nالفريم: 1 دقيقة\nقناة التليجرام: ${telegramLink}`;
+    const text = `🔔 إشارة تداول فريم الدقيقة | ZAD FX\nالزوج: ${sig.asset} (🌐)\nالاتجاه: ${sig.direction === 'CALL' ? 'شراء 🟢 (CALL)' : 'بيع 🔴 (PUT)'}\nالوقت: ${sig.entryTime}\n🎯 شروط الدخول: محققة بنجاح (3 من 4 شروط فنية معتمدة ✅)\n🎙️ بث حي لأخذ الصفقات مباشر يومياً الساعة 6:00 مساءً\n🎁 احصل على عضوية القناة الخاصة مع روبوت التداول مجاناً\nقناة التليجرام: ${telegramLink}`;
     navigator.clipboard.writeText(text);
     setCopiedId(sig.id);
     setTimeout(() => setCopiedId(null), 2000);

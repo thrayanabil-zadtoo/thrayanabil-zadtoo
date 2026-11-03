@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db, SYSTEM_STATE_DOC_PATH, SYSTEM_STATE_DOC_ID } from '../firebase';
 import {
@@ -8,6 +8,7 @@ import {
   TrendingDown,
   CheckCircle2,
   AlertCircle,
+  AlertTriangle,
   Sparkles,
   Bot,
   Crown,
@@ -23,6 +24,13 @@ import {
   Layers,
   Award,
   ShieldCheck,
+  ShieldAlert,
+  Zap,
+  Check,
+  RotateCcw,
+  Sliders,
+  Activity,
+  Power,
   X
 } from 'lucide-react';
 import type { AutoPilotConfig, SignalItem } from '../App';
@@ -114,6 +122,145 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     text: string;
   } | null>(null);
 
+  // --- Section 0: 6:00 PM Automated Live Broadcast Session State ---
+  const [sessionData, setSessionData] = useState<{
+    enabled: boolean;
+    startHourEgypt: number;
+    preScanMinutes: number;
+    minWinRateTarget: number;
+    maxWinRateTarget: number;
+    stopConsecutiveLosses: number;
+    activeDate: string;
+    status: 'IDLE' | 'PRE_SCANNING' | 'ACTIVE_BROADCAST' | 'STOPPED_TARGET_REACHED' | 'STOPPED_BAD_MARKET';
+    statusNote: string;
+    wins: number;
+    losses: number;
+    consecutiveLosses: number;
+    totalTrades: number;
+    winRate: number;
+    celebrationSentDate?: string;
+    badMarketNoticeSentDate?: string;
+    lastScanCandidate?: string;
+    lastDispatchedAt?: string;
+  } | null>(null);
+  const [cairoTime, setCairoTime] = useState<{
+    hour: number;
+    minute: number;
+    formatted: string;
+    date: string;
+  } | null>(null);
+  const [sessionSignals, setSessionSignals] = useState<SignalItem[]>([]);
+  const [isSessionActionLoading, setIsSessionActionLoading] = useState<string | null>(null);
+  const [sessionActionFeedback, setSessionActionFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
+
+  const fetchSessionStatus = async () => {
+    try {
+      const res = await fetch('/api/admin/live-broadcast-session');
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok && data.session) {
+          setSessionData(data.session);
+          if (data.cairoTime) setCairoTime(data.cairoTime);
+          if (Array.isArray(data.signals)) setSessionSignals(data.signals);
+        }
+      }
+    } catch (_err) {
+      // Ignore background poll errors
+    }
+  };
+
+  useEffect(() => {
+    fetchSessionStatus();
+    const interval = setInterval(fetchSessionStatus, 8000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleToggleSessionEnabled = async () => {
+    if (!sessionData) return;
+    setIsSessionActionLoading('toggle');
+    setSessionActionFeedback(null);
+    try {
+      const res = await fetch('/api/admin/live-broadcast-session/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !sessionData.enabled })
+      });
+      const data = await res.json();
+      if (data.ok && data.session) {
+        setSessionData(data.session);
+        setSessionActionFeedback({
+          type: 'success',
+          text: data.session.enabled
+            ? 'تم تفعيل جلسة البث الحي الآلي (الساعة 6:00 مساءً) بنجاح!'
+            : 'تم إيقاف جلسة البث الحي الآلي مؤقتاً.'
+        });
+      }
+    } catch (e: any) {
+      setSessionActionFeedback({ type: 'error', text: 'فشل تعديل حالة الجلسة: ' + (e?.message || '') });
+    } finally {
+      setIsSessionActionLoading(null);
+    }
+  };
+
+  const handleResetSession = async () => {
+    setIsSessionActionLoading('reset');
+    setSessionActionFeedback(null);
+    try {
+      const res = await fetch('/api/admin/live-broadcast-session/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'reset' })
+      });
+      const data = await res.json();
+      if (data.ok && data.session) {
+        setSessionData(data.session);
+        setSessionActionFeedback({
+          type: 'success',
+          text: 'تمت إعادة ضبط إحصائيات جلسة البث المشرف لليوم بنجاح!'
+        });
+        fetchSessionStatus();
+      }
+    } catch (e: any) {
+      setSessionActionFeedback({ type: 'error', text: 'فشل إعادة ضبط الجلسة: ' + (e?.message || '') });
+    } finally {
+      setIsSessionActionLoading(null);
+    }
+  };
+
+  const handleTriggerSessionNow = async (mode: 'scan' | 'signal') => {
+    setIsSessionActionLoading(mode);
+    setSessionActionFeedback(null);
+    try {
+      const res = await fetch('/api/admin/live-broadcast-session/trigger-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        if (data.session) setSessionData(data.session);
+        setSessionActionFeedback({
+          type: 'success',
+          text: mode === 'scan'
+            ? 'تم فحص السوق واختيار أفضل مرشح بنجاح!'
+            : 'تم إرسال صفقة البث الحي بنجاح إلى قناة VIP الخاصة والروبوت العائم!'
+        });
+        if (data.signal && onSignalCreated) onSignalCreated(data.signal);
+        fetchSessionStatus();
+        if (onRefreshSignals) onRefreshSignals();
+      } else {
+        setSessionActionFeedback({ type: 'error', text: data.error || 'تعذر تنفيذ الأمر' });
+      }
+    } catch (e: any) {
+      setSessionActionFeedback({ type: 'error', text: 'خطأ في الاتصال بالسيرفر: ' + (e?.message || '') });
+    } finally {
+      setIsSessionActionLoading(null);
+    }
+  };
+
   // Quick preset notes for the signal
   const PRESET_NOTES = [
     'تأكيد الدخول فور إغلاق الشمعة الحالية مباشرة ⏱️',
@@ -166,12 +313,14 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     const formattedMessage = [
       '🔴 بث حي مباشر للمشرف ZAD FX 🔴',
       '━━━━━━━━━━━━━━━━━━━',
-      `📊 الزوج: ${selectedPair}`,
+      `📊 الزوج: ${selectedPair} (🌐)`,
       `🎯 الاتجاه: ${dirSymbol}`,
       `⏱️ وقت الدخول: :${entryMinute} (1 دقيقة (M1))`,
-      `💵 السعر المرجعي: ${livePrice}`,
+      '🎯 شروط الدخول: محققة بنجاح (3 من 4 شروط فنية معتمدة ✅)',
       customNotes && customNotes.trim() ? `\n📝 توجيهات وملاحظات المشرف:\n${customNotes.trim()}` : '',
       '━━━━━━━━━━━━━━━━━━━',
+      '🎙️ بث حي لأخذ الصفقات مباشر يومياً الساعة 6:00 مساءً',
+      '🎁 احصل على عضوية القناة الخاصة مع روبوت التداول مجاناً',
       '🔗 رابط منصة التداول كيوتكس الرسمي المباشر:',
       'https://broker-qx.pro/?lid=2303934',
       '━━━━━━━━━━━━━━━━━━━',
@@ -187,7 +336,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
       entryMinute,
       entryTime: `:${entryMinute}`,
       targetEntryTimestamp,
-      payout: 'السوق العالمي (بث حي للمشرف 🔴)',
+      payout: '(🌐) (بث حي للمشرف 🔴)',
       livePrice,
       rsiValue: direction === 'CALL' ? 38 : 62,
       analysisReason: customNotes && customNotes.trim() ? `🔴 بث حي للمشرف: ${customNotes.trim()}` : '🔴 إشارة بث حي مباشر صادرة من المشرف',
@@ -573,6 +722,405 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
             </div>
           </div>
         </div>
+      </div>
+
+      {/* ========================================================
+          SECTION 0: جلسة البث الحي الآلي للسوق العالمي (الساعة 6:00 مساءً)
+          ======================================================== */}
+      <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-indigo-950 border-2 border-amber-500/40 rounded-2xl shadow-2xl p-6 sm:p-8 space-y-6 text-white relative overflow-hidden">
+        {/* Glow ambient background effect */}
+        <div className="absolute top-0 left-0 w-80 h-80 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-0 right-0 w-80 h-80 bg-rose-500/10 rounded-full blur-3xl pointer-events-none" />
+
+        <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-slate-700/80">
+          <div className="space-y-2">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-500/20 border border-amber-400/40 text-amber-300 text-xs font-black">
+              <Sparkles className="w-4 h-4 text-amber-400" />
+              <span>نظام البث الآلي الذكي المشرف ZAD FX</span>
+            </div>
+            <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2.5">
+              <Crown className="w-6 h-6 text-amber-400" />
+              <span>جلسة البث الحي للسوق العالمي (الساعة 06:00 مساءً بتوقيت مصر)</span>
+            </h2>
+            <p className="text-slate-300 text-xs sm:text-sm max-w-3xl leading-relaxed">
+              بث حي آلي مباشر للسوق العالمي يبدأ يومياً الساعة <b>06:00 مساءً</b> بإرسال تنبيه: <i>«نقول بسم الله ونبدأ بعد 10 دقائق استعدوا يا أبطال 🚀»</i> مع مسح فني مدته <b>10 دقائق (18:00 - 18:10)</b>. تُرسل الإشارات <b>حصرياً لقناة VIP الخاصة</b> وتتوقف الجلسة تلقائياً <b>بعد 60 دقيقة من انطلاق الإشارة الأولى</b> أو عند تحقيق <b>70% - 75%</b>، مع إيقاف طوارئ فوري عند <b>3 خسائر متتالية</b> لحماية رأس المال، وإحصائياتها معزولة تماماً ضمن «إحصائيات البث المشرف».
+            </p>
+          </div>
+
+          {/* Current Cairo Time & Session Status Badge */}
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+            <div className="px-4 py-2.5 rounded-xl bg-slate-800/90 border border-slate-700 text-right">
+              <div className="text-[11px] text-slate-400 flex items-center gap-1.5 justify-end">
+                <Clock className="w-3.5 h-3.5 text-amber-400" />
+                <span>ساعة مصر (القاهرة):</span>
+              </div>
+              <div className="text-base font-black text-amber-300 font-mono tracking-wider">
+                {cairoTime?.formatted || '--:--'}
+              </div>
+            </div>
+
+            <div
+              className={`px-4 py-2.5 rounded-xl border font-bold text-xs flex items-center gap-2 shadow-sm ${
+                sessionData?.status === 'ACTIVE_BROADCAST'
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50 ring-2 ring-emerald-500/20'
+                  : sessionData?.status === 'PRE_SCANNING'
+                  ? 'bg-sky-500/20 text-sky-300 border-sky-500/50 ring-2 ring-sky-500/20 animate-pulse'
+                  : sessionData?.status === 'STOPPED_TARGET_REACHED'
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                  : sessionData?.status === 'STOPPED_BAD_MARKET'
+                  ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 ring-2 ring-rose-500/20'
+                  : 'bg-slate-800 text-slate-300 border-slate-700'
+              }`}
+            >
+              {sessionData?.status === 'ACTIVE_BROADCAST' && (
+                <>
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping" />
+                  <span>🟢 جاري البث الحي المباشر (قناة VIP)</span>
+                </>
+              )}
+              {sessionData?.status === 'PRE_SCANNING' && (
+                <>
+                  <span className="w-2.5 h-2.5 rounded-full bg-sky-400 animate-ping" />
+                  <span>🔍 مرحلة المسح الفني العميق (10 دقائق)</span>
+                </>
+              )}
+              {sessionData?.status === 'STOPPED_TARGET_REACHED' && (
+                <>
+                  <Award className="w-4 h-4 text-amber-400" />
+                  <span>🎯 تم تحقيق الهدف (70% - 75%) وتم إيقاف البث</span>
+                </>
+              )}
+              {sessionData?.status === 'STOPPED_BAD_MARKET' && (
+                <>
+                  <ShieldAlert className="w-4 h-4 text-rose-400" />
+                  <span>🛡️ تم إيقاف الطوارئ (3 خسائر متتالية)</span>
+                </>
+              )}
+              {(!sessionData || sessionData.status === 'IDLE') && (
+                <>
+                  <Clock className="w-4 h-4 text-slate-400" />
+                  <span>⚪ في وضع الاستعداد (تبدأ 06:00 م)</span>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Live Status Note Alert Banner */}
+        {sessionData?.statusNote && (
+          <div
+            className={`p-4 rounded-xl border text-xs sm:text-sm font-semibold flex items-center justify-between gap-3 ${
+              sessionData.status === 'STOPPED_BAD_MARKET'
+                ? 'bg-rose-950/60 border-rose-500/50 text-rose-200'
+                : sessionData.status === 'STOPPED_TARGET_REACHED'
+                ? 'bg-amber-950/60 border-amber-500/50 text-amber-200'
+                : sessionData.status === 'PRE_SCANNING'
+                ? 'bg-sky-950/60 border-sky-500/50 text-sky-200'
+                : 'bg-slate-800/80 border-slate-700 text-slate-300'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              {sessionData.status === 'STOPPED_BAD_MARKET' ? (
+                <ShieldAlert className="w-5 h-5 text-rose-400 shrink-0" />
+              ) : sessionData.status === 'STOPPED_TARGET_REACHED' ? (
+                <Award className="w-5 h-5 text-amber-400 shrink-0" />
+              ) : (
+                <Activity className="w-5 h-5 text-amber-400 shrink-0" />
+              )}
+              <span>{sessionData.statusNote}</span>
+            </div>
+            {sessionData.lastScanCandidate && (
+              <span className="text-[11px] px-2.5 py-1 rounded bg-black/40 border border-white/10 font-mono text-amber-300">
+                المرشح: {sessionData.lastScanCandidate}
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Emergency Stop Notice (If Market Bad / 3 Consecutive Losses) */}
+        {sessionData?.status === 'STOPPED_BAD_MARKET' && (
+          <div className="p-4 rounded-xl bg-gradient-to-r from-rose-950 to-slate-900 border-2 border-rose-500/60 text-rose-100 space-y-2">
+            <div className="flex items-center gap-2 text-rose-400 font-extrabold text-sm sm:text-base">
+              <AlertTriangle className="w-5 h-5 text-rose-400" />
+              <span>نص إشعار الاعتذار الذي تم إرساله لقناة VIP تلقائياً:</span>
+            </div>
+            <div className="p-3 bg-black/50 border border-rose-500/30 rounded-lg text-xs leading-relaxed font-mono whitespace-pre-line text-slate-200">
+              ⚠️ تنبيه هام من المشرف ZAD FX ⚠️{'\n'}
+              ━━━━━━━━━━━━━━━━━━━{'\n'}
+              السوق ليس جيداً اليوم ونعتذر عن إيقاف الجلسة حرصاً على إدارة رأس المال وحماية محافظكم.{'\n'}
+              سوف نعيد العمل غداً إن شاء الله 🛡️🤝{'\n'}
+              ━━━━━━━━━━━━━━━━━━━{'\n'}
+              تذكر دائماً: حماية رأس المال هي الخطوة الأولى لاحتراف التداول والنجاح المستمر.
+            </div>
+          </div>
+        )}
+
+        {/* 5 Real-Time Admin Live Broadcast Statistics Counters */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
+          {/* Card 1: Total Trades */}
+          <div className="p-4 rounded-xl bg-slate-800/80 border border-slate-700/80 flex flex-col justify-between">
+            <div className="text-slate-400 text-xs font-semibold flex items-center gap-1.5">
+              <Layers className="w-4 h-4 text-slate-400" />
+              <span>صفقات البث اليوم</span>
+            </div>
+            <div className="mt-2 text-2xl sm:text-3xl font-black text-white font-mono">
+              {sessionData?.totalTrades ?? 0}
+            </div>
+            <div className="text-[10px] text-slate-400 mt-1">
+              مجموع صفقات جلسة 6:00 م
+            </div>
+          </div>
+
+          {/* Card 2: Wins */}
+          <div className="p-4 rounded-xl bg-slate-800/80 border border-emerald-500/40 flex flex-col justify-between">
+            <div className="text-emerald-400 text-xs font-semibold flex items-center gap-1.5">
+              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+              <span>صفقات رابحة (فوز)</span>
+            </div>
+            <div className="mt-2 text-2xl sm:text-3xl font-black text-emerald-400 font-mono">
+              {sessionData?.wins ?? 0}
+            </div>
+            <div className="text-[10px] text-emerald-300/80 mt-1">
+              أرباح مباشرة مؤكدة ✅
+            </div>
+          </div>
+
+          {/* Card 3: Losses */}
+          <div className="p-4 rounded-xl bg-slate-800/80 border border-rose-500/40 flex flex-col justify-between">
+            <div className="text-rose-400 text-xs font-semibold flex items-center gap-1.5">
+              <X className="w-4 h-4 text-rose-400" />
+              <span>صفقات خاسرة</span>
+            </div>
+            <div className="mt-2 text-2xl sm:text-3xl font-black text-rose-400 font-mono">
+              {sessionData?.losses ?? 0}
+            </div>
+            <div className="text-[10px] text-rose-300/80 mt-1">
+              بدون مضاعفات (0 Gale)
+            </div>
+          </div>
+
+          {/* Card 4: Consecutive Losses */}
+          <div
+            className={`p-4 rounded-xl border flex flex-col justify-between ${
+              (sessionData?.consecutiveLosses ?? 0) >= 2
+                ? 'bg-rose-950/80 border-rose-500 ring-2 ring-rose-500/30'
+                : 'bg-slate-800/80 border-slate-700/80'
+            }`}
+          >
+            <div className="text-xs font-semibold flex items-center gap-1.5 text-amber-300">
+              <AlertTriangle className="w-4 h-4 text-amber-400" />
+              <span>خسائر متتالية</span>
+            </div>
+            <div className="mt-2 flex items-baseline gap-1">
+              <span className="text-2xl sm:text-3xl font-black font-mono text-white">
+                {sessionData?.consecutiveLosses ?? 0}
+              </span>
+              <span className="text-xs text-slate-400 font-mono">/ 3 حد أقصى</span>
+            </div>
+            <div className="text-[10px] text-slate-400 mt-1">
+              {(sessionData?.consecutiveLosses ?? 0) >= 3
+                ? '🛑 تم التوقف التلقائي'
+                : (sessionData?.consecutiveLosses ?? 0) === 2
+                ? '⚠️ تنبيه: اقتراب من إيقاف الطوارئ'
+                : 'ضمن النطاق الآمن 🛡️'}
+            </div>
+          </div>
+
+          {/* Card 5: Win Rate % */}
+          <div className="p-4 rounded-xl bg-slate-800/80 border border-amber-500/50 flex flex-col justify-between col-span-2 sm:col-span-1">
+            <div className="text-amber-400 text-xs font-semibold flex items-center gap-1.5">
+              <Award className="w-4 h-4 text-amber-400" />
+              <span>نسبة النجاح</span>
+            </div>
+            <div className="mt-2 text-2xl sm:text-3xl font-black text-amber-400 font-mono">
+              {sessionData?.winRate ?? 0}%
+            </div>
+            <div className="text-[10px] text-amber-300/80 mt-1">
+              الهدف: 70% إلى 75% 🎯
+            </div>
+          </div>
+        </div>
+
+        {/* 4 Feature Badges & Policy Checklist */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs bg-slate-800/50 p-4 rounded-xl border border-slate-700">
+          <div className="flex items-start gap-2.5">
+            <Crown className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-bold text-white">حصري لقناة VIP الخاصة</div>
+              <div className="text-slate-400 text-[11px]">
+                تصل الإشارات حصرياً لمشتركي VIP والروبوت العائم، دون النشر في القناة المجانية.
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-2.5">
+            <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-bold text-white">إحصائيات البث المشرف فقط</div>
+              <div className="text-slate-400 text-[11px]">
+                معزولة كلياً ومحمية ولا تتدخل في إحصائيات القناة العامة اليومية.
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-2.5">
+            <Clock className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-bold text-white">10 دقائق مسح + مدة 60 دقيقة</div>
+              <div className="text-slate-400 text-[11px]">
+                تنبيه البداية عند 18:00، ومسح 10 دقائق، وتنتهي الجلسة بعد 60 دقيقة من أول إشارة.
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-bold text-white">إيقاف طوارئ عند 3 خسائر متتالية</div>
+              <div className="text-slate-400 text-[11px]">
+                حماية صارمة لرأس المال وإرسال رسالة الاعتذار وتأجيل التداول للغد.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Action Feedback Banner */}
+        {sessionActionFeedback && (
+          <div
+            className={`p-3 rounded-xl border text-xs sm:text-sm font-bold flex items-center justify-between ${
+              sessionActionFeedback.type === 'success'
+                ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300'
+                : 'bg-rose-950/80 border-rose-500/50 text-rose-300'
+            }`}
+          >
+            <span>{sessionActionFeedback.text}</span>
+            <button
+              onClick={() => setSessionActionFeedback(null)}
+              className="text-slate-400 hover:text-white"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Session Admin Interactive Control Buttons */}
+        <div className="flex flex-wrap items-center gap-3 pt-2">
+          {/* Toggle Enable Button */}
+          <button
+            onClick={handleToggleSessionEnabled}
+            disabled={isSessionActionLoading === 'toggle'}
+            className={`px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all ${
+              sessionData?.enabled
+                ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md'
+                : 'bg-slate-700 hover:bg-slate-600 text-slate-300'
+            }`}
+          >
+            <Power className="w-4 h-4" />
+            <span>
+              {sessionData?.enabled ? 'الجلسة الآلية: مفعّلة (نشطة)' : 'الجلسة الآلية: متوقفة مؤقتاً'}
+            </span>
+          </button>
+
+          {/* Trigger Scan Button */}
+          <button
+            onClick={() => handleTriggerSessionNow('scan')}
+            disabled={Boolean(isSessionActionLoading)}
+            className="px-4 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs sm:text-sm flex items-center gap-2 shadow-md transition-all disabled:opacity-50"
+          >
+            <RefreshCw
+              className={`w-4 h-4 ${isSessionActionLoading === 'scan' ? 'animate-spin' : ''}`}
+            />
+            <span>
+              {isSessionActionLoading === 'scan'
+                ? 'جاري مسح أزواج السوق...'
+                : '🔍 مسح فني عميق للأسواق واختيار مرشح'}
+            </span>
+          </button>
+
+          {/* Trigger Immediate Signal Button */}
+          <button
+            onClick={() => handleTriggerSessionNow('signal')}
+            disabled={Boolean(isSessionActionLoading)}
+            className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-extrabold text-xs sm:text-sm flex items-center gap-2 shadow-md transition-all disabled:opacity-50"
+          >
+            <Zap
+              className={`w-4 h-4 ${isSessionActionLoading === 'signal' ? 'animate-bounce' : ''}`}
+            />
+            <span>
+              {isSessionActionLoading === 'signal'
+                ? 'جاري إرسال الصفقة لقناة VIP...'
+                : '⚡ إرسال صفقة بث حي فورية إلى VIP'}
+            </span>
+          </button>
+
+          {/* Reset Session Stats Button */}
+          <button
+            onClick={handleResetSession}
+            disabled={Boolean(isSessionActionLoading)}
+            className="px-3.5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-all disabled:opacity-50"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-slate-400" />
+            <span>تصفير إحصائيات جلسة اليوم</span>
+          </button>
+        </div>
+
+        {/* Live Session Recent Signals List (if any) */}
+        {sessionSignals.length > 0 && (
+          <div className="pt-4 border-t border-slate-800 space-y-2.5">
+            <div className="text-xs font-bold text-amber-300 flex items-center gap-2">
+              <Radio className="w-4 h-4 text-amber-400 animate-pulse" />
+              <span>صفقات البث الحي المنشورة اليوم في جلسة VIP ({sessionSignals.length} صفقات):</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-48 overflow-y-auto">
+              {sessionSignals.map(sig => (
+                <div
+                  key={sig.id}
+                  className="p-2.5 rounded-lg bg-slate-800/90 border border-slate-700 flex items-center justify-between text-xs"
+                >
+                  <div className="flex items-center gap-2">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        sig.status === 'WIN'
+                          ? 'bg-emerald-400'
+                          : sig.status === 'LOSS'
+                          ? 'bg-rose-400'
+                          : 'bg-amber-400 animate-pulse'
+                      }`}
+                    />
+                    <span className="font-bold text-white font-mono">{sig.asset}</span>
+                    <span
+                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                        sig.direction === 'CALL'
+                          ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/30'
+                          : 'bg-rose-950 text-rose-300 border border-rose-500/30'
+                      }`}
+                    >
+                      {sig.direction === 'CALL' ? 'CALL 🟢' : 'PUT 🔴'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px] font-mono">
+                    <span className="text-slate-400">:{sig.entryMinute}</span>
+                    <span
+                      className={`font-black px-2 py-0.5 rounded ${
+                        sig.status === 'WIN'
+                          ? 'bg-emerald-500/20 text-emerald-300'
+                          : sig.status === 'LOSS'
+                          ? 'bg-rose-500/20 text-rose-300'
+                          : 'bg-amber-500/20 text-amber-300'
+                      }`}
+                    >
+                      {sig.status === 'WIN'
+                        ? '✅ ربح'
+                        : sig.status === 'LOSS'
+                        ? '❌ خسارة'
+                        : '⏳ قيد التنفيذ'}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ========================================================

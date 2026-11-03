@@ -245,6 +245,7 @@ export interface SignalItem {
   createdAt: string;
   telegramMessageId?: number;
   autoSent?: boolean;
+  isLiveBroadcast?: boolean;
 }
 
 export interface LivePairSnapshot {
@@ -525,7 +526,7 @@ export default function App() {
     chatId: localStorage.getItem('tg_chat_id') || '@ZadNBFX',
     freeScheduleEnabled: true,
     freeStartHourEgypt: Number(localStorage.getItem('tg_free_start_hour') ?? 9),
-    freeEndHourEgypt: Number(localStorage.getItem('tg_free_end_hour') ?? 15),
+    freeEndHourEgypt: Number(localStorage.getItem('tg_free_end_hour') ?? 12),
     freeWinIcon: localStorage.getItem('tg_free_win_icon') || '✅ ربح',
     freeWinGale1Icon: localStorage.getItem('tg_free_gale1_icon') || '✅ ربح مضاعفة واحدة',
     freeLossIcon: localStorage.getItem('tg_free_loss_icon') || '❌',
@@ -599,7 +600,7 @@ export default function App() {
   // Admin: Raw Signal Input & Auto-parsed state
   const [rawInput, setRawInput] = useState<string>(SAMPLE_QUOTEX_SIGNALS[0].raw);
   const [formatterOptions, setFormatterOptions] = useState<FormatterOptions>({
-    channelTitle: 'نَبض التداول | السوق العالمي',
+    channelTitle: 'نَبض التداول',
     channelSignature: '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال',
     templateStyle: 'elegant',
     customTemplatePattern: DEFAULT_CUSTOM_TEMPLATE,
@@ -1746,7 +1747,8 @@ export default function App() {
       direction: manualOverride.direction ?? base.direction,
       entryMinute: activeMinute,
       entryTime: formatDeviceLocalTimeFromMinute(activeMinute),
-      analysisReason: manualOverride.analysisReason ?? base.analysisReason
+      analysisReason: manualOverride.analysisReason ?? base.analysisReason,
+      conditionsMetText: 'محققة بنجاح (3 من 4 شروط فنية معتمدة ✅)'
     };
   }, [rawInput, formatterOptions, manualOverride, deviceNow]);
 
@@ -1987,11 +1989,13 @@ export default function App() {
     }
   };
 
-  // Show and calculate stats for all of TODAY's signals
+  // Show and calculate stats for all of TODAY's signals (excluding live broadcast signals which belong exclusively to VIP Admin Live Stats)
   const todaySignals = useMemo(() => {
     const todayEgypt = getEgyptDateString(deviceNow);
     return signals.filter(s => {
       if (!s.createdAt) return false;
+      // Exclude live broadcast signals from general public daily stats (they belong exclusively to Admin Live Broadcast stats)
+      if (s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'))) return false;
       const sigDate = new Date(s.createdAt);
       if (isNaN(sigDate.getTime())) return false;
       const isToday = getEgyptDateString(sigDate) === todayEgypt;
@@ -2014,8 +2018,8 @@ export default function App() {
   // Comprehensive End-of-Day Final Trading Report (تقرير نهاية يوم التداول بناءً على الساعة النهائية في البوت)
   const endOfDayReportData = useMemo(() => {
     const todayEgypt = getEgyptDateString(deviceNow);
-    const startH = Number(autoPilot.freeStartHourEgypt ?? 10);
-    const endH = Number(autoPilot.freeEndHourEgypt ?? 18);
+    const startH = Number(autoPilot.freeStartHourEgypt ?? 9);
+    const endH = Number(autoPilot.freeEndHourEgypt ?? 12);
     const currentH = Number(autoPilot.currentEgyptHour ?? deviceNow.getHours());
     const isAfterClose =
       autoPilot.freeScheduleEnabled === false
