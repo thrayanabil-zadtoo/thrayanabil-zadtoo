@@ -1,14 +1,18 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Activity,
+  BarChart2,
   Bell,
   Check,
   CheckCircle2,
   Clock,
+  Code,
   Copy,
   Crown,
   DollarSign,
+  Download,
   ExternalLink,
+  Eye,
   Globe,
   Key,
   Lock,
@@ -20,16 +24,21 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
+  TrendingUp,
   UserPlus,
-  X
+  X,
+  Zap
 } from 'lucide-react';
 import type { VipSubscriber, SignalItem, LivePairSnapshot } from '../App';
+
+export type RobotStrategyEngineMode = 'PUBLIC_CLASSIC' | 'VIP_WITH_MPB' | 'VIP_WITHOUT_MPB';
 
 export interface QuotexRobotSettings {
   isPublishedToVisitors: boolean;
   robotTitle: string;
   version: string;
   defaultMode: 'AUTO' | 'MANUAL';
+  strategyEngineMode?: RobotStrategyEngineMode;
   noMartingaleStrict: boolean;
   soundAlertsEnabled: boolean;
   autoSelectPair: boolean;
@@ -202,6 +211,71 @@ export default function QuotexRobotAdminPage({
   const [newKeyMode, setNewKeyMode] = useState<'AUTO' | 'MANUAL'>('AUTO');
   const [isCreatingKey, setIsCreatingKey] = useState(false);
   const [searchMemberQuery, setSearchMemberQuery] = useState('');
+
+  // Momentum Pause Breakout Strategy & Radar State
+  const [isTriggeringMomentumPause, setIsTriggeringMomentumPause] = useState(false);
+  const [momentumTriggerFeedback, setMomentumTriggerFeedback] = useState<string | null>(null);
+  const [momentumRadar, setMomentumRadar] = useState<any[]>([]);
+  const [isLoadingMomentumRadar, setIsLoadingMomentumRadar] = useState(false);
+  const [showMq4CodeModal, setShowMq4CodeModal] = useState(false);
+  const [mq4SourceCode, setMq4SourceCode] = useState<string>('');
+
+  const fetchMomentumRadar = async () => {
+    setIsLoadingMomentumRadar(true);
+    try {
+      const res = await fetch('/api/admin/momentum-pause/status');
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.radar)) {
+        setMomentumRadar(data.radar);
+      }
+    } catch (_e) {
+      // Ignore
+    } finally {
+      setIsLoadingMomentumRadar(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchMomentumRadar();
+    const interval = setInterval(fetchMomentumRadar, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleTriggerMomentumPauseNow = async (preferredPair?: string, direction?: 'CALL' | 'PUT') => {
+    setIsTriggeringMomentumPause(true);
+    setMomentumTriggerFeedback(null);
+    try {
+      const res = await fetch('/api/admin/momentum-pause/trigger-now', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ preferredPair, direction })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setMomentumTriggerFeedback(`✅ تم إرسال إشارة Momentum Pause بنجاح إلى قناة VIP وروبوت كيوتكس! (${data.signal?.asset} - ${data.signal?.direction})`);
+      } else {
+        setMomentumTriggerFeedback(`❌ فشل: ${data.error || 'تعذر الإرسال'}`);
+      }
+    } catch (err: any) {
+      setMomentumTriggerFeedback(`❌ خطأ اتصال: ${err?.message || 'خطأ غير معروف'}`);
+    } finally {
+      setIsTriggeringMomentumPause(false);
+      setTimeout(() => setMomentumTriggerFeedback(null), 8000);
+    }
+  };
+
+  const handleOpenMq4CodeModal = async () => {
+    setShowMq4CodeModal(true);
+    if (!mq4SourceCode) {
+      try {
+        const res = await fetch('/api/strategy/mq4-code');
+        const data = await res.json();
+        if (data.ok && data.code) {
+          setMq4SourceCode(data.code);
+        }
+      } catch (_e) {}
+    }
+  };
 
   // Play crisp Web Audio beep alert when signal arrives
   const playRobotAlertSound = (type: 'signal' | 'open') => {
@@ -732,7 +806,7 @@ export default function QuotexRobotAdminPage({
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2.5 text-xs">
           <div className="p-3 bg-[#0B0F17] border border-slate-800 rounded-xl">
             <div className="text-[11px] text-slate-400">ساعات عمل الروبوت</div>
-            <div className="font-extrabold text-sky-300 mt-0.5 font-mono-num">09:00 ص - 03:00 م</div>
+            <div className="font-extrabold text-sky-300 mt-0.5 font-mono-num">09:00 ص - 09:00 م</div>
           </div>
           <div className="p-3 bg-[#0B0F17] border border-slate-800 rounded-xl">
             <div className="text-[11px] text-slate-400">فترة مسح السوق</div>
@@ -841,6 +915,381 @@ export default function QuotexRobotAdminPage({
           </div>
         )}
       </div>
+
+      {/* =====================================================================
+          MOMENTUM PAUSE BREAKOUT + 4-INDICATOR CONFLUENCE STRATEGY & MT4 PANEL
+          ===================================================================== */}
+      <div className="p-5 sm:p-6 bg-gradient-to-br from-[#0c1a2e] via-slate-900 to-[#1e1338] border-2 border-amber-500/50 rounded-2xl shadow-2xl space-y-5">
+        {/* Header */}
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black bg-amber-500/20 text-amber-300 border border-amber-400/50">
+                <Crown className="w-3.5 h-3.5 text-amber-400" />
+                <span>المحرك المعتمد لقناة VIP والروبوت الآلي 👑</span>
+              </span>
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                <Zap className="w-3 h-3" />
+                <span>تنفيذ فوري 5 ثوانٍ ⚡</span>
+              </span>
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40">
+                <span>شرط أساسي إلزامي: Momentum Pause + توفر مؤشرين إضافيين (المجموع 3) ✅</span>
+              </span>
+            </div>
+            <h2 className="text-xl sm:text-2xl font-black text-white tracking-tight flex items-center gap-2">
+              <span>🚀 استراتيجية Momentum Pause Breakout (M1) — شرط أساسي إلزامي + مؤشرين للتأكيد</span>
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed max-w-4xl">
+              <strong>قاعدة الدخول الصارمة:</strong> مؤشر <strong>Momentum Pause Breakout</strong> هو <span className="text-amber-300 underline font-bold">الشرط الأساسي الإلزامي الأول</span> (لا يتم إطلاق أي صفقة بدونه نهائياً). ويشترط معه توافق <span className="text-emerald-400 font-bold">مؤشرين إضافيين على الأقل</span> من بين 3 مؤشرات داعمة (ATR + RSI + Supertrend) ليكون المجموع النهائي 3 أو 4 مؤشرات متوافقة بالكامل، مع التنفيذ الفوري السريع قبل 5 ثوانٍ فقط من افتتاح الشمعة.
+            </p>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => handleTriggerMomentumPauseNow()}
+              disabled={isTriggeringMomentumPause}
+              className="px-4 py-2.5 text-xs font-black bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 rounded-xl transition-all cursor-pointer flex items-center gap-2 shadow-lg shadow-amber-500/20 active:scale-95 disabled:opacity-50"
+            >
+              <Zap className={`w-4 h-4 ${isTriggeringMomentumPause ? 'animate-spin' : ''}`} />
+              <span>{isTriggeringMomentumPause ? '⏳ جاري الإرسال...' : '⚡ إرسال إشارة VIP وروبوت تجريبية الآن (5 ثوانٍ)'}</span>
+            </button>
+
+            <a
+              href="/api/strategy/download-mq4"
+              download="NB_FX_Momentum_Pause_Breakout.mq4"
+              className="px-3.5 py-2.5 text-xs font-black bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-md shadow-emerald-500/20"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>تحميل مؤشر MT4 (.mq4)</span>
+            </a>
+
+            <button
+              type="button"
+              onClick={handleOpenMq4CodeModal}
+              className="px-3.5 py-2.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+            >
+              <Code className="w-3.5 h-3.5" />
+              <span>عرض ونسخ كود MQL4</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Feedback message */}
+        {momentumTriggerFeedback && (
+          <div className="p-3 rounded-xl bg-slate-950/90 border border-amber-500/50 text-xs font-bold flex items-center gap-2 text-amber-200 animate-fade-in">
+            <span>{momentumTriggerFeedback}</span>
+          </div>
+        )}
+
+        {/* Channel Separation Banner */}
+        <div className="p-3.5 bg-gradient-to-r from-slate-950/90 via-[#0B132B] to-slate-950/90 border border-amber-500/30 rounded-xl flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+          <div className="flex items-center gap-2.5">
+            <span className="text-xl">🛡️</span>
+            <div>
+              <span className="font-black text-amber-300">عزل تام للمسارات وتخصيص البث:</span>
+              <p className="text-slate-300 text-[11px] mt-0.5">
+                • <strong>القناة العامة (@ZadNBFX):</strong> تعمل فقط بالنظام الكلاسيكي السابق (09:00 - 12:00، هدف 3:1 أو 70%-75% stop).<br />
+                • <strong>قناة VIP وروبوت كيوتكس:</strong> تم تحويلهما بنسبة 100% لاستراتيجية Momentum Pause Breakout وتوافق 3/4 مؤشرات مع سرعة 5 ثوانٍ.
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className="px-2.5 py-1 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10.5px] font-bold">
+              VIP + الروبوت: نشط 🟢
+            </span>
+            <span className="px-2.5 py-1 rounded-lg bg-sky-500/20 text-sky-300 border border-sky-500/40 text-[10.5px] font-bold">
+              العامة: الكلاسيكي المستقل 🌐
+            </span>
+          </div>
+        </div>
+
+        {/* The 4 Indicators Architecture Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+          {/* Indicator 1 */}
+          <div className="p-4 bg-slate-950/70 border-2 border-amber-500/40 rounded-xl space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-black text-[10px]">
+                المؤشر 01 (الأساسي)
+              </span>
+              <span className="text-amber-400 font-mono-num font-bold">M1</span>
+            </div>
+            <h3 className="font-extrabold text-white text-sm">Momentum Pause Breakout</h3>
+            <p className="text-slate-300 text-[11px] leading-relaxed">
+              1. شمعتان قويتان متتاليتان بنفس الاتجاه (Body ≥ 0.55 × ATR).<br />
+              2. شمعة توقف ضعيفة (Pause Body ≤ 0.30 × ATR).<br />
+              3. شمعة اختراق وتأكيد تتجاوز قمة/قاع شمعة التوقف.
+            </p>
+          </div>
+
+          {/* Indicator 2 */}
+          <div className="p-4 bg-slate-950/70 border-2 border-sky-500/40 rounded-xl space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-black text-[10px]">
+                المؤشر 02
+              </span>
+              <span className="text-sky-400 font-mono-num font-bold">Period 14</span>
+            </div>
+            <h3 className="font-extrabold text-white text-sm">ATR (Average True Range)</h3>
+            <p className="text-slate-300 text-[11px] leading-relaxed">
+              يقيس متوسط المدى الحقيقي والتوسع الحركي. يضمن وجود سيولة كافية وفولتيلتي نشطة لتفادي الأسواق الميتة والمذبذبة أثناء الاختراق.
+            </p>
+          </div>
+
+          {/* Indicator 3 */}
+          <div className="p-4 bg-slate-950/70 border-2 border-indigo-500/40 rounded-xl space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-black text-[10px]">
+                المؤشر 03
+              </span>
+              <span className="text-indigo-400 font-mono-num font-bold">RSI (14)</span>
+            </div>
+            <h3 className="font-extrabold text-white text-sm">مؤشر القوة النسبية (RSI)</h3>
+            <p className="text-slate-300 text-[11px] leading-relaxed">
+              تأكيد توافق زخم الدخول: ميل صعودي فوق 48 لصفقات CALL وميل هبوطي تحت 52 لصفقات PUT، مع استبعاد أي إشارات في ذروة التشبع المعاكس.
+            </p>
+          </div>
+
+          {/* Indicator 4 */}
+          <div className="p-4 bg-slate-950/70 border-2 border-emerald-500/40 rounded-xl space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 font-black text-[10px]">
+                المؤشر 04
+              </span>
+              <span className="text-emerald-400 font-mono-num font-bold">(10, 3.0)</span>
+            </div>
+            <h3 className="font-extrabold text-white text-sm">مؤشر Supertrend</h3>
+            <p className="text-slate-300 text-[11px] leading-relaxed">
+              تأكيد الاتجاه العام: السعر فوق خط السوبرتريند الأخضر للصعود (BULLISH) أو تحت الخط الأحمر للهبوط (BEARISH) أو لحظة الانقلاب الفوري.
+            </p>
+          </div>
+        </div>
+
+        {/* Visual Strategy Diagrams & User Screenshots */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+          {/* Screenshot 1 Reference */}
+          <div className="p-4 bg-slate-950/80 border border-slate-800 rounded-xl space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-black text-amber-300 flex items-center gap-1.5">
+                <span>📸 النموذج الصاعد الأول (مرفق المستخدم 1.PNG)</span>
+              </span>
+              <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
+                صعود مؤكد (CALL)
+              </span>
+            </div>
+            <div className="flex items-center gap-4 bg-[#050811] p-3 rounded-lg border border-slate-800/80">
+              <img
+                src="/assets/aistudio/1_83b74f8f.PNG"
+                alt="Momentum Pause Breakout Setup 1"
+                className="w-16 h-28 object-contain rounded border border-slate-700 bg-black/60 shadow"
+              />
+              <div className="space-y-1 text-[11px] text-slate-300">
+                <div className="font-bold text-white">تحليل الشموع الظاهرة بالصورة:</div>
+                <p>
+                  1. شمعتان صفراوان قويتان بحجم زخم صاعد متتالي.<br />
+                  2. شمعة توقف حمراء صغيرة (Pause Doji) تُظهر استراحة المؤشرات.<br />
+                  3. شمعة اختراق صفراء تخترق قمة شمعة التوقف.<br />
+                  <span className="text-emerald-400 font-bold">⚡ الدخول: صفقة صعود (CALL) فورية مدتها دقيقة M1.</span>
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Screenshot 2 Reference */}
+          <div className="p-4 bg-slate-950/80 border border-slate-800 rounded-xl space-y-2.5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-black text-amber-300 flex items-center gap-1.5">
+                <span>📸 النموذج الصاعد الثاني (مرفق المستخدم 5.PNG)</span>
+              </span>
+              <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
+                صعود واستمرار (CALL)
+              </span>
+            </div>
+            <div className="flex items-center gap-4 bg-[#050811] p-3 rounded-lg border border-slate-800/80">
+              <img
+                src="/assets/aistudio/5_fcf46b43.PNG"
+                alt="Momentum Pause Breakout Setup 2"
+                className="w-16 h-28 object-contain rounded border border-slate-700 bg-black/60 shadow"
+              />
+              <div className="space-y-1 text-[11px] text-slate-300">
+                <div className="font-bold text-white">تحليل الشموع الظاهرة بالصورة:</div>
+                <p>
+                  1. شمعتان صاعدتان ممتدتان فوق خط التريند الأزرق.<br />
+                  2. شمعة ارتداد وتوقف خضراء صغيرة وضعيفة.<br />
+                  3. شمعة تأكيد صاعدة تخترق نطاق الشمعة الصغيرة.<br />
+                  <span className="text-emerald-400 font-bold">⚡ الدخول: إشارة شراء فورية (CALL) بدقة متناهية.</span>
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Live 4-Indicator Confluence Radar */}
+        <div className="space-y-3 pt-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <BarChart2 className="w-4 h-4 text-amber-400" />
+              <h3 className="text-xs sm:text-sm font-extrabold text-white">
+                رادار التوافق الرباعي اللحظي لأزواج العملات (Live 4-Indicator Radar)
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={fetchMomentumRadar}
+              disabled={isLoadingMomentumRadar}
+              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs flex items-center gap-1 cursor-pointer"
+            >
+              <RefreshCw className={`w-3 h-3 ${isLoadingMomentumRadar ? 'animate-spin' : ''}`} />
+              <span>تحديث الرادار</span>
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-right text-xs border border-slate-800 rounded-xl overflow-hidden bg-slate-950/70">
+              <thead>
+                <tr className="bg-slate-900/90 text-slate-300 border-b border-slate-800 text-[11px]">
+                  <th className="py-2.5 px-3">الزوج</th>
+                  <th className="py-2.5 px-3">السعر اللحظي</th>
+                  <th className="py-2.5 px-3">Momentum Pause</th>
+                  <th className="py-2.5 px-3">ATR (14)</th>
+                  <th className="py-2.5 px-3">RSI (14)</th>
+                  <th className="py-2.5 px-3">Supertrend</th>
+                  <th className="py-2.5 px-3">التوافق الفني</th>
+                  <th className="py-2.5 px-3 text-center">إجراء فوري</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800/60 font-mono-num">
+                {momentumRadar.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-6 text-center text-slate-400 font-sans">
+                      جاري فحص مؤشرات السوق العالمي واستخلاص التوافق الرباعي...
+                    </td>
+                  </tr>
+                ) : (
+                  momentumRadar.map((row, idx) => {
+                    const isCall = row.confluence?.candidateDirection === 'CALL';
+                    const isPut = row.confluence?.candidateDirection === 'PUT';
+                    const count = row.supportingCount || 0;
+                    const isTriggered = row.isTriggered || count >= 3;
+
+                    return (
+                      <tr key={idx} className="hover:bg-slate-900/50 transition-colors">
+                        <td className="py-2.5 px-3 font-extrabold text-white font-sans flex items-center gap-1.5">
+                          <span>{row.pair}</span>
+                          <span className="text-[9px] px-1.5 py-0.2 rounded bg-sky-500/20 text-sky-300 font-mono">🌐</span>
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-200">{row.price}</td>
+                        <td className="py-2.5 px-3 font-sans">
+                          {row.momentumPause?.isDetected ? (
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              row.momentumPause.direction === 'CALL' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'
+                            }`}>
+                              {row.momentumPause.direction === 'CALL' ? '🟢 اختراق صاعد' : '🔴 كسر هابط'}
+                            </span>
+                          ) : (
+                            <span className="text-slate-500 text-[10px]">في تشكل</span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 font-sans">
+                          <span className="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 text-[10px]">
+                            {row.confluence?.atrMatched ? '✅ سيولة نشطة' : 'معتدل'}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-200">
+                          {typeof row.rsi === 'number' ? row.rsi.toFixed(1) : '-'}
+                        </td>
+                        <td className="py-2.5 px-3 font-sans">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            row.superTrend?.trend === 'BULLISH' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-rose-500/20 text-rose-300'
+                          }`}>
+                            {row.superTrend?.trend === 'BULLISH' ? '🟢 صاعد' : '🔴 هابط'}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 font-sans">
+                          <span className={`px-2 py-0.5 rounded text-[10.5px] font-bold ${
+                            isTriggered
+                              ? 'bg-amber-500/20 text-amber-300 border border-amber-400/40 font-black'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}>
+                            {count} من 4 مؤشرات {isTriggered ? '✅ جاهز' : ''}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center font-sans">
+                          <button
+                            type="button"
+                            onClick={() => handleTriggerMomentumPauseNow(row.pair, row.confluence?.candidateDirection || undefined)}
+                            disabled={isTriggeringMomentumPause}
+                            className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-[10.5px] rounded-lg transition-all cursor-pointer shadow disabled:opacity-50"
+                          >
+                            ⚡ إطلاق VIP
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      {/* MQ4 Code Viewer Modal */}
+      {showMq4CodeModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-[#0b1220] border-2 border-amber-500/50 rounded-2xl max-w-4xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+            <div className="p-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Code className="w-5 h-5 text-amber-400" />
+                <h3 className="font-black text-white text-base">
+                  كود مؤشر MT4 الرسمي (NB_FX_Momentum_Pause_Breakout.mq4)
+                </h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleCopy(mq4SourceCode, 'mq4-code-modal')}
+                  className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black rounded-lg text-xs cursor-pointer flex items-center gap-1 shadow"
+                >
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>{copiedId === 'mq4-code-modal' ? '✓ تم النسخ!' : 'نسخ الكود بالكامل'}</span>
+                </button>
+                <a
+                  href="/api/strategy/download-mq4"
+                  download="NB_FX_Momentum_Pause_Breakout.mq4"
+                  className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-lg text-xs cursor-pointer flex items-center gap-1 shadow"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>تحميل ملف .mq4</span>
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setShowMq4CodeModal(false)}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-lg cursor-pointer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 overflow-y-auto flex-1 font-mono text-xs text-emerald-300 bg-[#050914] leading-relaxed select-all" dir="ltr">
+              <pre>{mq4SourceCode || '// جاري تحميل كود المؤشر من السيرفر...'}</pre>
+            </div>
+
+            <div className="p-3 bg-slate-900 border-t border-slate-800 text-xs text-slate-400 flex items-center justify-between">
+              <span>💡 طريقة التثبيت: افتح MetaTrader 4 &gt; File &gt; Open Data Folder &gt; MQL4 &gt; Indicators والصق الملف ثم أعد تشغيل المنصة.</span>
+              <button
+                type="button"
+                onClick={() => setShowMq4CodeModal(false)}
+                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs cursor-pointer"
+              >
+                إغلاق
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* =====================================================================
           SECTION 1: LIVE INTERACTIVE FLOATING ROBOT OVER QUOTEX CHART PREVIEW
@@ -1261,6 +1710,36 @@ export default function QuotexRobotAdminPage({
                         </button>
                       </div>
 
+                      {/* 3-Option Strategy Dropdown Selector (قائمة منسدلة حصرية) */}
+                      <div className="space-y-1 bg-[#09121f] p-1.5 rounded-lg border border-slate-800">
+                        <div className="flex items-center justify-between text-[9px]">
+                          <span className="text-slate-300 font-bold flex items-center gap-1">
+                            <span>🎯</span>
+                            <span>استراتيجية المؤشرات:</span>
+                          </span>
+                          <span className="text-[8px] px-1 py-0.2 rounded font-mono font-bold bg-slate-800 text-amber-300">
+                            {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'PUBLIC_CLASSIC' ? '1 دقيقة ⏳' : '5 ثوانٍ ⚡'}
+                          </span>
+                        </div>
+                        <select
+                          value={robotSettings.strategyEngineMode || 'VIP_WITH_MPB'}
+                          onChange={e => {
+                            const newMode = e.target.value as RobotStrategyEngineMode;
+                            setRobotSettings(prev => ({ ...prev, strategyEngineMode: newMode }));
+                            fetch('/api/robot-settings', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ strategyEngineMode: newMode })
+                            }).catch(() => {});
+                          }}
+                          className="w-full px-1.5 py-1 text-[9px] bg-[#070D18] border border-emerald-500/60 rounded text-white font-extrabold cursor-pointer focus:outline-none focus:border-emerald-400"
+                        >
+                          <option value="PUBLIC_CLASSIC">📢 مؤشر القناة العامة (انتظار 1 دقيقة)</option>
+                          <option value="VIP_WITH_MPB">👑 VIP مع MPB (تنفيذ 5 ثوانٍ ⚡)</option>
+                          <option value="VIP_WITHOUT_MPB">⚡ VIP بدون MPB (تنفيذ 5 ثوانٍ ⚡)</option>
+                        </select>
+                      </div>
+
                       {/* مزامنة سحابية حصرية مع الإشارات المعتمدة */}
                       <div className="flex items-center justify-between px-2 py-1 bg-[#09121f] border border-sky-900/50 rounded-lg text-[9.5px]">
                         <span className="flex items-center gap-1 text-slate-200">
@@ -1531,6 +2010,80 @@ export default function QuotexRobotAdminPage({
                   }
                   className="w-full px-3 py-2 bg-[#0B0F17] border border-slate-800 rounded-xl text-white focus:outline-none focus:border-emerald-400"
                 />
+              </div>
+
+              {/* Single Dropdown for the 3 Strategy Options (قائمة منسدلة حصرية لمنع دمج الخيارات) */}
+              <div className="p-3 bg-gradient-to-r from-emerald-950/40 via-slate-900 to-slate-900 border border-emerald-500/40 rounded-xl space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-emerald-300 font-extrabold text-xs flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5 text-amber-400" />
+                    <span>استراتيجية مؤشرات الروبوت وقناة VIP (قائمة منسدلة حصرية):</span>
+                  </label>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-mono">
+                    {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'PUBLIC_CLASSIC' ? 'انتظار 1 دقيقة' : 'تنفيذ فوري 5 ثوانٍ ⚡'}
+                  </span>
+                </div>
+
+                <select
+                  value={robotSettings.strategyEngineMode || 'VIP_WITH_MPB'}
+                  onChange={e =>
+                    setRobotSettings(prev => ({
+                      ...prev,
+                      strategyEngineMode: e.target.value as RobotStrategyEngineMode
+                    }))
+                  }
+                  className="w-full px-3 py-2 bg-[#0B0F17] border-2 border-emerald-500/60 rounded-xl text-white font-extrabold text-xs sm:text-sm focus:outline-none focus:border-emerald-400 cursor-pointer shadow-inner"
+                >
+                  <option value="PUBLIC_CLASSIC">
+                    1️⃣ الخيار الأول: تفعيل مؤشر القناة العامة (انتظار 1 دقيقة — خاص بالروبوت والقناة العامة)
+                  </option>
+                  <option value="VIP_WITH_MPB">
+                    2️⃣ الخيار الثاني: تفعيل مؤشر VIP مع MPB (تنفيذ 5 ثوانٍ ⚡ — شرط MPB إلزامي + 2 مؤشرات)
+                  </option>
+                  <option value="VIP_WITHOUT_MPB">
+                    3️⃣ الخيار الثالث: تفعيل مؤشر VIP بدون MPB (تنفيذ 5 ثوانٍ ⚡ — توافق 3 مؤشرات بدون إلزام MPB)
+                  </option>
+                </select>
+
+                {/* Dynamic Explanatory Banner for the Selected Option */}
+                <div className="p-2.5 rounded-lg text-[11px] leading-relaxed border transition-all">
+                  {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'PUBLIC_CLASSIC' && (
+                    <div className="bg-amber-950/30 border border-amber-500/40 text-amber-200 p-2 rounded-lg space-y-1">
+                      <div className="font-extrabold flex items-center gap-1.5 text-amber-300">
+                        <span>📢 الخيار الأول نشط: مؤشر القناة العامة (انتظار دقيقة كاملة)</span>
+                      </div>
+                      <div className="text-[10.5px] text-slate-300">
+                        • <b>وقت الانتظار:</b> يتم الانتظار لمدة دقيقة كاملة (60 ثانية) قبل تنفيذ الصفقة عند افتتاح الشمعة.<br />
+                        • <b>قناة VIP:</b> لا تُرسل أي إشارات لقناة VIP التليجرام نهائياً في هذا الوضع (الإشارة مخصصة للروبوت والقناة العامة فقط).
+                      </div>
+                    </div>
+                  )}
+
+                  {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'VIP_WITH_MPB' && (
+                    <div className="bg-emerald-950/30 border border-emerald-500/40 text-emerald-200 p-2 rounded-lg space-y-1">
+                      <div className="font-extrabold flex items-center gap-1.5 text-emerald-300">
+                        <span>👑 الخيار الثاني نشط: مؤشر VIP مع MPB (تنفيذ فوري خلال 5 ثوانٍ)</span>
+                      </div>
+                      <div className="text-[10.5px] text-slate-300">
+                        • <b>الشرط الأساسي:</b> مؤشر <b>MPB (Momentum Pause Breakout)</b> إلزامي 100% ولا تصدر الإشارة بدونه.<br />
+                        • <b>المؤشرات الداعمة:</b> توفر 2 على الأقل من (ATR + RSI + Supertrend) ليصبح المجموع 3 من 4 مؤشرات.<br />
+                        • <b>التوقيت والارسال:</b> تصل الإشارة خلال 5 ثوانٍ فقط وتُرسل تلقائياً لقناة VIP والروبوت للتنفيذ الفوري.
+                      </div>
+                    </div>
+                  )}
+
+                  {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'VIP_WITHOUT_MPB' && (
+                    <div className="bg-sky-950/30 border border-sky-500/40 text-sky-200 p-2 rounded-lg space-y-1">
+                      <div className="font-extrabold flex items-center gap-1.5 text-sky-300">
+                        <span>⚡ الخيار الثالث نشط: مؤشر VIP بدون MPB (توافق 3 مؤشرات - تنفيذ 5 ثوانٍ)</span>
+                      </div>
+                      <div className="text-[10.5px] text-slate-300">
+                        • <b>المرونة الفنية:</b> لا يشترط وجود MPB كشرط أساسي، بل يكفي توافق أي 3 من المؤشرات الـ 4 (MPB, ATR, RSI, Supertrend).<br />
+                        • <b>التوقيت والارسال:</b> تصل الإشارة خلال 5 ثوانٍ فقط وتُرسل تلقائياً لقناة VIP والروبوت للتنفيذ الفوري.
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2.5">

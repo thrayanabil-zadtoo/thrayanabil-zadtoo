@@ -336,6 +336,7 @@ export default function App() {
     robotTitle: 'روبوت التداول الآلي الذكي (Quotex Pro Bot)',
     version: 'v1.0 Beta (قيد التطوير)',
     defaultMode: 'MANUAL',
+    strategyEngineMode: 'VIP_WITH_MPB',
     noMartingaleStrict: true,
     soundAlertsEnabled: true,
     autoSelectPair: true,
@@ -600,7 +601,7 @@ export default function App() {
   // Admin: Raw Signal Input & Auto-parsed state
   const [rawInput, setRawInput] = useState<string>(SAMPLE_QUOTEX_SIGNALS[0].raw);
   const [formatterOptions, setFormatterOptions] = useState<FormatterOptions>({
-    channelTitle: 'نَبض التداول',
+    channelTitle: 'ZAD FX | إشارات أبوسليم',
     channelSignature: '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال',
     templateStyle: 'elegant',
     customTemplatePattern: DEFAULT_CUSTOM_TEMPLATE,
@@ -1989,13 +1990,15 @@ export default function App() {
     }
   };
 
-  // Show and calculate stats for all of TODAY's signals (excluding live broadcast signals which belong exclusively to VIP Admin Live Stats)
+  // Show and calculate stats for all of TODAY's signals (strictly VIP channel signals, excluding live broadcast)
   const todaySignals = useMemo(() => {
     const todayEgypt = getEgyptDateString(deviceNow);
     return signals.filter(s => {
       if (!s.createdAt) return false;
       // Exclude live broadcast signals from general public daily stats (they belong exclusively to Admin Live Broadcast stats)
       if (s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'))) return false;
+      // CRITICAL: Filter strictly to signals actually sent to VIP channel
+      if (!s.vipTelegramMessageId) return false;
       const sigDate = new Date(s.createdAt);
       if (isNaN(sigDate.getTime())) return false;
       const isToday = getEgyptDateString(sigDate) === todayEgypt;
@@ -2035,13 +2038,13 @@ export default function App() {
     const savedToday = dailyStats.find(d => d.date === todayEgypt);
     const directWins = savedToday?.manualOverride
       ? savedToday.directWins
-      : Math.max(liveDirectWins, savedToday?.directWins || 0);
+      : liveDirectWins;
     const gale1Wins = savedToday?.manualOverride
       ? savedToday.gale1Wins
-      : Math.max(liveGale1Wins, savedToday?.gale1Wins || 0);
+      : liveGale1Wins;
     const lossesWithGale = savedToday?.manualOverride
       ? savedToday.losses
-      : Math.max(liveLosses, savedToday?.losses || 0);
+      : liveLosses;
 
     const totalWinsWithGale = directWins + gale1Wins;
     const totalCompleted = totalWinsWithGale + lossesWithGale;
@@ -2134,7 +2137,7 @@ export default function App() {
     const activeWinRate = autoPilot.oneGaleEnabled ? winRateWithGale : winRateNoGale;
 
     const telegramReportText = [
-      `📊 التقرير المختصر لختام التداول | ${formatterOptions.channelTitle || 'نَبض التداول'}`,
+      `📊 التقرير المختصر لختام التداول | ${formatterOptions.channelTitle || 'ZAD FX | إشارات أبوسليم'}`,
       `📅 التاريخ: ${todayEgypt} (${formatHourAr(endH)})`,
       `━━━━━━━━━━━━━━━━━━━━`,
       `✅ عدد الربح: ${activeWins}`,
@@ -2273,9 +2276,9 @@ export default function App() {
     } else if (!existingToday.manualOverride) {
       map[todayEgypt] = {
         ...existingToday,
-        directWins: Math.max(existingToday.directWins, liveDirectWins),
-        gale1Wins: Math.max(existingToday.gale1Wins, liveGale1Wins),
-        losses: Math.max(existingToday.losses, liveLosses)
+        directWins: liveDirectWins,
+        gale1Wins: liveGale1Wins,
+        losses: liveLosses
       };
     }
     return map;
@@ -4850,7 +4853,7 @@ export default function App() {
                         setCustomMessageOverride(null);
                         updateFormatterOptions(prev => ({ ...prev, channelTitle: e.target.value }));
                       }}
-                      placeholder="نَبض التداول | السوق العالمي"
+                      placeholder="ZAD FX | إشارات أبوسليم"
                       className="w-full px-3 py-2 text-xs bg-[#0B0F17] border border-slate-800 rounded-lg text-slate-100 focus:outline-none focus:border-emerald-500"
                     />
                   </div>
@@ -5013,7 +5016,7 @@ export default function App() {
                   </div>
                   <div className="p-3.5 bg-[#182533] border border-slate-700/70 rounded-2xl rounded-tr-sm max-w-md mr-auto shadow-md space-y-1.5">
                     <div className="text-[11px] font-bold text-sky-400 flex items-center justify-between">
-                      <span>{formatterOptions.channelTitle || 'نَبض التداول | السوق العالمي'}</span>
+                      <span>{formatterOptions.channelTitle || 'ZAD FX | إشارات أبوسليم'}</span>
                       <span className="text-[10px] text-slate-400 font-mono-num" dir="ltr">
                         {autoPilot.chatId || '@ZadNBFX'}
                       </span>
@@ -6095,10 +6098,10 @@ export default function App() {
                     <span>صفحة خاصة للمشرف · كشف الأداء المالي والإحصائي للقناة الخاصة VIP بنظام ورقة A4</span>
                   </div>
                   <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                    📊 كشف إحصائيات القناة الخاصة VIP (جلسة التداول الكاملة 09:00 ص - 03:00 م · عائد 0.85$ للربح)
+                    📊 كشف إحصائيات القناة الخاصة VIP (جلسة التداول الكاملة 09:00 ص - 09:00 م · عائد 0.85$ للربح)
                   </h1>
                   <p className="text-xs text-slate-400 mt-1">
-                    💡 تحسب الإحصائيات على <strong className="text-amber-300">القناة الخاصة VIP</strong> التي يستمر عملها طوال عدد الساعات المتاحة في الإعدادات (09:00 ص إلى 03:00 م)، وليست ضمن القناة المجانية التي تتوقف مبكراً عند تحقيق الهدف.
+                    💡 تحسب الإحصائيات على <strong className="text-amber-300">القناة الخاصة VIP</strong> التي يستمر عملها طوال عدد الساعات المتاحة في الإعدادات (09:00 ص إلى 09:00 م)، وليست ضمن القناة المجانية التي تتوقف مبكراً عند تحقيق الهدف.
                   </p>
                 </div>
 
@@ -6467,7 +6470,7 @@ export default function App() {
               <div className="flex flex-wrap items-center justify-between gap-4 pb-4 border-b-2 border-slate-800 print:border-slate-300">
                 <div>
                   <div className="text-xs font-bold text-emerald-400 print:text-emerald-700 flex items-center gap-2">
-                    <span>نَبض التداول (@ZadNBFX) — كشف إحصائيات القناة الخاصة VIP (طوال ساعات عمل الجلسة 09:00 ص - 03:00 م)</span>
+                    <span>نَبض التداول (@ZadNBFX) — كشف إحصائيات القناة الخاصة VIP (طوال ساعات عمل الجلسة 09:00 ص - 09:00 م)</span>
                     {statsOffset < 0 && (
                       <span className="px-2 py-0.5 text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/30 rounded">
                         كشف مؤرشف
@@ -7273,7 +7276,7 @@ export default function App() {
                   <span>صفقة مباشرة بدون مضاعفات وبدون مخاطرة</span>
                 </div>
                 <h1 className="text-2xl sm:text-4xl font-bold text-white tracking-tight">
-                  {formatterOptions.channelTitle || 'نَبض التداول | السوق العالمي'}
+                  {formatterOptions.channelTitle || 'ZAD FX | إشارات أبوسليم'}
                 </h1>
                 <p className="text-sm text-slate-400 leading-relaxed">
                   نقتنص الفرص القوية فقط من السوق العالمي المباشر بناءً على مناطق التشبع السعري ومؤشر القوة النسبية (RSI)، بدقة عالية جداً <strong className="text-slate-200">وبدون أي مضاعفات (No Martingale)</strong> للحفاظ التام على رأس مالك.
@@ -8002,7 +8005,7 @@ export default function App() {
                 </div>
                 <div className="p-3 bg-[#182533] rounded-xl text-xs text-slate-100 space-y-1 font-sans">
                   <div className="font-bold text-emerald-300">
-                    {formatterOptions.channelTitle || 'نَبض التداول | السوق العالمي'}
+                    {formatterOptions.channelTitle || 'ZAD FX | إشارات أبوسليم'}
                   </div>
                   <div className="flex items-center justify-between pt-1 font-mono-num">
                     <span>💱 الزوج: <strong>{todaySignals[0]?.asset || 'EUR/USD'}</strong></span>

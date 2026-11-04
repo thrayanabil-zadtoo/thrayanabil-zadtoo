@@ -878,14 +878,14 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-slate-500 font-bold text-[11px]">2. بوت قناة VIP الخاصة</span>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-sky-100 text-sky-800">
-                  👑 9 ص - 3 م
+                  👑 9 ص - 9 م
                 </span>
               </div>
               <div className="font-black text-slate-900 text-xs font-mono-num">
-                09:00 صباحاً — 03:00 عصراً
+                09:00 صباحاً — 09:00 مساءً
               </div>
               <p className="text-[10px] text-slate-500 leading-tight">
-                يستمر في العمل بتوقيت مصر <strong className="text-sky-700">بغض النظر عن النتيجة</strong> حتى الساعة 03:00 عصراً.
+                يستمر في العمل بتوقيت مصر <strong className="text-sky-700">بغض النظر عن النتيجة</strong> حتى الساعة 09:00 مساءً.
               </p>
             </div>
 
@@ -894,14 +894,14 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-slate-500 font-bold text-[11px]">3. الروبوت العائم للمنصات</span>
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-900">
-                  🤖 9 ص - 3 م
+                  🤖 9 ص - 9 م
                 </span>
               </div>
               <div className="font-black text-slate-900 text-xs font-mono-num">
-                استقبال من 09:00 ص إلى 03:00 م
+                استقبال من 09:00 ص إلى 09:00 م
               </div>
               <p className="text-[10px] text-slate-500 leading-tight">
-                يتلقى الإشارات اللحظية وينفذها بالثانية مباشرة على منصة كيوتكس والبروكرز.
+                يتلقى الإشارات اللحظية وينفذها بالثانية مباشرة على منصة كيوتكس والبروكرز حتى الساعة 09:00 مساءً.
               </p>
             </div>
 

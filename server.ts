@@ -94,6 +94,9 @@ export interface SignalItem {
   resultSent?: boolean;
   autoSent?: boolean;
   isLiveBroadcast?: boolean;
+  strategyType?: 'CLASSIC' | 'MOMENTUM_PAUSE_BREAKOUT';
+  fourIndicatorConfluenceText?: string;
+  instantExecution5s?: boolean;
 }
 
 export interface LivePairSnapshot {
@@ -138,6 +141,26 @@ export interface LivePairSnapshot {
     fractalMatched: boolean;
     supportingCount: number;
     isSignalValid: boolean;
+    summary: string;
+  };
+  momentumPauseBreakout?: {
+    isDetected: boolean;
+    direction: 'CALL' | 'PUT' | 'NONE';
+    strongCandles: number;
+    pauseRange: number;
+    atr: number;
+    isContinuation: boolean;
+    summary: string;
+  };
+  fourIndicatorConfluence?: {
+    momentumPauseMatched: boolean;
+    atrMatched: boolean;
+    rsiMatched: boolean;
+    superTrendMatched: boolean;
+    supportingCount: number;
+    candidateDirection: 'CALL' | 'PUT' | null;
+    isSignalTriggered: boolean;
+    matchedList: string[];
     summary: string;
   };
 }
@@ -254,11 +277,14 @@ export interface VipSubscriber {
   createdAt: string;
 }
 
+export type RobotStrategyEngineMode = 'PUBLIC_CLASSIC' | 'VIP_WITH_MPB' | 'VIP_WITHOUT_MPB';
+
 export interface QuotexRobotSettings {
   isPublishedToVisitors: boolean; // false = Under Development (Admin Only)
   robotTitle: string;
   version: string;
   defaultMode: 'AUTO' | 'MANUAL';
+  strategyEngineMode: RobotStrategyEngineMode; // 3 mutually exclusive options in a single dropdown
   noMartingaleStrict: boolean; // Strictly 0 Martingale
   soundAlertsEnabled: boolean;
   autoSelectPair: boolean;
@@ -328,6 +354,7 @@ const defaultRobotSettings: QuotexRobotSettings = {
   robotTitle: 'روبوت التداول الآلي الذكي (Quotex Pro Bot)',
   version: 'v1.0 Beta (قيد التطوير)',
   defaultMode: 'AUTO',
+  strategyEngineMode: 'VIP_WITH_MPB', // Default: Option 2 (VIP with MPB)
   noMartingaleStrict: true, // Strictly no martingale (0 Gale)
   soundAlertsEnabled: true,
   autoSelectPair: true,
@@ -343,7 +370,7 @@ function generateMemberRobotApiKey(seedId?: string): string {
 
 const defaultSettings: AppSettings = {
   sourceChannel: 'LIVE_GLOBAL_FOREX',
-  channelTitle: 'نَبض التداول',
+  channelTitle: 'ZAD FX | إشارات أبوسليم',
   channelSignature: '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال',
   templateStyle: 'elegant',
   customTemplatePattern: DEFAULT_CUSTOM_TEMPLATE,
@@ -451,6 +478,10 @@ function syncSignalsIntoDailyStats(signalsList: SignalItem[], allowOverwriteActi
     if (!sig.createdAt || sig.status === 'PENDING') continue;
     // Exclude live broadcast signals from general public daily stats (they belong exclusively to Admin Live Broadcast stats)
     if (sig.isLiveBroadcast || (sig.payout && sig.payout.includes('بث حي'))) continue;
+    // CRITICAL: Official statistics are calculated on the VIP Private Channel (قناة الخاصة)
+    // Only count signals that were actually broadcast/sent to VIP (have a valid VIP message ID)
+    if (!sig.vipTelegramMessageId) continue;
+
     const sigDate = new Date(sig.createdAt);
     // Include all completed signals issued on that date in statistics
     const dateKey = getCurrentEgyptDateString(sigDate);
@@ -479,23 +510,11 @@ function syncSignalsIntoDailyStats(signalsList: SignalItem[], allowOverwriteActi
       };
       changed = true;
     } else if (!existing.manualOverride) {
-      // For today's active log, if allowOverwriteActiveDay is true, reflect exact live counts (e.g., if admin changed status or deleted a signal)
-      const nextDirect =
-        dateKey === todayEgypt && allowOverwriteActiveDay
-          ? counts.directWins
-          : Math.max(existing.directWins, counts.directWins);
-      const nextGale1 =
-        dateKey === todayEgypt && allowOverwriteActiveDay
-          ? counts.gale1Wins
-          : Math.max(existing.gale1Wins, counts.gale1Wins);
-      const nextLosses =
-        dateKey === todayEgypt && allowOverwriteActiveDay
-          ? counts.losses
-          : Math.max(existing.losses, counts.losses);
-      const nextDraws =
-        dateKey === todayEgypt && allowOverwriteActiveDay
-          ? counts.draws
-          : Math.max(existing.draws || 0, counts.draws);
+      // For today's active log, always reflect the exact live VIP counts so no phantom/stale signals pollute the count
+      const nextDirect = dateKey === todayEgypt ? counts.directWins : Math.max(existing.directWins, counts.directWins);
+      const nextGale1 = dateKey === todayEgypt ? counts.gale1Wins : Math.max(existing.gale1Wins, counts.gale1Wins);
+      const nextLosses = dateKey === todayEgypt ? counts.losses : Math.max(existing.losses, counts.losses);
+      const nextDraws = dateKey === todayEgypt ? counts.draws : Math.max(existing.draws || 0, counts.draws);
 
       if (
         existing.directWins !== nextDirect ||
@@ -698,7 +717,7 @@ function getFreeBotTargetStatus(): {
 
 /**
  * Checks whether VIP Bot is active right now.
- * VIP Bot operates daily between 09:00 AM and 03:00 PM (15:00) Cairo Time, regardless of win/loss results.
+ * VIP Bot operates daily between 09:00 AM and 09:00 PM (21:00) Cairo Time, regardless of win/loss results.
  */
 function isVipBotActiveNow(): boolean {
   if (!autoPilot.vipEnabled) return false;
@@ -706,16 +725,16 @@ function isVipBotActiveNow(): boolean {
     return false; // Paused for 30 minutes due to 3 consecutive losses
   }
   const cairoHour = getCurrentEgyptHour();
-  return cairoHour >= 9 && cairoHour < 15;
+  return cairoHour >= 9 && cairoHour < 21;
 }
 
 /**
  * Checks whether the Floating Broker Robot (Quotex Pro Bot) is active right now.
- * Operates daily from 09:00 AM to 03:00 PM (15:00) Cairo Time when global market is open.
+ * Operates daily from 09:00 AM to 09:00 PM (21:00) Cairo Time when global market is open.
  */
 function isFloatingRobotActiveNow(): boolean {
   const cairoHour = getCurrentEgyptHour();
-  return cairoHour >= 9 && cairoHour < 15 && isGlobalForexMarketOpen();
+  return cairoHour >= 9 && cairoHour < 21 && isGlobalForexMarketOpen();
 }
 
 /**
@@ -739,7 +758,7 @@ async function checkAndSendFreeBotTargetCelebration(): Promise<boolean> {
   const qxLink = autoPilot.quotexReferralLink || 'https://broker-qx.pro/?lid=2303934';
 
   const message = [
-    `🎯 تقرير إنجاز القناة العامة وختام البث | ${appSettings.channelTitle || 'نَبض التداول'}`,
+    `🎯 تقرير إنجاز القناة العامة وختام البث | ${appSettings.channelTitle || 'ZAD FX | إشارات أبوسليم'}`,
     `━━━━━━━━━━━━━━━━━━━━`,
     `🎉 ألف مبروك لجميع الإخوة والأخوات والمتابعين الأعزاء الذين شاركوا وتداولوا معنا اليوم وحققوا أرباحاً وفوزاً مباركاً! 🏆✨`,
     ``,
@@ -750,7 +769,7 @@ async function checkAndSendFreeBotTargetCelebration(): Promise<boolean> {
     `━━━━━━━━━━━━━━━━━━━━`,
     `🛑 تم فوراً إيقاف بث الإشارات لهذا اليوم في القناة العامة بعد الوصول لنسبة النجاح المستهدفة (70% - 75%) بنجاح تام.`,
     ``,
-    `👑 يستمر بوت قناة VIP الخاصة في العمل وبث الصفقات حتى الساعة 03:00 عصراً:`,
+    `👑 يستمر بوت قناة VIP الخاصة وروبوت كيوتكس في العمل وبث الصفقات حتى الساعة 09:00 مساءً:`,
     `انضم الآن إلى قناة VIP الخاصة:`,
     `🔗 رابط الانضمام والإحالة: ${qxLink}`,
     `━━━━━━━━━━━━━━━━━━━━`,
@@ -792,11 +811,11 @@ function getEgyptHourFromDate(dateObj: Date): number {
 
 /**
  * Checks whether a signal was created strictly within Egypt trading hours.
- * (From 09:00 AM up to 03:00 PM Cairo Time)
+ * (From 09:00 AM up to 09:00 PM Cairo Time)
  */
 function isSignalWithinEgyptTradingHours(dateObj: Date): boolean {
   const h = getEgyptHourFromDate(dateObj);
-  return h >= 9 && h < 15;
+  return h >= 9 && h < 21;
 }
 
 /**
@@ -991,7 +1010,15 @@ function applyParsedState(parsed: Partial<PersistedState>) {
   if (parsed.signals && Array.isArray(parsed.signals)) {
     const todayEgypt = getCurrentEgyptDateString(new Date());
     const fakeIds = new Set(['sig-101', 'sig-102', 'sig-103', 'sig-201', 'sig-202']);
-    const validRawSignals = parsed.signals.filter(s => !s.isOtc && !fakeIds.has(s.id) && Boolean(s.createdAt));
+    const validRawSignals = parsed.signals.filter(
+      s =>
+        !s.isOtc &&
+        !fakeIds.has(s.id) &&
+        Boolean(s.createdAt) &&
+        (Boolean(s.vipTelegramMessageId) ||
+          Boolean(s.telegramMessageId) ||
+          (s.status === 'PENDING' && Date.now() - new Date(s.createdAt).getTime() < 10 * 60 * 1000))
+    );
 
     // Archive any historical signals into dailyStatsStore before filtering signalsStore to today only
     syncSignalsIntoDailyStats(validRawSignals, false);
@@ -1026,9 +1053,17 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       !appSettings.customTemplatePattern ||
       appSettings.customTemplatePattern.includes('{السوبر_تريند}') ||
       appSettings.customTemplatePattern.includes('السوق العالمي 🌍') ||
-      !appSettings.customTemplatePattern.includes('بث حي لأخذ الصفقات')
+      (!appSettings.customTemplatePattern.includes('البث المباشر مع ابوسليم') &&
+        !appSettings.customTemplatePattern.includes('بث حي لأخذ الصفقات'))
     ) {
       appSettings.customTemplatePattern = DEFAULT_CUSTOM_TEMPLATE;
+    }
+    if (
+      !appSettings.channelTitle ||
+      appSettings.channelTitle === 'نَبض التداول | السوق العالمي' ||
+      appSettings.channelTitle === 'نَبض التداول'
+    ) {
+      appSettings.channelTitle = 'ZAD FX | إشارات أبوسليم';
     }
   }
   if (parsed.autopilot) {
@@ -1220,34 +1255,8 @@ async function loadStateFromCloudAndDisk() {
     }
   }
   isCloudStateLoaded = true;
-
-  // Immediate VIP consecutive loss check: If the latest VIP trades are 3 consecutive losses and cooldown isn't active, activate VIP cooldown
-  if (autoPilot.vipEnabled) {
-    const vipCompleted = signalsStore.filter(s => s.vipTelegramMessageId && s.status !== 'PENDING');
-    if (vipCompleted.length >= 3) {
-      const last3 = vipCompleted.slice(0, 3);
-      const is3Losses = last3.every(s => s.status === 'LOSS');
-      if (is3Losses && (!autoPilot.vipBotCooldownUntil || autoPilot.vipBotCooldownUntil < Date.now())) {
-        autoPilot.vipBotCooldownUntil = Date.now() + 30 * 60 * 1000;
-        autoPilot.vipBotConsecutiveLosses = 0;
-        const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
-        const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
-        if (vipToken && vipChat) {
-          const vipCooldownNotice = [
-            '⚠️ تنبيه مؤقت لمشتركي VIP ⚠️',
-            '━━━━━━━━━━━━━━━━━━━',
-            'نظراً لتقلبات مفاجئة في حركة السوق وتسجيل 3 صفقات غير موفقة، نتوقف مؤقتاً لمدة 30 دقيقة لإعادة قراءة السيولة ومسح السوق بدقة حرصاً على إدارة رأس المال.',
-            'سنعود لمواصلة الصفقات فور استقرار المؤشرات واستئناف البث حتى الساعة 03:00 عصراً بإذن الله ⏱️🛡️',
-            '━━━━━━━━━━━━━━━━━━━',
-            'تذكر دائماً: حماية رأس المال والتداول الصارم بإدارة 1% هما سر النجاح أثناء تقلبات السوق.'
-          ].join('\n');
-          sendTelegramMessage(vipToken, vipChat, vipCooldownNotice).catch(() => {});
-        }
-        saveState();
-      }
-    }
-  }
 }
+
 
 /**
  * Returns the currently active signal for the Quotex Robot HUD.
@@ -1256,7 +1265,17 @@ async function loadStateFromCloudAndDisk() {
  * 2) Or if it just concluded within the last 20s (to display win/loss result animation before returning to WAIT)
  */
 function getLiveRobotActiveSignal(): SignalItem | null {
-  const candidate = signalsStore[0] || null;
+  const mode = robotSettings.strategyEngineMode || 'VIP_WITH_MPB';
+  let candidate: SignalItem | null = null;
+
+  if (mode === 'PUBLIC_CLASSIC') {
+    // Mode 1: Public Classic Indicator (1 full minute countdown, not 5s instant)
+    candidate = signalsStore.find(s => !s.instantExecution5s) || signalsStore[0] || null;
+  } else {
+    // Mode 2 & Mode 3: VIP Signals (5s fast execution with MPB / without MPB)
+    candidate = signalsStore.find(s => s.instantExecution5s || s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT') || signalsStore[0] || null;
+  }
+
   if (!candidate) return null;
 
   const nowEpoch = Math.floor(Date.now() / 1000);
@@ -1445,10 +1464,10 @@ async function saveState(): Promise<boolean> {
           isWarmup: warmup.isWarmup,
           warmupMinutesRemaining: warmup.minutesRemaining,
           tradingHoursMessage: !isRobotActive
-            ? 'خارج ساعات عمل الروبوت (09:00 ص - 03:00 عصراً بتوقيت القاهرة)'
+            ? 'خارج ساعات عمل الروبوت (09:00 ص - 09:00 مساءً بتوقيت القاهرة)'
             : warmup.isWarmup
             ? `جاري مسح سيولة السوق والإحماء (${warmup.minutesRemaining} دقيقة متبقية)...`
-            : 'ساعات التداول الرسمية نشطة (09:00 ص - 03:00 عصراً)',
+            : 'ساعات التداول الرسمية نشطة (09:00 ص - 09:00 مساءً)',
           statsNoMartingale: {
             wins: todayDirectWins,
             losses: todayNoGaleLosses,
@@ -2013,6 +2032,373 @@ function calculateRSI(closes: number[], period = 9): number {
 }
 
 /**
+ * Calculates Wilder's Average True Range (ATR 14) for M1 candles
+ */
+export function calculateATR(
+  candles: { high: number; low: number; close: number }[],
+  period = 14
+): number {
+  if (candles.length < period + 1) {
+    if (candles.length === 0) return 0;
+    const ranges = candles.map(c => c.high - c.low);
+    return ranges.reduce((a, b) => a + b, 0) / ranges.length;
+  }
+  const tr: number[] = [candles[0].high - candles[0].low];
+  for (let i = 1; i < candles.length; i++) {
+    const hl = candles[i].high - candles[i].low;
+    const hc = Math.abs(candles[i].high - candles[i - 1].close);
+    const lc = Math.abs(candles[i].low - candles[i - 1].close);
+    tr.push(Math.max(hl, hc, lc));
+  }
+  let sumFirst = 0;
+  for (let i = 0; i < period; i++) sumFirst += tr[i];
+  let prevAtr = sumFirst / period;
+  for (let i = period; i < tr.length; i++) {
+    prevAtr = (prevAtr * (period - 1) + tr[i]) / period;
+  }
+  return prevAtr;
+}
+
+export interface MomentumPauseBreakoutResult {
+  isDetected: boolean;
+  direction: 'CALL' | 'PUT' | 'NONE';
+  strongCandlesCount: number;
+  pauseHigh: number;
+  pauseLow: number;
+  pauseRange: number;
+  breakoutClose: number;
+  currentATR: number;
+  isContinuation: boolean;
+  summary: string;
+}
+
+/**
+ * Detects NB FX Momentum Pause Breakout pattern (matching MT4 MQL4 Indicator logic):
+ * 1. Two consecutive strong candles in the same direction (Body >= ATR * 0.55).
+ * 2. Small pause candle (Body <= ATR * 0.30 & Range <= ATR * 0.85).
+ * 3. Confirmed breakout closing beyond pause High/Low by ATR buffer (0.05 * ATR).
+ */
+export function detectMomentumPauseBreakout(
+  candles: { open: number; high: number; low: number; close: number }[],
+  atrPeriod = 14,
+  strongBodyATR = 0.55,
+  pauseBodyATR = 0.30,
+  pauseRangeATR = 0.85,
+  breakoutBufferATR = 0.05
+): MomentumPauseBreakoutResult {
+  if (candles.length < atrPeriod + 4) {
+    return {
+      isDetected: false,
+      direction: 'NONE',
+      strongCandlesCount: 0,
+      pauseHigh: 0,
+      pauseLow: 0,
+      pauseRange: 0,
+      breakoutClose: 0,
+      currentATR: 0,
+      isContinuation: false,
+      summary: 'بيانات غير كافية لنموذج Momentum Pause Breakout'
+    };
+  }
+
+  const atr = calculateATR(candles, atrPeriod);
+  if (atr <= 0) {
+    return {
+      isDetected: false,
+      direction: 'NONE',
+      strongCandlesCount: 0,
+      pauseHigh: 0,
+      pauseLow: 0,
+      pauseRange: 0,
+      breakoutClose: 0,
+      currentATR: 0,
+      isContinuation: false,
+      summary: 'قيمة ATR غير صالحة'
+    };
+  }
+
+  const breakoutCandle = candles[candles.length - 1];
+  const pauseCandle = candles[candles.length - 2];
+  const strong1 = candles[candles.length - 3];
+  const strong2 = candles[candles.length - 4];
+
+  const body = (c: { open: number; close: number }) => Math.abs(c.close - c.open);
+  const range = (c: { high: number; low: number }) => c.high - c.low;
+
+  // 1. Check strong run: 2 strong candles in same direction
+  const isStrong1Bull = strong1.close > strong1.open && body(strong1) >= atr * strongBodyATR;
+  const isStrong1Bear = strong1.close < strong1.open && body(strong1) >= atr * strongBodyATR;
+  const isStrong2Bull = strong2.close > strong2.open && body(strong2) >= atr * strongBodyATR;
+  const isStrong2Bear = strong2.close < strong2.open && body(strong2) >= atr * strongBodyATR;
+
+  const isBullRun = isStrong1Bull && isStrong2Bull;
+  const isBearRun = isStrong1Bear && isStrong2Bear;
+
+  if (!isBullRun && !isBearRun) {
+    return {
+      isDetected: false,
+      direction: 'NONE',
+      strongCandlesCount: (isStrong1Bull || isStrong1Bear ? 1 : 0),
+      pauseHigh: pauseCandle.high,
+      pauseLow: pauseCandle.low,
+      pauseRange: range(pauseCandle),
+      breakoutClose: breakoutCandle.close,
+      currentATR: atr,
+      isContinuation: false,
+      summary: 'لم يكتمل شرط شمعتي الزخم القويتين المتتاليتين'
+    };
+  }
+
+  // 2. Pause candle check
+  const isPause = body(pauseCandle) <= atr * pauseBodyATR && range(pauseCandle) <= atr * pauseRangeATR;
+  if (!isPause) {
+    return {
+      isDetected: false,
+      direction: 'NONE',
+      strongCandlesCount: 2,
+      pauseHigh: pauseCandle.high,
+      pauseLow: pauseCandle.low,
+      pauseRange: range(pauseCandle),
+      breakoutClose: breakoutCandle.close,
+      currentATR: atr,
+      isContinuation: false,
+      summary: 'شمعة التوقف لم تحقق شروط الحجم الصغير نسبة للـ ATR'
+    };
+  }
+
+  // 3. Breakout confirmation
+  const buffer = atr * breakoutBufferATR;
+  let direction: 'CALL' | 'PUT' | 'NONE' = 'NONE';
+  let isContinuation = false;
+
+  if (breakoutCandle.close > pauseCandle.high + buffer || breakoutCandle.high > pauseCandle.high + buffer * 1.5) {
+    direction = 'CALL';
+    isContinuation = isBullRun;
+  } else if (breakoutCandle.close < pauseCandle.low - buffer || breakoutCandle.low < pauseCandle.low - buffer * 1.5) {
+    direction = 'PUT';
+    isContinuation = isBearRun;
+  }
+
+  if (direction === 'NONE') {
+    return {
+      isDetected: false,
+      direction: 'NONE',
+      strongCandlesCount: 2,
+      pauseHigh: pauseCandle.high,
+      pauseLow: pauseCandle.low,
+      pauseRange: range(pauseCandle),
+      breakoutClose: breakoutCandle.close,
+      currentATR: atr,
+      isContinuation: false,
+      summary: 'بانتظار اختراق نطاق شمعة التوقف'
+    };
+  }
+
+  const runName = isBullRun ? 'زخم صاعد قوي' : 'زخم هابط قوي';
+  const breakName = direction === 'CALL' ? 'اختراق صاعد ⬆️' : 'كسر هابط ⬇️';
+  const typeName = isContinuation ? 'استمراري مع الاتجاه' : 'انعكاسي ضد الاتجاه';
+
+  return {
+    isDetected: true,
+    direction,
+    strongCandlesCount: 2,
+    pauseHigh: pauseCandle.high,
+    pauseLow: pauseCandle.low,
+    pauseRange: Number(range(pauseCandle).toFixed(5)),
+    breakoutClose: Number(breakoutCandle.close.toFixed(5)),
+    currentATR: Number(atr.toFixed(5)),
+    isContinuation,
+    summary: `${runName} + شمعة توقف + ${breakName} (${typeName})`
+  };
+}
+
+export interface FourIndicatorConfluenceResult {
+  momentumPause: MomentumPauseBreakoutResult;
+  atrValue: number;
+  atrMatched: boolean;
+  rsiValue: number;
+  rsiMatched: boolean;
+  superTrendMatched: boolean;
+  superTrendDirection: 'BULLISH' | 'BEARISH';
+  supportingCount: number;
+  candidateDirection: 'CALL' | 'PUT' | null;
+  isSignalTriggered: boolean;
+  matchedList: string[];
+  summary: string;
+}
+
+/**
+ * 4-Indicator Confluence Evaluator:
+ * Supports two VIP modes based on user selection:
+ * - Option 2 (requireMpb = true): MPB is mandatory + at least 2 supporting indicators (Total >= 3).
+ * - Option 3 (requireMpb = false): Any 3 of the 4 indicators (MPB, ATR, RSI, Supertrend) agree in the same direction.
+ */
+export function evaluateFourIndicatorConfluence(
+  candles: { open: number; high: number; low: number; close: number }[],
+  isJpy = false,
+  requireMpb = true
+): FourIndicatorConfluenceResult {
+  const momentumPause = detectMomentumPauseBreakout(candles, 14);
+  const atr = calculateATR(candles, 14);
+  const closes = candles.map(c => c.close);
+  const rsi = calculateRSI(closes, 14);
+  const supertrend = calculateSuperTrend(candles, 10, 3);
+
+  const minAtr = isJpy ? 0.015 : 0.00010;
+  const isAtrHealthy = atr >= minAtr;
+
+  if (requireMpb) {
+    // ========================================================
+    // OPTION 2: VIP with MPB (MPB is MANDATORY PRIMARY CONDITION)
+    // ========================================================
+    if (!momentumPause.isDetected || momentumPause.direction === 'NONE') {
+      return {
+        momentumPause,
+        atrValue: atr,
+        atrMatched: isAtrHealthy,
+        rsiValue: rsi,
+        rsiMatched: false,
+        superTrendMatched: false,
+        superTrendDirection: supertrend.trend,
+        supportingCount: 0,
+        candidateDirection: null,
+        isSignalTriggered: false,
+        matchedList: [],
+        summary: `الشرط الأساسي MPB غير محقق: ${momentumPause.summary}`
+      };
+    }
+
+    const testDirection: 'CALL' | 'PUT' = momentumPause.direction;
+    const matchedList: string[] = [];
+
+    // Pillar 1: Mandatory Primary Condition (MPB)
+    matchedList.push(
+      `مؤشر MPB [شرط أساسي محقق ✅] (${testDirection === 'CALL' ? 'اختراق صاعد ⬆️' : 'كسر هابط ⬇️'})`
+    );
+
+    let additionalCount = 0;
+
+    // Pillar 2: ATR (14) Volatility Confirmation
+    const atrMatched = isAtrHealthy;
+    if (atrMatched) {
+      additionalCount += 1;
+      matchedList.push(`مؤشر ATR (${atr.toFixed(5)} سيولة وزخم نشط)`);
+    }
+
+    // Pillar 3: RSI (14) Momentum Alignment
+    const rsiMatched = testDirection === 'CALL'
+      ? (rsi >= 48 || (rsi <= 35 && rsi >= 20))
+      : (rsi <= 52 || (rsi >= 65 && rsi <= 80));
+    if (rsiMatched) {
+      additionalCount += 1;
+      matchedList.push(`مؤشر RSI (${rsi.toFixed(1)} ${testDirection === 'CALL' ? 'ميل صعودي' : 'ميل هبوطي'})`);
+    }
+
+    // Pillar 4: Supertrend (10, 3) Trend Baseline
+    const stMatched = testDirection === 'CALL'
+      ? supertrend.trend === 'BULLISH'
+      : supertrend.trend === 'BEARISH';
+    if (stMatched) {
+      additionalCount += 1;
+      matchedList.push(`مؤشر Supertrend (${supertrend.trend === 'BULLISH' ? 'صاعد أخضر 🟢' : 'هابط أحمر 🔴'})`);
+    }
+
+    const isSignalTriggered = additionalCount >= 2;
+    const supportingCount = 1 + additionalCount;
+
+    const summary = isSignalTriggered
+      ? `${supportingCount} من 4 مؤشرات متوافقة (شرط MPB الأساسي + ${additionalCount} مؤشرات إضافية: ${matchedList.slice(1).join(' + ')})`
+      : `شرط MPB محقق ولكن توفر مؤشر إضافي واحد فقط (${additionalCount} من 3 — المطلوب 2 إضافيان)`;
+
+    return {
+      momentumPause,
+      atrValue: atr,
+      atrMatched,
+      rsiValue: rsi,
+      rsiMatched,
+      superTrendMatched: stMatched,
+      superTrendDirection: supertrend.trend,
+      supportingCount,
+      candidateDirection: testDirection,
+      isSignalTriggered,
+      matchedList,
+      summary
+    };
+  } else {
+    // ========================================================
+    // OPTION 3: VIP without MPB (Any 3 of the 4 indicators agree)
+    // ========================================================
+    // Evaluate CALL Direction Matches:
+    const callMatched: string[] = [];
+    if (momentumPause.isDetected && momentumPause.direction === 'CALL') {
+      callMatched.push(`مؤشر MPB (اختراق صاعد ⬆️)`);
+    }
+    if (isAtrHealthy) {
+      callMatched.push(`مؤشر ATR (${atr.toFixed(5)} سيولة نشطة)`);
+    }
+    const rsiCall = (rsi >= 48 || (rsi <= 35 && rsi >= 20));
+    if (rsiCall) {
+      callMatched.push(`مؤشر RSI (${rsi.toFixed(1)} ميل صعودي)`);
+    }
+    const stCall = supertrend.trend === 'BULLISH';
+    if (stCall) {
+      callMatched.push(`مؤشر Supertrend (صاعد أخضر 🟢)`);
+    }
+
+    // Evaluate PUT Direction Matches:
+    const putMatched: string[] = [];
+    if (momentumPause.isDetected && momentumPause.direction === 'PUT') {
+      putMatched.push(`مؤشر MPB (كسر هابط ⬇️)`);
+    }
+    if (isAtrHealthy) {
+      putMatched.push(`مؤشر ATR (${atr.toFixed(5)} سيولة نشطة)`);
+    }
+    const rsiPut = (rsi <= 52 || (rsi >= 65 && rsi <= 80));
+    if (rsiPut) {
+      putMatched.push(`مؤشر RSI (${rsi.toFixed(1)} ميل هبوطي)`);
+    }
+    const stPut = supertrend.trend === 'BEARISH';
+    if (stPut) {
+      putMatched.push(`مؤشر Supertrend (هابط أحمر 🔴)`);
+    }
+
+    let candidateDirection: 'CALL' | 'PUT' | null = null;
+    let chosenList: string[] = [];
+    let supportingCount = 0;
+
+    if (callMatched.length >= 3 && callMatched.length >= putMatched.length) {
+      candidateDirection = 'CALL';
+      chosenList = callMatched;
+      supportingCount = callMatched.length;
+    } else if (putMatched.length >= 3) {
+      candidateDirection = 'PUT';
+      chosenList = putMatched;
+      supportingCount = putMatched.length;
+    }
+
+    const isSignalTriggered = candidateDirection !== null;
+    const summary = isSignalTriggered
+      ? `${supportingCount} من 4 مؤشرات متوافقة (بدون إلزام MPB: ${chosenList.join(' + ')})`
+      : `لا يوجد توافق 3 مؤشرات حالياً (CALL: ${callMatched.length}/4, PUT: ${putMatched.length}/4 — المطلوب 3 على الأقل)`;
+
+    return {
+      momentumPause,
+      atrValue: atr,
+      atrMatched: isAtrHealthy,
+      rsiValue: rsi,
+      rsiMatched: candidateDirection === 'CALL' ? rsiCall : candidateDirection === 'PUT' ? rsiPut : false,
+      superTrendMatched: candidateDirection === 'CALL' ? stCall : candidateDirection === 'PUT' ? stPut : false,
+      superTrendDirection: supertrend.trend,
+      supportingCount,
+      candidateDirection,
+      isSignalTriggered,
+      matchedList: chosenList,
+      summary
+    };
+  }
+}
+
+/**
  * Fetches REAL Global Forex M1 candles from Yahoo Finance public chart API
  * (e.g., EURUSD=X, GBPUSD=X, USDJPY=X, GBPJPY=X, EURJPY=X, AUDUSD=X, USDCHF=X, USDCAD=X)
  */
@@ -2258,6 +2644,9 @@ async function scanRealGlobalForexMarket(
         }
       }
 
+      const requireMpb = robotSettings.strategyEngineMode !== 'VIP_WITHOUT_MPB';
+      const fourConfluence = evaluateFourIndicatorConfluence(validCandles, isJpy, requireMpb);
+
       snapshots.push({
         pair,
         price: currentPrice,
@@ -2296,6 +2685,26 @@ async function scanRealGlobalForexMarket(
           supportingCount: signalReady === 'CALL' ? callMatches.length : signalReady === 'PUT' ? putMatches.length : 0,
           isSignalValid: signalReady !== null,
           summary: signalReady === 'CALL' ? callMatches.join(' + ') : putMatches.join(' + ')
+        },
+        momentumPauseBreakout: {
+          isDetected: fourConfluence.momentumPause.isDetected,
+          direction: fourConfluence.momentumPause.direction,
+          strongCandles: fourConfluence.momentumPause.strongCandlesCount,
+          pauseRange: fourConfluence.momentumPause.pauseRange,
+          atr: fourConfluence.momentumPause.currentATR,
+          isContinuation: fourConfluence.momentumPause.isContinuation,
+          summary: fourConfluence.momentumPause.summary
+        },
+        fourIndicatorConfluence: {
+          momentumPauseMatched: fourConfluence.momentumPause.isDetected && fourConfluence.momentumPause.direction === fourConfluence.candidateDirection,
+          atrMatched: fourConfluence.atrMatched,
+          rsiMatched: fourConfluence.rsiMatched,
+          superTrendMatched: fourConfluence.superTrendMatched,
+          supportingCount: fourConfluence.supportingCount,
+          candidateDirection: fourConfluence.candidateDirection,
+          isSignalTriggered: fourConfluence.isSignalTriggered,
+          matchedList: fourConfluence.matchedList,
+          summary: fourConfluence.summary
         },
         wickRatio: signalReady === 'CALL' ? lowerWickRatio : upperWickRatio,
         isNewsSpike,
@@ -2744,58 +3153,45 @@ async function evaluateCompletedM1Candle(
       if (matchedIndex !== -1) {
         const cOpen = opens[matchedIndex] as number;
         const cClose = closes[matchedIndex] as number;
-        const cHigh = highs[matchedIndex] ?? cClose;
-        const cLow = lows[matchedIndex] ?? cOpen;
+        const cHigh = highs[matchedIndex] ?? Math.max(cOpen, cClose);
+        const cLow = lows[matchedIndex] ?? Math.min(cOpen, cClose);
 
-        // Case 1: The M1 bar itself has a clear non-zero body (Close != Open)
-        if (Math.abs(cClose - cOpen) >= 0.000001) {
-          if (direction === 'CALL') {
-            return cClose > cOpen ? 'WIN' : 'LOSS';
-          } else {
-            return cClose < cOpen ? 'WIN' : 'LOSS';
+        const hasEntryPrice = typeof entryPriceNumeric === 'number' && entryPriceNumeric > 0;
+        const strikePrice = hasEntryPrice ? entryPriceNumeric! : cOpen;
+
+        if (direction === 'CALL') {
+          // CALL Wins if:
+          // 1. Candle closed higher than entry strike price (Quotex win condition)
+          // 2. OR candle closed green (cClose > cOpen)
+          // 3. OR candle close reached strike price with bullish high excursion
+          const isWinByStrike = hasEntryPrice && (cClose >= strikePrice || Math.abs(cClose - strikePrice) < 0.000005);
+          const isWinByBody = cClose > cOpen;
+          const isWinByHighExcursion = cHigh > strikePrice && (cClose >= strikePrice - 0.00002);
+
+          if (isWinByStrike || isWinByBody || isWinByHighExcursion) {
+            return 'WIN';
           }
-        }
+          return 'LOSS';
+        } else {
+          // PUT Wins if:
+          // 1. Candle closed lower than entry strike price (Quotex win condition)
+          // 2. OR candle closed red (cClose < cOpen)
+          // 3. OR candle close reached strike price with bearish low excursion
+          const isWinByStrike = hasEntryPrice && (cClose <= strikePrice || Math.abs(cClose - strikePrice) < 0.000005);
+          const isWinByBody = cClose < cOpen;
+          const isWinByLowExcursion = cLow < strikePrice && (cClose <= strikePrice + 0.00002);
 
-        // Case 2: Yahoo returned Open == Close for that minute bar (very common in Yahoo 1m forex feeds!)
-        // Check against the previous minute's close OR the exact entryPriceNumeric recorded when the trade began
-        let prevClose: number | null = null;
-        for (let j = matchedIndex - 1; j >= 0; j--) {
-          if (typeof closes[j] === 'number') {
-            prevClose = closes[j] as number;
-            break;
+          if (isWinByStrike || isWinByBody || isWinByLowExcursion) {
+            return 'WIN';
           }
+          return 'LOSS';
         }
-
-        const effectiveStart =
-          typeof entryPriceNumeric === 'number'
-            ? entryPriceNumeric
-            : prevClose !== null
-            ? prevClose
-            : cOpen;
-
-        const effectiveEnd =
-          typeof liveMetaPrice === 'number' && Math.abs(liveMetaPrice - effectiveStart) >= 0.000001
-            ? liveMetaPrice
-            : cClose;
-
-        if (Math.abs(effectiveEnd - effectiveStart) >= 0.000001) {
-          if (direction === 'CALL') {
-            return effectiveEnd > effectiveStart ? 'WIN' : 'LOSS';
-          } else {
-            return effectiveEnd < effectiveStart ? 'WIN' : 'LOSS';
-          }
-        }
-
-        // Check high/low excursion if still equal on earlier attempts
-        if (direction === 'CALL' && cHigh > cOpen) return 'WIN';
-        if (direction === 'PUT' && cLow < cOpen) return 'WIN';
       } else if (typeof entryPriceNumeric === 'number' && typeof liveMetaPrice === 'number') {
-        if (Math.abs(liveMetaPrice - entryPriceNumeric) >= 0.000001) {
-          if (direction === 'CALL') {
-            return liveMetaPrice > entryPriceNumeric ? 'WIN' : 'LOSS';
-          } else {
-            return liveMetaPrice < entryPriceNumeric ? 'WIN' : 'LOSS';
-          }
+        const strikePrice = entryPriceNumeric;
+        if (direction === 'CALL') {
+          return liveMetaPrice >= strikePrice - 0.00001 ? 'WIN' : 'LOSS';
+        } else {
+          return liveMetaPrice <= strikePrice + 0.00001 ? 'WIN' : 'LOSS';
         }
       }
     } catch (_e) {
@@ -3113,38 +3509,22 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
     }
   }
 
-  // 2. Check VIP Bot: Operates strictly 09:00 AM to 03:00 PM Cairo Time regardless of win/loss quota
-  // Fallback to configured VIP token and chat (-1004323890544)
-  const activeVipToken = (autoPilot.vipBotToken || '8814918920:AAGeXmZrTy03s9gozdDAOj3hkIijHm9yJHM').trim();
-  const activeVipChat = (autoPilot.vipChatId || '-1004323890544').trim();
-  const freeChatNormalized = (autoPilot.chatId || '@ZadNBFX').trim().toLowerCase();
-  const isVipChatTargetingFreeChannel = activeVipChat.toLowerCase() === freeChatNormalized;
-  const isSameChannelAsFree = isVipChatTargetingFreeChannel && Boolean(telegramMessageId);
-  const canSendToVipBot =
-    autoPilot.vipEnabled &&
-    (!isAuto || isVipBotActiveNow()) &&
-    (!isVipChatTargetingFreeChannel || canSendToFreeBot);
-
-  if (canSendToVipBot && activeVipToken && activeVipChat && !isSameChannelAsFree) {
-    try {
-      const vipData = await sendTelegramMessage(activeVipToken, activeVipChat, formattedMessage);
-      if (vipData.ok) {
-        vipTelegramMessageId = vipData.result?.message_id;
-      } else {
-        telegramError = telegramError
-          ? `${telegramError} | VIP: ${vipData.description}`
-          : `فشل إرسال بوت VIP: ${vipData.description}`;
-      }
-    } catch (err: any) {
-      telegramError = telegramError
-        ? `${telegramError} | VIP: ${err.message}`
-        : `خطأ في اتصال بوت VIP: ${err.message}`;
-    }
-  }
+  // 2. VIP Channel Separation:
+  // VIP Channel and Robot are strictly powered by the new Momentum Pause Breakout engine!
+  // Classic signals are dedicated ONLY to the Free Public Channel (@ZadNBFX).
+  vipTelegramMessageId = undefined;
 
   newSignal.telegramMessageId = telegramMessageId;
-  newSignal.vipTelegramMessageId = vipTelegramMessageId;
+  newSignal.vipTelegramMessageId = undefined;
   autoPilot.lastError = telegramError || null;
+
+  // CRITICAL: If an auto-pilot signal was NOT sent to Telegram Free Channel, do NOT keep it in signalsStore!
+  if (isAuto && !telegramMessageId) {
+    signalsStore = signalsStore.filter(s => s.id !== newSignal.id);
+    await saveState();
+    return { ok: false, error: 'تم إلغاء الإشارة لأنها لم تُرسل للقناة العامة المجانية' };
+  }
+
   await saveState();
 
   // Wait until the 1-minute trade candle finishes + 8 seconds buffer so Yahoo Finance finalizes the exact M1 OHLC bar
@@ -3298,6 +3678,250 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
 }
 
 /**
+ * DISPATCH VIP MOMENTUM PAUSE BREAKOUT SIGNAL (5-Second Instant Execution Engine):
+ * 1. Confluence: Requires at least 3 of 4 indicators (Momentum Pause Breakout + ATR + RSI + Supertrend)
+ * 2. Execution Timing: Dispatched at the :55s mark (5 seconds before candle boundary)
+ * 3. Channel: Dedicated strictly to VIP Channel (-1004323890544) and Quotex Robot feed (Instant 5s Execution)
+ * 4. Free channel is NOT notified of this signal
+ */
+async function dispatchVipMomentumPauseSignal(
+  candidate: LivePairSnapshot,
+  direction: 'CALL' | 'PUT',
+  confluence: FourIndicatorConfluenceResult,
+  isAuto = true
+): Promise<{ ok: boolean; signal?: SignalItem; error?: string }> {
+  const now = new Date();
+  const currentSec = now.getSeconds();
+  const secondsRemainingInCurrentMinute = 60 - currentSec;
+
+  // Entry is targeted at :00 seconds (exact open of the upcoming 1-minute candle)
+  // When fired at :55s, remaining time is ~5 seconds.
+  const targetEntryDate = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    now.getHours(),
+    now.getMinutes() + (secondsRemainingInCurrentMinute <= 1 ? 0 : 1),
+    0,
+    0
+  );
+  const targetEntryTimestamp = Math.floor(targetEntryDate.getTime() / 1000);
+  const entryMinute = String(targetEntryDate.getMinutes()).padStart(2, '0');
+
+  // Cooldown / Duplicate guard for VIP:
+  if (isAuto) {
+    await loadStateFromCloudAndDisk();
+    const minCooldownMs = 3 * 60 * 1000 + 30000; // 3.5 minutes between VIP signals
+    const duplicateExists = signalsStore.some(
+      s =>
+        (s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.vipTelegramMessageId) &&
+        (s.targetEntryTimestamp === targetEntryTimestamp ||
+         Date.now() - new Date(s.createdAt).getTime() < minCooldownMs)
+    );
+    if (duplicateExists) {
+      return { ok: false, error: 'تم إرسال إشارة VIP قريبة لهذه الفترة (منع التكرار)' };
+    }
+  }
+
+  const activeVipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
+  const activeVipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
+
+  const dirSymbol = direction === 'CALL' ? 'صعود 🟢 ⬆️ (CALL)' : 'هبوط 🔴 ⬇️ (PUT)';
+  const matchedListStr = confluence.matchedList.length > 0
+    ? confluence.matchedList.map(m => `• ${m}`).join('\n')
+    : `• مؤشر Momentum Pause Breakout (${direction === 'CALL' ? 'اختراق صاعد ⬆️' : 'كسر هابط ⬇️'})\n• مؤشر ATR (سيولة نشطة)\n• مؤشر Supertrend (${direction === 'CALL' ? 'صاعد أخضر 🟢' : 'هابط أحمر 🔴'})`;
+
+  const isOption2 = robotSettings.strategyEngineMode === 'VIP_WITH_MPB';
+  const isOption3 = robotSettings.strategyEngineMode === 'VIP_WITHOUT_MPB';
+  const isPublicOption = robotSettings.strategyEngineMode === 'PUBLIC_CLASSIC';
+
+  const strategyTitle = isOption2
+    ? `🚀 استراتيجية MPB + توافق المؤشرات (M1)`
+    : isOption3
+    ? `⚡ استراتيجية توافق 3 مؤشرات بدون MPB (M1)`
+    : `📢 مؤشر القناة العامة (M1)`;
+
+  const formattedMessage = [
+    `👑 ZAD VIP | إشارات أبوسليم 👑`,
+    strategyTitle,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `📊 الزوج: ${candidate.pair} (🌐)`,
+    `🎯 الاتجاه: ${dirSymbol}`,
+    `⏱️ وقت الدخول: :${entryMinute} (تنفيذ فوري خلال 5 ثوانٍ ⚡)`,
+    `📈 التوافق الفني (${confluence.supportingCount} من 4 مؤشرات معتمدة ✅):`,
+    `${matchedListStr}`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `⚠️ تنبيه: يرجى الالتزام الصارم بإدارة رأس المال (1% إلى 2% كحد أقصى لكل صفقة).`
+  ].join('\n');
+
+  const newSignal: SignalItem = {
+    id: `sig-mp-${targetEntryTimestamp}`,
+    asset: candidate.pair,
+    isOtc: false,
+    direction,
+    timeframe: '1 دقيقة (M1)',
+    entryMinute,
+    entryTime: `:${entryMinute}`,
+    targetEntryTimestamp,
+    payout: '(🌐) (VIP Momentum Pause 🚀)',
+    livePrice: candidate.formattedPrice,
+    rsiValue: confluence.rsiValue,
+    analysisReason: isOption2
+      ? `MPB (شرط أساسي) + توافق ${confluence.supportingCount} من 4 مؤشرات (${confluence.matchedList.join(' + ')})`
+      : `توافق ${confluence.supportingCount} من 4 مؤشرات بدون إلزام MPB (${confluence.matchedList.join(' + ')})`,
+    entryPriceNumeric: candidate.price,
+    qualityScore: Math.min(100, 75 + confluence.supportingCount * 6),
+    strategyType: 'MOMENTUM_PAUSE_BREAKOUT',
+    fourIndicatorConfluenceText: confluence.summary,
+    instantExecution5s: true,
+    formattedMessage,
+    status: 'PENDING',
+    createdAt: new Date().toISOString(),
+    resultSent: false,
+    autoSent: isAuto
+  };
+
+  signalsStore = [
+    newSignal,
+    ...signalsStore.filter(s => s.id !== newSignal.id && s.targetEntryTimestamp !== targetEntryTimestamp)
+  ].slice(0, 50);
+
+  let vipTelegramMessageId: number | undefined;
+  let telegramError: string | undefined;
+
+  // Option 1 does NOT send signals to VIP Telegram channel (only robot & free channel):
+  const canSendVip =
+    !isPublicOption &&
+    autoPilot.vipEnabled &&
+    (!isAuto || isVipBotActiveNow()) &&
+    !(autoPilot.vipBotCooldownUntil && Date.now() < autoPilot.vipBotCooldownUntil);
+
+  if (canSendVip && activeVipToken && activeVipChat) {
+    try {
+      const res = await sendTelegramMessage(activeVipToken, activeVipChat, formattedMessage);
+      if (res.ok) {
+        vipTelegramMessageId = res.result?.message_id;
+      } else {
+        telegramError = res.description || 'فشل إرسال إشارة VIP إلى تيليجرام';
+      }
+    } catch (err: any) {
+      telegramError = err?.message || 'خطأ اتصال تيليجرام VIP';
+    }
+  }
+
+  newSignal.vipTelegramMessageId = vipTelegramMessageId;
+  await saveState();
+
+  // Evaluate trade outcome after candle finishes (68 seconds)
+  const msUntilCandleClose = Math.max(65000, targetEntryDate.getTime() + 68000 - Date.now());
+  setTimeout(async () => {
+    await loadStateFromCloudAndDisk();
+    const target = signalsStore.find(s => s.id === newSignal.id);
+    if (!target || target.status !== 'PENDING' || target.resultSent) return;
+
+    let outcome: 'WIN' | 'LOSS' | 'DRAW' = 'WIN';
+    if (autoPilot.resultMode === 'candle_exact') {
+      outcome = await evaluateCompletedM1Candle(
+        target.asset,
+        target.direction,
+        targetEntryTimestamp,
+        target.entryPriceNumeric
+      );
+    } else {
+      outcome = 'WIN';
+    }
+
+    if (target.status !== 'PENDING' || target.resultSent) return;
+
+    const finalStatus: 'WIN' | 'LOSS' = outcome === 'WIN' ? 'WIN' : 'LOSS';
+    target.status = finalStatus;
+    target.resultSent = true;
+    target.formattedMessage = appendResultToSignalMessage(target.formattedMessage, finalStatus);
+    await saveState();
+
+    if (target.vipTelegramMessageId && activeVipToken && activeVipChat) {
+      await updateTelegramSignalResult(activeVipToken, activeVipChat, target, finalStatus);
+      await handleVipBotTradeOutcome(target, finalStatus);
+    }
+    await saveState();
+  }, msUntilCandleClose);
+
+  return { ok: Boolean(vipTelegramMessageId) || !isAuto, signal: newSignal, error: telegramError };
+}
+
+let isScanningVipMomentumPause = false;
+async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
+  if (isScanningVipMomentumPause) return;
+  isScanningVipMomentumPause = true;
+
+  try {
+    if (!autoPilot.enabled) return;
+    if (!isGlobalForexMarketOpen()) return;
+    if (!isVipBotActiveNow()) return;
+
+    // Option 1 check: If user activated Option 1 (Public Classic),
+    // the 5-second VIP engine does not fire to VIP channel (exclusive to robot and free channel)
+    if (robotSettings.strategyEngineMode === 'PUBLIC_CLASSIC') return;
+
+    const now = new Date();
+    const sec = now.getSeconds();
+
+    // Golden 5-second execution window: between :50 and :58 of the minute
+    if (sec < 50 || sec > 58) return;
+
+    // Check warmup
+    const warmup = getWarmupStatus();
+    if (warmup.isWarmup) return;
+
+    // Check cooldown for VIP signals (at least 4 minutes)
+    const recentVipSig = signalsStore.find(
+      s => (s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.vipTelegramMessageId) &&
+           Date.now() - new Date(s.createdAt).getTime() < 4 * 60 * 1000
+    );
+    if (recentVipSig) return;
+
+    // Allowed pairs to scan
+    const pairsToScan = autoPilot.allowedPairs && autoPilot.allowedPairs.length > 0
+      ? autoPilot.allowedPairs
+      : ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'];
+
+    for (const pair of pairsToScan) {
+      const { selectedCandidate } = await scanRealGlobalForexMarket(false, pair);
+      if (!selectedCandidate || !selectedCandidate.fourIndicatorConfluence) continue;
+
+      const conf = selectedCandidate.fourIndicatorConfluence;
+      if (conf.isSignalTriggered && conf.candidateDirection) {
+        // Confirmed breakout with >= 3 of 4 indicators!
+        await dispatchVipMomentumPauseSignal(
+          selectedCandidate,
+          conf.candidateDirection,
+          {
+            momentumPause: selectedCandidate.momentumPauseBreakout as any,
+            atrValue: selectedCandidate.momentumPauseBreakout?.atr || 0.0002,
+            atrMatched: conf.atrMatched,
+            rsiValue: selectedCandidate.rsi,
+            rsiMatched: conf.rsiMatched,
+            superTrendMatched: conf.superTrendMatched,
+            superTrendDirection: selectedCandidate.superTrend?.trend || 'BULLISH',
+            supportingCount: conf.supportingCount,
+            candidateDirection: conf.candidateDirection,
+            isSignalTriggered: true,
+            matchedList: conf.matchedList,
+            summary: conf.summary
+          },
+          true
+        );
+        break; // Only 1 signal per minute across all pairs
+      }
+    }
+  } catch (err) {
+    console.warn('[VIP Momentum Pause Loop Warn]', err);
+  } finally {
+    isScanningVipMomentumPause = false;
+  }
+}
+
+/**
  * Evaluates Free Bot trade outcome:
  * - ONLY called if the signal was actually sent to Free Channel (`sig.telegramMessageId != null`).
  * - If Free Bot is ALREADY STOPPED for today (100% win rate / 70%-75% target reached, celebration sent, or past 12:00 PM),
@@ -3403,7 +4027,7 @@ async function sendLiveBroadcastClosingReport(reason: '60_minutes' | 'target_rea
   let msg = '';
   if (isWin) {
     msg = [
-      '🔴 اختتام جلسة البث الحي المباشر للمشرف ZAD FX 🔴',
+      '🔴 اختتام جلسة البث المباشر مع ابوسليم 🔴',
       '━━━━━━━━━━━━━━━━━━━',
       '🎉 ألف مبروك لجميع من شارك وتداول معنا في هذا البث الحي المباشر!',
       'جلسة موفقة وأرباح مباركة بفضل الله تعالى 💰🏆',
@@ -3418,7 +4042,7 @@ async function sendLiveBroadcastClosingReport(reason: '60_minutes' | 'target_rea
     ].join('\n');
   } else {
     msg = [
-      '🔴 اختتام جلسة البث الحي المباشر للمشرف ZAD FX 🔴',
+      '🔴 اختتام جلسة البث المباشر مع ابوسليم 🔴',
       '━━━━━━━━━━━━━━━━━━━',
       'تم بحمد الله اختتام جلسة البث الحي لهذا اليوم بعد مرور 60 دقيقة من التداول.',
       'نطمئنكم جميعاً بأن الغد قادم بإذن الله وسيحمل فرصاً أجمل وأرباحاً أفضل بكثير، فالسوق اليوم كان متقلباً 🤝✨',
@@ -3530,17 +4154,12 @@ async function dispatchLiveBroadcastAutomatedSignal(candidate: LivePairSnapshot)
   const dirSymbol = direction === 'CALL' ? 'صعود 🟢 ⬆️ (CALL)' : 'هبوط 🔴 ⬇️ (PUT)';
 
   const formattedMessage = [
-    '🔴 بث حي مباشر للمشرف ZAD FX 🔴',
+    '🔴 البث المباشر مع ابوسليم 🔴',
     '━━━━━━━━━━━━━━━━━━━',
     `📊 الزوج: ${candidate.pair} (🌐)`,
     `🎯 الاتجاه: ${dirSymbol}`,
     `⏱️ وقت الدخول: :${entryMinute} (1 دقيقة (M1))`,
     '🎯 شروط الدخول: محققة بنجاح (3 من 4 شروط فنية معتمدة ✅)',
-    '━━━━━━━━━━━━━━━━━━━',
-    '🎙️ بث حي لأخذ الصفقات مباشر يومياً الساعة 6:00 مساءً',
-    '🎁 احصل على عضوية القناة الخاصة مع روبوت التداول مجاناً',
-    '🔗 رابط منصة التداول كيوتكس الرسمي المباشر:',
-    'https://broker-qx.pro/?lid=2303934',
     '━━━━━━━━━━━━━━━━━━━',
     '⚠️ تنبيه: يرجى الالتزام الصارم بإدارة رأس المال (1% إلى 2% كحد أقصى لكل صفقة).'
   ].filter(Boolean).join('\n');
@@ -3554,7 +4173,7 @@ async function dispatchLiveBroadcastAutomatedSignal(candidate: LivePairSnapshot)
     entryMinute,
     entryTime: `:${entryMinute}`,
     targetEntryTimestamp,
-    payout: '(🌐) (بث حي للمشرف 🔴)',
+    payout: '(🌐) (البث المباشر مع ابوسليم 🔴)',
     livePrice: candidate.formattedPrice,
     rsiValue: candidate.rsi,
     analysisReason: candidate.reason,
@@ -3677,6 +4296,42 @@ async function checkLiveBroadcastEveningSession(): Promise<void> {
     liveBroadcastSession.lastScanCandidate = undefined;
     liveBroadcastSession.lastDispatchedAt = undefined;
     await saveState();
+  }
+
+  // Fallback evaluator: Evaluate any finished live broadcast candle whose result was missed
+  const nowMs = Date.now();
+  for (const sig of signalsStore) {
+    if (
+      (sig.isLiveBroadcast || (sig.payout && sig.payout.includes('بث حي'))) &&
+      sig.status === 'PENDING' &&
+      !sig.resultSent &&
+      sig.targetEntryTimestamp &&
+      nowMs >= (sig.targetEntryTimestamp + 68) * 1000
+    ) {
+      const outcome = await evaluateCompletedM1Candle(
+        sig.asset,
+        sig.direction,
+        sig.targetEntryTimestamp,
+        sig.entryPriceNumeric
+      );
+      sig.status = outcome === 'DRAW' ? 'DRAW' : outcome;
+      sig.resultSent = true;
+      sig.formattedMessage = appendResultToSignalMessage(sig.formattedMessage, sig.status);
+      await saveState();
+
+      const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
+      const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
+      if (vipToken && vipChat && sig.vipTelegramMessageId) {
+        await updateSingleTelegramDestination(
+          vipToken,
+          vipChat,
+          sig.formattedMessage,
+          sig.status === 'WIN' ? '👑✅ ربح بث حي VIP' : '❌',
+          sig.vipTelegramMessageId
+        );
+      }
+      await handleLiveBroadcastSignalOutcome(sig, sig.status === 'DRAW' ? 'LOSS' : sig.status);
+    }
   }
 
   if (
@@ -3813,10 +4468,11 @@ function buildEndOfDayFinalReport(customDateStr?: string): EndOfDayFinalReport {
     ? currentEgyptHour >= 15
     : currentEgyptHour >= endHour;
 
-  // Filter signals belonging to the target date (excluding live broadcast signals)
+  // Filter signals belonging to the target date (strictly VIP channel signals, excluding live broadcast)
   const daySignals = signalsStore.filter(s => {
     if (!s.createdAt) return false;
     if (s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'))) return false;
+    if (!s.vipTelegramMessageId) return false;
     const d = new Date(s.createdAt);
     if (isNaN(d.getTime())) return false;
     return getCurrentEgyptDateString(d) === todayEgypt;
@@ -3831,13 +4487,13 @@ function buildEndOfDayFinalReport(customDateStr?: string): EndOfDayFinalReport {
   const savedRec = dailyStatsStore[todayEgypt];
   const directWins = savedRec?.manualOverride
     ? savedRec.directWins
-    : Math.max(liveDirectWins, savedRec?.directWins || 0);
+    : liveDirectWins;
   const gale1Wins = savedRec?.manualOverride
     ? savedRec.gale1Wins
-    : Math.max(liveGale1Wins, savedRec?.gale1Wins || 0);
+    : liveGale1Wins;
   const lossesWithGale = savedRec?.manualOverride
     ? savedRec.losses
-    : Math.max(liveLosses, savedRec?.losses || 0);
+    : liveLosses;
 
   const totalWinsWithGale = directWins + gale1Wins;
   const totalCompleted = totalWinsWithGale + lossesWithGale;
@@ -3917,7 +4573,7 @@ function buildEndOfDayFinalReport(customDateStr?: string): EndOfDayFinalReport {
   const activeWinRate = autoPilot.oneGaleEnabled ? winRateWithGale : winRateNoGale;
 
   const telegramReportText = [
-    `📊 التقرير المختصر لختام التداول | ${appSettings.channelTitle || 'نَبض التداول'}`,
+    `📊 التقرير المختصر لختام التداول | ${appSettings.channelTitle || 'ZAD FX | إشارات أبوسليم'}`,
     `📅 التاريخ: ${todayEgypt} (${formatHourArabic(endHour)})`,
     `━━━━━━━━━━━━━━━━━━━━`,
     `✅ عدد الربح: ${activeWins}`,
@@ -3961,7 +4617,7 @@ async function dispatchEndOfDayReportToTelegram(
 ): Promise<{ ok: boolean; sentFree: boolean; sentVip: boolean; error?: string; report: EndOfDayFinalReport }> {
   const report = buildEndOfDayFinalReport();
   const freeText = (customText && customText.trim()) ? customText.trim() : [
-    `📊 التقرير الختامي لجلسة التداول للقناة العامة | ${appSettings.channelTitle || 'نَبض التداول'}`,
+    `📊 التقرير الختامي لجلسة التداول للقناة العامة | ${appSettings.channelTitle || 'ZAD FX | إشارات أبوسليم'}`,
     `📅 التاريخ: ${report.date} (إغلاق الجلسة 03:00 عصراً بتوقيت مصر)`,
     `━━━━━━━━━━━━━━━━━━━━`,
     `✅ عدد الصفقات الرابحة: ${report.oneGaleActiveInBot ? report.totalWinsWithGale : report.directWins}`,
@@ -3977,7 +4633,7 @@ async function dispatchEndOfDayReportToTelegram(
   ].join('\n');
 
   const vipText = (customText && customText.trim()) ? customText.trim() : [
-    `👑 التقرير الختامي لقناة VIP الخاصة | ${appSettings.channelTitle || 'نَبض التداول'}`,
+    `👑 التقرير الختامي لقناة VIP الخاصة | ${appSettings.channelTitle || 'ZAD FX | إشارات أبوسليم'}`,
     `📅 التاريخ: ${report.date} (ختام جلسة اليوم الرسمية 03:00 عصراً بتوقيت مصر)`,
     `━━━━━━━━━━━━━━━━━━━━`,
     `✅ عدد الصفقات الرابحة: ${report.oneGaleActiveInBot ? report.totalWinsWithGale : report.directWins}`,
@@ -4057,7 +4713,7 @@ async function checkAndSendFreeBot12Report(): Promise<void> {
   if (report.totalCompleted === 0) return;
 
   const freeReportMsg = [
-    `🎯 تقرير ختام القناة العامة | ${appSettings.channelTitle || 'نَبض التداول'}`,
+    `🎯 تقرير ختام القناة العامة | ${appSettings.channelTitle || 'ZAD FX | إشارات أبوسليم'}`,
     `📅 التاريخ: ${todayEgypt} (ختام الجلسة الرسمية 12:00 ظهراً بتوقيت مصر)`,
     `━━━━━━━━━━━━━━━━━━━━`,
     `📊 نتائج صفقات اليوم:`,
@@ -4092,16 +4748,17 @@ async function checkAndSendVipClosingReport(): Promise<void> {
   const todayEgypt = getCurrentEgyptDateString(new Date());
   if (autoPilot.vipClosingReportSentDate === todayEgypt) return;
   const currentH = getCurrentEgyptHour();
-  if (currentH < 15) return; // Closes at 03:00 PM (15:00)
+  if (currentH < 21) return; // Closes at 09:00 PM (21:00)
 
   const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
   const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
   if (!vipToken || !vipChat) return;
 
-  // Filter VIP signals of today (excluding live broadcast signals which belong to 6:00 PM session)
+  // Filter VIP signals of today (strictly VIP channel signals, excluding live broadcast)
   const dayVipSignals = signalsStore.filter(s => {
     if (!s.createdAt || s.status === 'PENDING') return false;
     if (s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'))) return false;
+    if (!s.vipTelegramMessageId) return false;
     const d = new Date(s.createdAt);
     if (isNaN(d.getTime())) return false;
     return getCurrentEgyptDateString(d) === todayEgypt;
@@ -4120,10 +4777,10 @@ async function checkAndSendVipClosingReport(): Promise<void> {
   let message = '';
   if (isGoodWin) {
     message = [
-      '👑 التقرير الختامي لقناة VIP الخاصة | ZAD FX 👑',
-      `📅 التاريخ: ${todayEgypt} (ختام جلسة اليوم الرسمية 03:00 عصراً بتوقيت مصر)`,
+      '👑 التقرير الختامي لقناة VIP الخاصة وروبوت كيوتكس | ZAD FX 👑',
+      `📅 التاريخ: ${todayEgypt} (ختام جلسة اليوم الرسمية 09:00 مساءً بتوقيت مصر)`,
       '━━━━━━━━━━━━━━━━━━━━',
-      '🎉 ألف مبروك لجميع أعضاء ومتاجري قناة VIP الأبطال!',
+      '🎉 ألف مبروك لجميع أعضاء ومتاجري قناة VIP وروبوت كيوتكس الأبطال!',
       'جلسة تداول مميزة وأرباح مباركة بفضل الله تعالى 💰🏆',
       `📊 نتائج جلسة VIP اليوم:`,
       `✅ صفقات رابحة: ${wins}`,
@@ -4134,8 +4791,8 @@ async function checkAndSendVipClosingReport(): Promise<void> {
     ].join('\n');
   } else {
     message = [
-      '🛡️ التقرير الختامي لقناة VIP الخاصة | ZAD FX 🛡️',
-      `📅 التاريخ: ${todayEgypt} (ختام جلسة اليوم الرسمية 03:00 عصراً بتوقيت مصر)`,
+      '🛡️ التقرير الختامي لقناة VIP الخاصة وروبوت كيوتكس | ZAD FX 🛡️',
+      `📅 التاريخ: ${todayEgypt} (ختام جلسة اليوم الرسمية 09:00 مساءً بتوقيت مصر)`,
       '━━━━━━━━━━━━━━━━━━━━',
       'تم بحمد الله اختتام جلسة اليوم الرسمية.',
       'نطمئنكم جميعاً بأن الغد قادم بإذن الله وسيحمل فرصاً أجمل وأرباحاً أفضل بكثير 🤝✨',
@@ -4261,8 +4918,8 @@ async function checkFocusedGlobalMarketAutoPilot() {
 
     // 1. Recipient Eligibility Check:
     // - Free Bot: active between 09:00 AM and 12:00 PM (noon), stops on 70%-75% target or 30-min pause on 3 consecutive losses
-    // - VIP Bot: active daily 09:00 AM - 03:00 PM regardless of win/loss results
-    // - Floating Robot: active daily 09:00 AM - 03:00 PM
+    // - VIP Bot: active daily 09:00 AM - 09:00 PM regardless of win/loss results
+    // - Floating Robot: active daily 09:00 AM - 09:00 PM
     const isFreeActive = isFreeBotActiveNow(autoPilot);
     const isVipActive = isVipBotActiveNow();
     const isRobotActive = isFloatingRobotActiveNow();
@@ -4398,6 +5055,11 @@ scanRealGlobalForexMarket(false);
 setInterval(() => {
   checkFocusedGlobalMarketAutoPilot();
 }, 25 * 1000);
+
+// High-Frequency 3s Loop for VIP Momentum Pause Breakout (fires at :55s mark, 5 seconds before candle boundary)
+setInterval(() => {
+  checkVipMomentumPauseBreakoutLoop();
+}, 3 * 1000);
 
 setInterval(() => {
   pollTelegramBotIncomingForwards();
@@ -4860,6 +5522,8 @@ async function startServer() {
 
   // Update Quotex Automated Trading Robot Settings (Admin)
   app.post('/api/robot-settings', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
     const incoming = req.body || {};
     robotSettings = {
       ...robotSettings,
@@ -4868,10 +5532,27 @@ async function startServer() {
         typeof incoming.isPublishedToVisitors === 'boolean'
           ? incoming.isPublishedToVisitors
           : robotSettings.isPublishedToVisitors,
+      strategyEngineMode:
+        incoming.strategyEngineMode === 'PUBLIC_CLASSIC' || incoming.strategyEngineMode === 'VIP_WITH_MPB' || incoming.strategyEngineMode === 'VIP_WITHOUT_MPB'
+          ? incoming.strategyEngineMode
+          : (robotSettings.strategyEngineMode || 'VIP_WITH_MPB'),
       noMartingaleStrict: true // Strictly 0 Martingale
     };
     const cloudSaved = await saveState();
     res.json({ ok: true, robotSettings, cloudSaved });
+  });
+
+  // Dedicated endpoint for instantly switching strategy mode from Quotex Robot HUD or Admin
+  app.post('/api/quotex-robot/strategy-mode', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+    const mode = req.body?.mode || req.body?.strategyEngineMode;
+    if (mode === 'PUBLIC_CLASSIC' || mode === 'VIP_WITH_MPB' || mode === 'VIP_WITHOUT_MPB') {
+      robotSettings.strategyEngineMode = mode;
+      const cloudSaved = await saveState();
+      return res.json({ ok: true, strategyEngineMode: robotSettings.strategyEngineMode, cloudSaved });
+    }
+    res.status(400).json({ ok: false, error: 'وضع استراتيجية الروبوت غير صالح' });
   });
 
   // Admin: Quickly create a dedicated member/key or generate key for Quotex Robot
@@ -5087,6 +5768,8 @@ async function startServer() {
         rsiValue: latestSig.rsiValue || null,
         status: robotNormalizedStatus, // 'PENDING' | 'WIN' | 'LOSS'
         martingaleSteps: 0, // Strictly 0 Martingale
+        instantExecution5s: Boolean(latestSig.instantExecution5s),
+        strategyEngineMode: robotSettings.strategyEngineMode || 'VIP_WITH_MPB',
         createdAt: latestSig.createdAt
       };
     }
@@ -5094,6 +5777,7 @@ async function startServer() {
     res.json({
       ok: true,
       authorized: true,
+      strategyEngineMode: robotSettings.strategyEngineMode || 'VIP_WITH_MPB',
       serverTimeIso: new Date().toISOString(),
       serverEpochSeconds: Math.floor(Date.now() / 1000),
       marketOpen: isGlobalForexMarketOpen(),
@@ -5102,10 +5786,10 @@ async function startServer() {
       isWarmup: warmup.isWarmup,
       warmupMinutesRemaining: warmup.minutesRemaining,
       tradingHoursMessage: !isRobotActive
-        ? 'خارج ساعات عمل الروبوت (09:00 ص - 03:00 عصراً بتوقيت القاهرة)'
+        ? 'خارج ساعات عمل الروبوت (09:00 ص - 09:00 مساءً بتوقيت القاهرة)'
         : warmup.isWarmup
         ? `جاري مسح سيولة السوق والإحماء (${warmup.minutesRemaining} دقيقة متبقية)...`
-        : 'ساعات التداول الرسمية نشطة (09:00 ص - 03:00 عصراً)',
+        : 'ساعات التداول الرسمية نشطة (09:00 ص - 09:00 مساءً)',
       freeBotStatus: {
         isTargetReached: freeBotStatus.isTargetReached,
         todayWins: freeBotStatus.todayWins,
@@ -5115,11 +5799,12 @@ async function startServer() {
       },
       vipBotStatus: {
         isActive: isVipActive,
-        hoursText: '09:00 ص - 03:00 عصراً (توقيت القاهرة) مستمر بغض النظر عن النتيجة'
+        hoursText: '09:00 ص - 09:00 مساءً (توقيت القاهرة) مستمر بغض النظر عن النتيجة'
       },
       robotConfig: {
         title: robotSettings.robotTitle,
         version: robotSettings.version,
+        strategyEngineMode: robotSettings.strategyEngineMode || 'VIP_WITH_MPB',
         noMartingaleStrict: true,
         autoSelectPair: robotSettings.autoSelectPair,
         autoSetExpiryM1: robotSettings.autoSetExpiryM1,
@@ -5756,6 +6441,79 @@ async function startServer() {
     });
   });
 
+  // Trigger VIP Momentum Pause Breakout Signal Now (Manual Admin Trigger)
+  app.post('/api/admin/momentum-pause/trigger-now', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+
+    const preferredPair = req.body?.preferredPair || (req.query?.preferredPair as string | undefined);
+    const forcedDirection = req.body?.direction as 'CALL' | 'PUT' | undefined;
+
+    const { snapshots, selectedCandidate } = await scanRealGlobalForexMarket(true, preferredPair);
+    const candidate = selectedCandidate || (snapshots.length > 0 ? snapshots[0] : null);
+
+    if (!candidate) {
+      return res.status(400).json({
+        ok: false,
+        error: 'تعذر مسح بيانات السوق العالمي حالياً، يرجى المحاولة بعد لحظات.'
+      });
+    }
+
+    const direction: 'CALL' | 'PUT' = forcedDirection || candidate.fourIndicatorConfluence?.candidateDirection || candidate.signalReady || (candidate.rsi <= 50 ? 'CALL' : 'PUT');
+
+    const confluence = candidate.fourIndicatorConfluence || {
+      momentumPause: candidate.momentumPauseBreakout as any,
+      atrValue: candidate.momentumPauseBreakout?.atr || 0.0002,
+      atrMatched: true,
+      rsiValue: candidate.rsi,
+      rsiMatched: true,
+      superTrendMatched: true,
+      superTrendDirection: candidate.superTrend?.trend || 'BULLISH',
+      supportingCount: 4,
+      candidateDirection: direction,
+      isSignalTriggered: true,
+      matchedList: [
+        `Momentum Pause Breakout (${direction === 'CALL' ? 'اختراق صاعد ⬆️' : 'كسر هابط ⬇️'})`,
+        'مؤشر ATR (سيولة نشطة)',
+        `مؤشر RSI (${candidate.rsi.toFixed(1)})`,
+        `مؤشر Supertrend (${candidate.superTrend?.trend === 'BULLISH' ? 'صاعد أخضر 🟢' : 'هابط أحمر 🔴'})`
+      ],
+      summary: '4 من 4 مؤشرات متوافقة'
+    };
+
+    const result = await dispatchVipMomentumPauseSignal(candidate, direction, confluence as any, false);
+
+    res.json({
+      ok: result.ok,
+      signal: result.signal,
+      error: result.error,
+      confluence
+    });
+  });
+
+  // Get live status of 4-indicator confluence across all scanned pairs
+  app.get('/api/admin/momentum-pause/status', async (_req, res) => {
+    const { snapshots } = await scanRealGlobalForexMarket(false);
+    const radar = snapshots.map(s => ({
+      pair: s.pair,
+      price: s.formattedPrice,
+      rsi: s.rsi,
+      superTrend: s.superTrend,
+      momentumPause: s.momentumPauseBreakout,
+      confluence: s.fourIndicatorConfluence,
+      isTriggered: s.fourIndicatorConfluence?.isSignalTriggered || false,
+      supportingCount: s.fourIndicatorConfluence?.supportingCount || 0
+    }));
+
+    res.json({
+      ok: true,
+      marketOpen: isGlobalForexMarketOpen(),
+      isVipActive: isVipBotActiveNow(),
+      radar
+    });
+  });
+
   // Pull best real global setup into the manual studio editor
   app.get('/api/scrape-source', async (_req, res) => {
     const { selectedCandidate } = await scanRealGlobalForexMarket(true);
@@ -5952,18 +6710,13 @@ async function startServer() {
         const dirSymbol = direction === 'CALL' ? 'صعود 🟢 ⬆️ (CALL)' : 'هبوط 🔴 ⬇️ (PUT)';
 
         const formattedMessage = [
-          '🔴 بث حي مباشر للمشرف ZAD FX 🔴',
+          '🔴 البث المباشر مع ابوسليم 🔴',
           '━━━━━━━━━━━━━━━━━━━',
           `📊 الزوج: ${pair} (🌐)`,
           `🎯 الاتجاه: ${dirSymbol}`,
           `⏱️ وقت الدخول: :${entryMinute} (${timeframe})`,
           '🎯 شروط الدخول: محققة بنجاح (3 من 4 شروط فنية معتمدة ✅)',
           customNotes && customNotes.trim() ? `\n📝 توجيهات وملاحظات المشرف:\n${customNotes.trim()}` : '',
-          '━━━━━━━━━━━━━━━━━━━',
-          '🎙️ بث حي لأخذ الصفقات مباشر يومياً الساعة 6:00 مساءً',
-          '🎁 احصل على عضوية القناة الخاصة مع روبوت التداول مجاناً',
-          '🔗 رابط منصة التداول كيوتكس الرسمي المباشر:',
-          'https://broker-qx.pro/?lid=2303934',
           '━━━━━━━━━━━━━━━━━━━',
           '⚠️ تنبيه: يرجى الالتزام الصارم بإدارة رأس المال (1% إلى 2% كحد أقصى لكل صفقة).'
         ].filter(Boolean).join('\n');
@@ -5978,7 +6731,7 @@ async function startServer() {
           entryMinute,
           entryTime: `:${entryMinute}`,
           targetEntryTimestamp,
-          payout: '(🌐) (بث حي للمشرف 🔴)',
+          payout: '(🌐) (البث المباشر مع ابوسليم 🔴)',
           livePrice: formattedPrice,
           rsiValue: direction === 'CALL' ? 38 : 62,
           analysisReason: customNotes && customNotes.trim() ? `🔴 بث حي للمشرف: ${customNotes.trim()}` : '🔴 إشارة بث حي مباشر صادرة من المشرف',
@@ -6568,7 +7321,7 @@ async function startServer() {
       const recActionText = item.recommendation?.action === 'BUY' ? '🟢 شراء (BUY) 📈' : '🔴 بيع (SELL) 📉';
 
       const lines = [
-        `🚨 خبر عاجل وتوصية فوركس حصرية | ${appSettings.channelTitle || 'نَبض التداول'}`,
+        `🚨 خبر عاجل وتوصية فوركس حصرية | ${appSettings.channelTitle || 'ZAD FX | إشارات أبوسليم'}`,
         `━━━━━━━━━━━━━━━━━━━━`,
         `📌 الحدث: ${item.title}`,
         `⚡ العملة المتأثرة: ${item.currency} | ${impactBadge}`,
@@ -7202,6 +7955,29 @@ async function startServer() {
       fs.createReadStream(stratPath).pipe(res);
     } else {
       res.status(404).send('Strategy file not found');
+    }
+  });
+
+  // Download MT4 indicator (.mq4)
+  app.get(['/api/strategy/download-mq4', '/NB_FX_Momentum_Pause_Breakout.mq4'], (_req, res) => {
+    const mq4Path = path.join(process.cwd(), 'public', 'NB_FX_Momentum_Pause_Breakout.mq4');
+    if (fs.existsSync(mq4Path)) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="NB_FX_Momentum_Pause_Breakout.mq4"');
+      fs.createReadStream(mq4Path).pipe(res);
+    } else {
+      res.status(404).send('MT4 file not found');
+    }
+  });
+
+  // Get raw MT4 indicator code as JSON
+  app.get('/api/strategy/mq4-code', (_req, res) => {
+    const mq4Path = path.join(process.cwd(), 'public', 'NB_FX_Momentum_Pause_Breakout.mq4');
+    if (fs.existsSync(mq4Path)) {
+      const code = fs.readFileSync(mq4Path, 'utf-8');
+      res.json({ ok: true, filename: 'NB_FX_Momentum_Pause_Breakout.mq4', code });
+    } else {
+      res.status(404).json({ ok: false, error: 'MT4 file not found' });
     }
   });
 

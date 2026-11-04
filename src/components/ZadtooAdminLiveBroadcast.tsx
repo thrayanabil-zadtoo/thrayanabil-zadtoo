@@ -311,18 +311,13 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     const livePrice = defaultPrices[selectedPair] || '1.08500';
 
     const formattedMessage = [
-      '🔴 بث حي مباشر للمشرف ZAD FX 🔴',
+      '🔴 البث المباشر مع ابوسليم 🔴',
       '━━━━━━━━━━━━━━━━━━━',
       `📊 الزوج: ${selectedPair} (🌐)`,
       `🎯 الاتجاه: ${dirSymbol}`,
       `⏱️ وقت الدخول: :${entryMinute} (1 دقيقة (M1))`,
       '🎯 شروط الدخول: محققة بنجاح (3 من 4 شروط فنية معتمدة ✅)',
       customNotes && customNotes.trim() ? `\n📝 توجيهات وملاحظات المشرف:\n${customNotes.trim()}` : '',
-      '━━━━━━━━━━━━━━━━━━━',
-      '🎙️ بث حي لأخذ الصفقات مباشر يومياً الساعة 6:00 مساءً',
-      '🎁 احصل على عضوية القناة الخاصة مع روبوت التداول مجاناً',
-      '🔗 رابط منصة التداول كيوتكس الرسمي المباشر:',
-      'https://broker-qx.pro/?lid=2303934',
       '━━━━━━━━━━━━━━━━━━━',
       '⚠️ تنبيه: يرجى الالتزام الصارم بإدارة رأس المال (1% إلى 2% كحد أقصى لكل صفقة).'
     ].filter(Boolean).join('\n');
@@ -336,7 +331,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
       entryMinute,
       entryTime: `:${entryMinute}`,
       targetEntryTimestamp,
-      payout: '(🌐) (بث حي للمشرف 🔴)',
+      payout: '(🌐) (البث المباشر مع ابوسليم 🔴)',
       livePrice,
       rsiValue: direction === 'CALL' ? 38 : 62,
       analysisReason: customNotes && customNotes.trim() ? `🔴 بث حي للمشرف: ${customNotes.trim()}` : '🔴 إشارة بث حي مباشر صادرة من المشرف',
@@ -1306,7 +1301,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
                     <Crown className="w-4 h-4 text-amber-600" />
                     <span>بوت القناة الخاصة VIP</span>
                   </div>
-                  <div className="text-[10px] text-slate-500 font-normal">Abusalim FX VIP · مستمر حتى 03:00 م بغض النظر عن النتيجة</div>
+                  <div className="text-[10px] text-slate-500 font-normal">Abusalim FX VIP · مستمر حتى 09:00 م بغض النظر عن النتيجة</div>
                 </div>
               </label>
 

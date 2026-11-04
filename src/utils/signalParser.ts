@@ -37,7 +37,7 @@ export const DEFAULT_CUSTOM_TEMPLATE = `✨ {العنوان} ✨
 {الاتجاه}
 🎯 شروط الدخول: {شروط_الدخول}
 ━━━━━━━━━━━━━━
-🎙️ بث حي لأخذ الصفقات مباشر يومياً الساعة 6:00 مساءً
+🎙️ البث المباشر مع ابوسليم يومياً الساعة 6:00 مساءً
 🎁 احصل على عضوية القناة الخاصة مع روبوت التداول مجاناً
 📢 قناتنا المجانية: @ZadNBFX
 {التوقيع}`;
@@ -274,7 +274,7 @@ export function formatSignalMessage(parsed: ParsedSignal, options: FormatterOpti
   const conditionsText = parsed.conditionsMetText || 'محققة بنجاح (3 من 4 شروط فنية معتمدة ✅)';
   const conditionsLine = `\n🎯 شروط الدخول: ${conditionsText}`;
 
-  const liveStreamingLine = '🎙️ بث حي لأخذ الصفقات مباشر يومياً الساعة 6:00 مساءً';
+  const liveStreamingLine = '🎙️ البث المباشر مع ابوسليم يومياً الساعة 6:00 مساءً';
   const freeVipRobotLine = '🎁 احصل على عضوية القناة الخاصة مع روبوت التداول مجاناً';
 
   let output = '';
@@ -298,7 +298,7 @@ export function formatSignalMessage(parsed: ParsedSignal, options: FormatterOpti
       }
     }
 
-    if (!pat.includes('بث حي لأخذ الصفقات')) {
+    if (!pat.includes('البث المباشر مع ابوسليم') && !pat.includes('بث حي لأخذ الصفقات')) {
       if (pat.includes('📢 قناتنا المجانية') || pat.includes('📢 القناة المجانية')) {
         pat = pat.replace(/📢 قناتنا المجانية|📢 القناة المجانية/, `${liveStreamingLine}\n${freeVipRobotLine}\n$&`);
       } else {
@@ -307,7 +307,7 @@ export function formatSignalMessage(parsed: ParsedSignal, options: FormatterOpti
     }
 
     output = pat
-      .replace(/\{العنوان\}/g, options.channelTitle || 'نَبض التداول')
+      .replace(/\{العنوان\}/g, options.channelTitle || 'ZAD FX | إشارات أبوسليم')
       .replace(/\{الزوج\}/g, parsed.asset)
       .replace(/\{الزوج_كامل\}/g, pairLabel)
       .replace(/\{المدة\}/g, parsed.timeframe)
@@ -334,7 +334,7 @@ ${freeVipRobotLine}
 📢 تابعنا مجاناً: @ZadNBFX
 ${options.channelSignature || '💡 التزم بإدارة رأس المال الحكيمة'}`;
   } else if (options.templateStyle === 'pro') {
-    output = `🎯 قناص الصفقات | ${options.channelTitle || 'فرصة مؤكدة'}
+    output = `🎯 قناص الصفقات | ${options.channelTitle || 'ZAD FX | إشارات أبوسليم'}
 ┌───────────────────
 │ 🌐 الزوج: ${pairLabel}
 │ ⏳ الفريم: ${parsed.timeframe}
@@ -347,7 +347,7 @@ ${freeVipRobotLine}
 ${options.channelSignature || '💡 إدارة رأس المال سر النجاح'}`;
   } else {
     // 'elegant' (Default)
-    output = `✨ ${options.channelTitle || 'نَبض التداول'} ✨
+    output = `✨ ${options.channelTitle || 'ZAD FX | إشارات أبوسليم'} ✨
 ━━━━━━━━━━━━━━
 📊 الزوج: ${pairLabel}
 ⏱ المدة: ${parsed.timeframe}
@@ -380,16 +380,11 @@ export function appendResultToSignalMessage(
   _exitPrice?: string,
   customResultLine?: string
 ): string {
-  // Strip any previous result line if updating again
+  // Strip ONLY the trailing result block (separator + result line at the very end of string)
+  // Ensure we NEVER match separators inside the body of the signal!
   const cleaned = baseMessage
-    .replace(/\n*━━━━━━━━━━━━━━\n📌 النتيجة:[\s\S]*$/g, '')
-    .replace(/\n*━━━━━━━━━━━━━━\n[\s\S]*$/g, (match) => {
-      // Only strip the trailing separator block if it is the result block (not the signature block)
-      if (match.includes('📢') || match.includes('💡')) return match;
-      return '';
-    })
-    .replace(/\n*📌 النتيجة:[\s\S]*$/g, '')
-    .replace(/\n*(?:✅|❌|⚖️)[^\n]*$/g, '')
+    .replace(/\n+(?:━|-|_){5,}\n+(?:✅|❌|⚖️|👑|📌)[^\n]*$/g, '')
+    .replace(/\n+(?:📌\s*النتيجة:|[✅❌⚖️👑]\s*(?:ربح|خسارة)?)[^\n]*$/g, '')
     .trim();
 
   if (status === 'PENDING') {
@@ -407,7 +402,7 @@ export function appendResultToSignalMessage(
 
   const resultLine = (customResultLine && customResultLine.trim()) || defaultResultLine;
 
-  return `${cleaned}\n━━━━━━━━━━━━━━\n${resultLine}`;
+  return `${cleaned}\n━━━━━━━━━━━━━━━━━━━\n${resultLine}`;
 }
 
 export const SAMPLE_QUOTEX_SIGNALS = [

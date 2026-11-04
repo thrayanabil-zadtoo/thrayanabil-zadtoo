@@ -162,6 +162,7 @@
 
   // بمجرد تثبيت البرنامج العائم يكون على وضع التداول اليدوي وليس الآلي افتراضياً
   let ROBOT_MODE = localStorage.getItem("zad_robot_mode") || "MANUAL"; // "MANUAL" | "AUTO"
+  let ROBOT_STRATEGY_MODE = localStorage.getItem("zad_robot_strategy_mode") || "VIP_WITH_MPB"; // "PUBLIC_CLASSIC" | "VIP_WITH_MPB" | "VIP_WITHOUT_MPB"
   let LAST_EXECUTED_SIG_ID = "";
   let LAST_ALERTED_SIG_ID = "";
   let lastDataReceivedTime = 0;
@@ -314,6 +315,19 @@
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px;">
       <button id="zad-mode-auto" style="padding:3.5px 2px;font-size:9.5px;font-weight:bold;border-radius:6px;border:1px solid ${ROBOT_MODE === 'AUTO' ? '#10b981' : '#334155'};background:${ROBOT_MODE === 'AUTO' ? '#10b981' : '#1e293b'};color:${ROBOT_MODE === 'AUTO' ? '#020617' : '#cbd5e1'};cursor:pointer;">🤖 تداول آلي</button>
       <button id="zad-mode-manual" style="padding:3.5px 2px;font-size:9.5px;font-weight:bold;border-radius:6px;border:1px solid ${ROBOT_MODE === 'MANUAL' ? '#f59e0b' : '#334155'};background:${ROBOT_MODE === 'MANUAL' ? '#f59e0b' : '#1e293b'};color:${ROBOT_MODE === 'MANUAL' ? '#020617' : '#cbd5e1'};cursor:pointer;">🖐️ تداول يدوي</button>
+    </div>
+
+    <!-- قائمة منسدلة حصرية لاختيار استراتيجية المؤشرات (3 خيارات حصرية لمنع دمج الخيارات) -->
+    <div style="background:#09121f;border:1px solid #1e3a8a;border-radius:6px;padding:3.5px 4px;margin-bottom:4px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;font-size:8.5px;">
+        <span style="color:#93c5fd;font-weight:bold;display:flex;align-items:center;gap:2px;"><span>🎯</span><span>استراتيجية المؤشرات:</span></span>
+        <span id="zad-strategy-badge" style="color:#fde047;font-weight:bold;font-family:monospace;font-size:8px;background:#0f172a;padding:1px 4px;border-radius:3px;border:1px solid #334155;">${ROBOT_STRATEGY_MODE === 'PUBLIC_CLASSIC' ? '1 دقيقة ⏳' : '5 ثوانٍ ⚡'}</span>
+      </div>
+      <select id="zad-robot-strategy-mode" style="width:100%;background:#06101e;color:#f8fafc;border:1px solid #0284c7;border-radius:4px;padding:2px 3px;font-size:9px;font-weight:bold;cursor:pointer;outline:none;" title="اختر استراتيجية واحدة حصرية">
+        <option value="PUBLIC_CLASSIC" ${ROBOT_STRATEGY_MODE === 'PUBLIC_CLASSIC' ? 'selected' : ''}>📢 مؤشر القناة العامة (انتظار 1 دقيقة)</option>
+        <option value="VIP_WITH_MPB" ${ROBOT_STRATEGY_MODE === 'VIP_WITH_MPB' ? 'selected' : ''}>👑 VIP مع MPB (تنفيذ 5 ثوانٍ ⚡)</option>
+        <option value="VIP_WITHOUT_MPB" ${ROBOT_STRATEGY_MODE === 'VIP_WITHOUT_MPB' ? 'selected' : ''}>⚡ VIP بدون MPB (تنفيذ 5 ثوانٍ ⚡)</option>
+      </select>
     </div>
 
     <!-- صندوق الإشارة: يعرض إما الإشارة الحية مع العداد التنازلي أو 'وضع الانتظار WAIT' لمنع التكرار -->
@@ -742,6 +756,32 @@
         }
         const actElem = widget.querySelector("#zad-robot-action");
         if (actElem) actElem.innerText = "🖐️ وضع التداول اليدوي نشط: اضغط زر الدخول يدوياً عند اكتمال العد";
+      };
+    }
+
+    // 6.5. اختيار استراتيجية المؤشرات (القائمة المنسدلة الحصرية)
+    const strategySelect = widget.querySelector("#zad-robot-strategy-mode");
+    const strategyBadge = widget.querySelector("#zad-strategy-badge");
+    if (strategySelect && !strategySelect.dataset.bound) {
+      strategySelect.dataset.bound = "1";
+      strategySelect.value = ROBOT_STRATEGY_MODE;
+      strategySelect.onchange = async (e) => {
+        e.stopPropagation();
+        ROBOT_STRATEGY_MODE = strategySelect.value;
+        localStorage.setItem("zad_robot_strategy_mode", ROBOT_STRATEGY_MODE);
+        if (strategyBadge) {
+          strategyBadge.innerText = ROBOT_STRATEGY_MODE === "PUBLIC_CLASSIC" ? "1 دقيقة ⏳" : "5 ثوانٍ ⚡";
+        }
+        try {
+          const appOrigin = window.location.origin.includes("run.app") || window.location.origin.includes("zadtoo.com") || window.location.origin.includes("localhost")
+            ? window.location.origin
+            : "https://fx.zadtoo.com";
+          await fetch(appOrigin + "/api/quotex-robot/strategy-mode", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode: ROBOT_STRATEGY_MODE })
+          });
+        } catch(err) {}
       };
     }
 
@@ -1994,6 +2034,16 @@
     if (currentActiveTrade && Date.now() < currentActiveTrade.expireTime) {
       renderInTradeState();
       return;
+    }
+
+    // مزامنة وضع الاستراتيجية المختار من لوحة المشرف تلقائياً
+    if (data.strategyEngineMode && data.strategyEngineMode !== ROBOT_STRATEGY_MODE) {
+      ROBOT_STRATEGY_MODE = data.strategyEngineMode;
+      localStorage.setItem("zad_robot_strategy_mode", ROBOT_STRATEGY_MODE);
+      const sel = document.getElementById("zad-robot-strategy-mode");
+      if (sel) sel.value = ROBOT_STRATEGY_MODE;
+      const bdg = document.getElementById("zad-strategy-badge");
+      if (bdg) bdg.innerText = ROBOT_STRATEGY_MODE === "PUBLIC_CLASSIC" ? "1 دقيقة ⏳" : "5 ثوانٍ ⚡";
     }
 
     // لا يتم استحداث أي إشارة محلية إطلاقاً - الروبوت يستقبل حصرياً الإشارات الرسمية
