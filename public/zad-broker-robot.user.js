@@ -772,6 +772,8 @@
         if (strategyBadge) {
           strategyBadge.innerText = ROBOT_STRATEGY_MODE === "PUBLIC_CLASSIC" ? "1 دقيقة ⏳" : "5 ثوانٍ ⚡";
         }
+        currentRobotUiState = "";
+        checkDirectApi();
         try {
           const appOrigin = window.location.origin.includes("run.app") || window.location.origin.includes("zadtoo.com") || window.location.origin.includes("localhost")
             ? window.location.origin
@@ -1509,6 +1511,49 @@
     }
   }
 
+  // دالة عرض وضع قفل الأمان خارج أوقات عمل الاستراتيجية المختارة (بدلاً من وضع الانتظار WAIT)
+  function renderLockedState(lockedInfo) {
+    if (currentActiveTrade && Date.now() < currentActiveTrade.expireTime) {
+      renderInTradeState();
+      return;
+    }
+    const sigElem = document.getElementById("zad-robot-signal");
+    const actElem = document.getElementById("zad-robot-action");
+    const cdContainer = document.getElementById("zad-robot-countdown");
+    if (cdContainer) cdContainer.style.display = "none";
+    const manBtn = document.getElementById("zad-manual-trigger-container");
+    if (manBtn) manBtn.style.display = "none";
+
+    const reason = (lockedInfo && lockedInfo.lockReason) || "الروبوت مقفل خارج أوقات عمل هذه الاستراتيجية";
+    const workingHours = (lockedInfo && lockedInfo.workingHoursText) || "الفترة الصباحية: 09:00 ص - 12:00 م | البث المباشر: 06:00 م";
+    const nextSession = (lockedInfo && lockedInfo.nextSessionText) || "بانتظار موعد انطلاق الجلسة القادمة";
+
+    const stateKey = "LOCKED_" + reason.slice(0, 15);
+    if (currentRobotUiState === stateKey) return;
+    currentRobotUiState = stateKey;
+
+    if (sigElem) {
+      sigElem.innerHTML = `
+        <div style="background:rgba(239,68,68,0.12);border:1.5px solid #ef4444;border-radius:7px;padding:6px 8px;text-align:center;">
+          <div style="color:#f87171;font-size:11.5px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:5px;">
+            <span style="font-size:14px;">🔒</span>
+            <span style="letter-spacing:0.3px;">الروبوت في وضع قفل الأمان</span>
+          </div>
+          <div style="color:#fca5a5;font-size:9.5px;margin-top:3px;font-weight:600;line-height:1.3;">${reason}</div>
+          <div style="margin-top:5px;background:#1e1b4b;border:1px solid #6366f1;border-radius:5px;padding:3px 6px;font-size:8.5px;color:#c7d2fe;text-align:right;">
+            <div>⏰ <b>أوقات العمل:</b> ${workingHours}</div>
+            <div style="color:#fde047;margin-top:2px;">⏳ <b>الجلسة القادمة:</b> ${nextSession}</div>
+          </div>
+        </div>
+      `;
+    }
+    if (actElem) {
+      actElem.innerHTML = `<span style="color:#f87171;font-weight:bold;">🔒 قفل الأمان نشط — لن يتم تنفيذ أي صفقة خارج الجلسة الرسمية</span>`;
+    }
+    widget.style.borderColor = "#64748b";
+    widget.style.boxShadow = "0 10px 25px rgba(0,0,0,0.8)";
+  }
+
   // دالة تحديث خانة الزوج والإشارة: إما 'وضع الانتظار (WAIT)' أو 'مغلق السوق' دون وميض
   function renderWaitingState() {
     if (currentActiveTrade && Date.now() < currentActiveTrade.expireTime) {
@@ -1926,7 +1971,7 @@
         if (actElem && activeSignalObj.id !== LAST_EXECUTED_SIG_ID) {
           actElem.innerHTML = `🎯 إشارة مؤكدة: (<b>${activeSignalObj.asset}</b>) — الدخول ${ROBOT_MODE === 'AUTO' ? 'آلياً' : 'يدوياً'} عند ثانية :00`;
         }
-      } else if (remainingSec <= 0 && remainingSec >= -10) {
+      } else if ((remainingSec <= 0 && remainingSec >= -10) || (activeSignalObj && activeSignalObj.instantExecution5s && remainingSec <= 1 && remainingSec >= -10)) {
         // حان موعد الدخول الآن بالثانية (:00)!
         if (cdVal) cdVal.innerText = "🚀 ادخل الآن!";
         if (cdLabel) cdLabel.innerText = "نقطة الدخول الفورية:";
@@ -2033,6 +2078,16 @@
     // إذا كانت هناك صفقة جارية حالياً: استمرار ظهور "الصفقة جارية الآن" طوال فترة فتحها وعدم مقاطعتها
     if (currentActiveTrade && Date.now() < currentActiveTrade.expireTime) {
       renderInTradeState();
+      return;
+    }
+
+    // فحص قفل الأمان خارج ساعات عمل الاستراتيجية المختارة:
+    // (الخيار 1: صباحاً فقط حتى 12:00 ظهراً | الخيار 2 و 3: صباحاً 09:00 - 12:00 ومساءً 06:00 بث مباشر)
+    if (data.isLockedOutsideHours || data.isTradingHours === false) {
+      activeSignalObj = null;
+      currentActiveSignalId = null;
+      currentTargetEntryEpoch = null;
+      renderLockedState(data);
       return;
     }
 
@@ -2255,7 +2310,8 @@
 
   // 2. قناة الـ API المباشرة للسيرفر (Server API Feed)
   function checkDirectApi() {
-    const feedUrl = API_BASE + "/api/quotex-robot/feed?apiKey=" + encodeURIComponent(MEMBER_IDENTIFIER);
+    const feedUrl = API_BASE + "/api/quotex-robot/feed?apiKey=" + encodeURIComponent(MEMBER_IDENTIFIER) +
+      "&strategyMode=" + encodeURIComponent(ROBOT_STRATEGY_MODE || "VIP_WITH_MPB");
 
     if (typeof fetch === "function") {
       fetch(feedUrl, { mode: "cors", cache: "no-store" })

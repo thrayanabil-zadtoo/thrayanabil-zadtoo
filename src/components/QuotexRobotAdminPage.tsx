@@ -2048,38 +2048,43 @@ export default function QuotexRobotAdminPage({
                 {/* Dynamic Explanatory Banner for the Selected Option */}
                 <div className="p-2.5 rounded-lg text-[11px] leading-relaxed border transition-all">
                   {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'PUBLIC_CLASSIC' && (
-                    <div className="bg-amber-950/30 border border-amber-500/40 text-amber-200 p-2 rounded-lg space-y-1">
+                    <div className="bg-amber-950/30 border border-amber-500/40 text-amber-200 p-2.5 rounded-lg space-y-1.5">
                       <div className="font-extrabold flex items-center gap-1.5 text-amber-300">
-                        <span>📢 الخيار الأول نشط: مؤشر القناة العامة (انتظار دقيقة كاملة)</span>
+                        <span>📢 الخيار الأول نشط: مؤشر القناة العامة (انتظار 1 دقيقة)</span>
                       </div>
-                      <div className="text-[10.5px] text-slate-300">
-                        • <b>وقت الانتظار:</b> يتم الانتظار لمدة دقيقة كاملة (60 ثانية) قبل تنفيذ الصفقة عند افتتاح الشمعة.<br />
-                        • <b>قناة VIP:</b> لا تُرسل أي إشارات لقناة VIP التليجرام نهائياً في هذا الوضع (الإشارة مخصصة للروبوت والقناة العامة فقط).
+                      <div className="text-[10.5px] text-slate-300 space-y-1">
+                        <div>• <b>فترة وساعات العمل:</b> يعمل في <b>الجلسة الصباحية فقط (09:00 ص حتى 12:00 ظهراً)</b> أو حتى تحقيق هدف الربح (2 رابحة متتالية، 3-1، أو سقف 65%).</div>
+                        <div>• <b>قفل الأمان:</b> لا يعمل في فترة ما بعد الظهر أو المساء أو البث المباشر نهائياً، ويتم وضع <b>قفل أمان (🔒)</b> على الروبوت يوضح مواعيد العمل.</div>
+                        <div>• <b>وقت الانتظار:</b> يتم الانتظار دقيقة كاملة (60 ثانية) لتأكيد افتتاح الشمعة قبل الدخول.</div>
+                        <div>• <b>قناة VIP:</b> لا تُرسل أي إشارات لقناة VIP نهائياً في هذا الوضع (خاص بالروبوت والقناة العامة فقط).</div>
                       </div>
                     </div>
                   )}
 
                   {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'VIP_WITH_MPB' && (
-                    <div className="bg-emerald-950/30 border border-emerald-500/40 text-emerald-200 p-2 rounded-lg space-y-1">
+                    <div className="bg-emerald-950/30 border border-emerald-500/40 text-emerald-200 p-2.5 rounded-lg space-y-1.5">
                       <div className="font-extrabold flex items-center gap-1.5 text-emerald-300">
-                        <span>👑 الخيار الثاني نشط: مؤشر VIP مع MPB (تنفيذ فوري خلال 5 ثوانٍ)</span>
+                        <span>👑 الخيار الثاني نشط: مؤشر VIP مع MPB (تنفيذ 5 ثوانٍ ⚡ — شرط أساسي)</span>
                       </div>
-                      <div className="text-[10.5px] text-slate-300">
-                        • <b>الشرط الأساسي:</b> مؤشر <b>MPB (Momentum Pause Breakout)</b> إلزامي 100% ولا تصدر الإشارة بدونه.<br />
-                        • <b>المؤشرات الداعمة:</b> توفر 2 على الأقل من (ATR + RSI + Supertrend) ليصبح المجموع 3 من 4 مؤشرات.<br />
-                        • <b>التوقيت والارسال:</b> تصل الإشارة خلال 5 ثوانٍ فقط وتُرسل تلقائياً لقناة VIP والروبوت للتنفيذ الفوري.
+                      <div className="text-[10.5px] text-slate-300 space-y-1">
+                        <div>• <b>فترة وساعات العمل:</b> يعمل أثناء بث إشارات VIP: <b>الجلسة الصباحية (09:00 ص - 12:00 م)</b> و <b>جلسة البث المباشر (06:00 مساءً)</b> حتى تحقيق الهدف.</div>
+                        <div>• <b>قفل الأمان:</b> خارج هذه الأوقات يظهر الروبوت <b>قفل أمان (🔒)</b> مع مواعيد العمل وموعد الجلسة القادمة بدلاً من وضع الانتظار.</div>
+                        <div>• <b>الشرط الأساسي:</b> مؤشر <b>MPB (Momentum Pause Breakout)</b> شرط إلزامي + توفر 2 مؤشرات من (ATR, RSI, Supertrend).</div>
+                        <div>• <b>سرعة التنفيذ:</b> تنطلق الإشارة قبل افتتاح الشمعة بـ 5 ثوانٍ فقط وتُنفذ فورا على منصة كيوتكس وقناة VIP مع نسبة النجاح.</div>
                       </div>
                     </div>
                   )}
 
                   {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'VIP_WITHOUT_MPB' && (
-                    <div className="bg-sky-950/30 border border-sky-500/40 text-sky-200 p-2 rounded-lg space-y-1">
+                    <div className="bg-sky-950/30 border border-sky-500/40 text-sky-200 p-2.5 rounded-lg space-y-1.5">
                       <div className="font-extrabold flex items-center gap-1.5 text-sky-300">
-                        <span>⚡ الخيار الثالث نشط: مؤشر VIP بدون MPB (توافق 3 مؤشرات - تنفيذ 5 ثوانٍ)</span>
+                        <span>⚡ الخيار الثالث نشط: مؤشر VIP بدون MPB (توافق 3 مؤشرات — تنفيذ 5 ثوانٍ ⚡)</span>
                       </div>
-                      <div className="text-[10.5px] text-slate-300">
-                        • <b>المرونة الفنية:</b> لا يشترط وجود MPB كشرط أساسي، بل يكفي توافق أي 3 من المؤشرات الـ 4 (MPB, ATR, RSI, Supertrend).<br />
-                        • <b>التوقيت والارسال:</b> تصل الإشارة خلال 5 ثوانٍ فقط وتُرسل تلقائياً لقناة VIP والروبوت للتنفيذ الفوري.
+                      <div className="text-[10.5px] text-slate-300 space-y-1">
+                        <div>• <b>فترة وساعات العمل:</b> يعمل أثناء بث إشارات VIP: <b>الجلسة الصباحية (09:00 ص - 12:00 م)</b> و <b>جلسة البث المباشر (06:00 مساءً)</b>.</div>
+                        <div>• <b>قفل الأمان:</b> خارج أوقات العمل يظهر الروبوت <b>قفل أمان (🔒)</b> مع مواعيد العمل وموعد الجلسة القادمة بدلاً من وضع الانتظار.</div>
+                        <div>• <b>المرونة الفنية:</b> لا يشترط MPB كشرط إلزامي، بل يكفي توافق أي 3 من المؤشرات الـ 4 (MPB, ATR, RSI, Supertrend).</div>
+                        <div>• <b>سرعة التنفيذ:</b> تنطلق الإشارة قبل افتتاح الشمعة بـ 5 ثوانٍ وتُنفذ فورا على منصة كيوتكس وتصل لقناة VIP مع نسبة النجاح.</div>
                       </div>
                     </div>
                   )}
