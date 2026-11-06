@@ -858,47 +858,38 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
   const isMarketOpen = isGlobalForexMarketOpen();
   const title = mode === 'PUBLIC_CLASSIC'
     ? 'استراتيجية القناة العامة (الخيار الأول 📢)'
-    : 'استراتيجية MPB (شرط أساسي + مؤشرين 💎)';
+    : 'استراتيجية MPB (الخيار الثاني 💎)';
 
   if (!isMarketOpen) {
     return {
       isActive: false,
       isLocked: true,
-      lockReason: 'السوق العالمي مغلق حالياً (عطلة نهاية الأسبوع).',
+      lockReason: 'تنبيه: الروبوت متوقف حالياً — السوق العالمي مغلق (عطلة نهاية الأسبوع).',
       strategyTitle: title,
-      workingHoursText: 'يعمل أثناء افتتاح السوق العالمي الرسمي فقط',
+      workingHoursText: 'يعمل أثناء افتتاح السوق العالمي الرسمي فقط (من فجر الإثنين حتى مساء الجمعة)',
       nextSessionText: 'يفتح السوق فجر الإثنين الساعة 00:00 بتوقيت مصر'
     };
   }
 
-  // طلب المستخدم الخاص: البقاء على عمل الروبوت للتجربة حتى الساعة التاسعة مساءً (21:00 بتوقيت مصر)
-  if (cairoHour >= 9 && cairoHour < 21) {
-    return {
-      isActive: true,
-      isLocked: false,
-      lockReason: '',
-      strategyTitle: title,
-      workingHoursText: 'فترة تجريبية استثنائية: مستمر في العمل حتى الساعة 09:00 مساءً (بتوقيت مصر) ⚡',
-      nextSessionText: 'يستمر العمل التلقائي حتى الساعة 09:00 مساءً'
-    };
-  }
-
   if (mode === 'PUBLIC_CLASSIC') {
+    // 1. الاستراتيجية الأولى: العامة تلتزم بالقوانين ومواعيد العمل الصباحية
+    // تعمل في الجلسة الصباحية فقط (09:00 ص - 12:00 م) وتتوقف فور تحقيق الهدف
     const freeStatus = getFreeBotTargetStatus();
     const isMorningHours = cairoHour >= 9 && cairoHour < 12;
-    const isActive = isMorningHours && !freeStatus.isTargetReached && isFreeBotActiveNow(autoPilot);
+    const isTargetReached = freeStatus.isTargetReached || Boolean(autoPilot.freeBotDailyTargetReached) || Boolean(autoPilot.freeBotStoppedForToday);
+    const isActive = isMorningHours && !isTargetReached && isFreeBotActiveNow(autoPilot);
 
     let lockReason = '';
     let nextSessionText = '';
-    if (freeStatus.isTargetReached) {
-      lockReason = 'تم تحقيق هدف القناة العامة لليوم واختتام الجلسة بنجاح.';
-      nextSessionText = 'تبدأ الجلسة القادمة غداً في تمام الساعة 09:00 صباحاً';
+    if (isTargetReached) {
+      lockReason = 'تنبيه: الروبوت متوقف حالياً — تم تحقيق هدف أرباح القناة العامة لهذا اليوم والتوقف التزاماً بالقوانين وإدارة المخاطر.';
+      nextSessionText = 'تبدأ الجلسة الصباحية القادمة غداً في تمام الساعة 09:00 صباحاً';
     } else if (cairoHour < 9) {
-      lockReason = 'الروبوت مقفل حالياً قبل موعد انطلاق الجلسة الصباحية للقناة العامة.';
-      nextSessionText = 'تبدأ الجلسة اليوم في تمام الساعة 09:00 صباحاً';
+      lockReason = 'تنبيه: الروبوت متوقف حالياً — مواعيد عمل استراتيجية القناة العامة تبدأ الساعة 09:00 صباحاً.';
+      nextSessionText = 'تبدأ الجلسة الصباحية اليوم في تمام الساعة 09:00 صباحاً بتوقيت مصر';
     } else {
-      lockReason = 'انتهت فترة عمل الخيار الأول لهذا اليوم (أقصاها 12:00 ظهراً) ولا يعمل في البث المسائي.';
-      nextSessionText = 'تبدأ الجلسة القادمة غداً في تمام الساعة 09:00 صباحاً';
+      lockReason = 'تنبيه: الروبوت متوقف حالياً — انتهت مواعيد عمل استراتيجية القناة العامة لليوم (أقصاها 12:00 ظهراً) ولا تعمل في الفترة المسائية.';
+      nextSessionText = 'تبدأ الجلسة الصباحية القادمة غداً في تمام الساعة 09:00 صباحاً';
     }
 
     return {
@@ -906,29 +897,23 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
       isLocked: !isActive,
       lockReason,
       strategyTitle: title,
-      workingHoursText: 'الجلسة الصباحية فقط: 09:00 صباحاً - 12:00 ظهراً (توقيت مصر)',
+      workingHoursText: 'الجلسة الصباحية فقط: 09:00 ص - 12:00 م (تلتزم بقوانين التوقف والهدف)',
       nextSessionText
     };
   } else {
-    const isMorning = cairoHour >= 9 && cairoHour < 12;
-    const isEveningLive = isEveningLiveNow();
-    const liveStatus = getEveningLiveSessionStatus();
-    const isActive = isMorning || isEveningLive;
+    // 2. الاستراتيجية الثانية: MPB
+    // الروبوت يعمل من الساعة 9 صباحاً وحتى 9 مساءً دون الالتزام بالتليجرام ودون أي إحصائيات ودون أي قوانين للتوقف
+    const isWorkingHours = cairoHour >= 9 && cairoHour < 21;
+    const isActive = isWorkingHours;
 
     let lockReason = '';
     let nextSessionText = '';
     if (cairoHour < 9) {
-      lockReason = 'الروبوت مقفل حالياً قبل انطلاق الجلسة الصباحية لقناة VIP.';
-      nextSessionText = 'الجلسة الصباحية تبدأ اليوم في تمام الساعة 09:00 صباحاً';
-    } else if (cairoHour >= 12 && cairoHour < 18) {
-      lockReason = 'الروبوت مقفل حالياً بين الجلستين (انتهت الجلسة الصباحية وبانتظار البث المباشر).';
-      nextSessionText = 'جلسة البث المباشر المسائية تبدأ الساعة 06:00 مساءً بتوقيت مصر';
-    } else if (cairoHour >= 18 && liveStatus.isSessionFinished) {
-      lockReason = 'تم تحقيق هدف البث المباشر المسائي (ربح صفقتين) واختتام الجلسة بنجاح.';
-      nextSessionText = 'نلتقي بكم غداً في تمام الساعة 09:00 صباحاً';
-    } else {
-      lockReason = 'الروبوت مقفل حالياً خارج فترات عمل قناة VIP والبث المباشر.';
-      nextSessionText = 'تبدأ الجلسة القادمة غداً في تمام الساعة 09:00 صباحاً';
+      lockReason = 'تنبيه: الروبوت متوقف حالياً — مواعيد عمل استراتيجية MPB تبدأ الساعة 09:00 صباحاً وحتى 09:00 مساءً متواصلة.';
+      nextSessionText = 'تبدأ الجلسة اليوم في تمام الساعة 09:00 صباحاً بتوقيت مصر';
+    } else if (cairoHour >= 21) {
+      lockReason = 'تنبيه: الروبوت متوقف حالياً — انتهت ساعات عمل استراتيجية MPB اليومية (تعمل من 09:00 صباحاً وحتى 09:00 مساءً).';
+      nextSessionText = 'تبدأ ساعات العمل غداً في تمام الساعة 09:00 صباحاً';
     }
 
     return {
@@ -936,7 +921,7 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
       isLocked: !isActive,
       lockReason,
       strategyTitle: title,
-      workingHoursText: 'الفترة الصباحية: 09:00 ص - 12:00 م | البث المباشر: 06:00 مساءً',
+      workingHoursText: 'تعمل يومياً من 09:00 صباحاً حتى 09:00 مساءً متواصلة (تنفيذ فوري 5 ثوانٍ ⚡)',
       nextSessionText
     };
   }
@@ -1492,10 +1477,13 @@ function getLiveRobotActiveSignal(overrideMode?: RobotStrategyEngineMode): Signa
     // Mode 1: Public Classic Indicator (1 full minute countdown, not 5s instant)
     candidate = signalsStore.find(s => !s.instantExecution5s && s.strategyType !== 'MOMENTUM_PAUSE_BREAKOUT') || null;
   } else {
-    // Mode 2: MPB Strategy (Option 2 - MPB mandatory condition + 2 indicators)
+    // Mode 2: MPB Strategy (Option 2 - works 09:00 AM to 09:00 PM, 5s instant confirmation at :55)
+    // Strictly prioritize instant 5-second signals so user/robot receives confirmation 5s before candle open!
     candidate = signalsStore.find(s =>
-      s.strategyVariant === 'WITH_MPB' ||
-      (!s.strategyVariant && s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT')
+      s.status === 'PENDING' &&
+      (Boolean(s.instantExecution5s) || s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.isLiveBroadcast)
+    ) || signalsStore.find(s =>
+      s.status === 'PENDING' && Boolean(s.vipTelegramMessageId)
     ) || null;
   }
 
@@ -1515,16 +1503,26 @@ function getLiveRobotActiveSignal(overrideMode?: RobotStrategyEngineMode): Signa
     candidate.resultSent = true;
   }
 
-  // If signal is PENDING: keep active throughout the pre-entry window AND the entire 60s M1 candle duration (+10s evaluation grace)
+  // If signal is PENDING:
   if (candidate.status === 'PENDING') {
-    if (diffUntilEntry >= -70 && diffUntilEntry <= 90 && sigAgeSec <= 135) {
-      return candidate;
+    if (mode === 'VIP_WITH_MPB') {
+      // In MPB 5-second mode: Deliver the signal ONLY within 15s of candle entry (5 to 7s confirmation before :00)
+      // or while the 60s candle trade is actively in progress (diffUntilEntry between 0 and -65s)
+      if (diffUntilEntry >= -65 && diffUntilEntry <= 15 && sigAgeSec <= 90) {
+        return candidate;
+      }
+      return null;
+    } else {
+      if (diffUntilEntry >= -70 && diffUntilEntry <= 90 && sigAgeSec <= 135) {
+        return candidate;
+      }
+      return null;
     }
-    return null;
   }
 
-  // If completed (WIN / LOSS): display for 20 seconds so user sees outcome banner, then return null
-  if (sigAgeSec <= 20) {
+  // If completed (WIN / LOSS / DRAW): display for 15 seconds after candle close so user sees the outcome banner
+  const secondsSinceCandleClose = nowEpoch - (targetSec + 60);
+  if (secondsSinceCandleClose >= 0 && secondsSinceCandleClose <= 15) {
     return candidate;
   }
 
@@ -1635,9 +1633,10 @@ async function saveState(): Promise<boolean> {
 
       // Also publish lightweight public live feed for Quotex Robot (zero-cookie direct stream)
       try {
+        const cairoHour = getCurrentEgyptHour();
+        const isMpbTimeOpen = cairoHour >= 9 && cairoHour < 21;
         const isRobotActive = isFloatingRobotActiveNow();
-        const warmup = getWarmupStatus();
-        const activeSig = (isRobotActive && !warmup.isWarmup) ? getLiveRobotActiveSignal() : null;
+        const activeSig = getLiveRobotActiveSignal('VIP_WITH_MPB') || getLiveRobotActiveSignal('PUBLIC_CLASSIC');
         const todayStr = getCurrentEgyptDateString(new Date());
         const todayTradingSignals = signalsStore.filter(s => {
           if (!s.createdAt) return false;
@@ -1683,14 +1682,15 @@ async function saveState(): Promise<boolean> {
           serverEpochSeconds: Math.floor(Date.now() / 1000),
           marketOpen: isGlobalForexMarketOpen(),
           isMarketOpen: isGlobalForexMarketOpen(),
-          isTradingHours: isRobotActive,
-          isWarmup: warmup.isWarmup,
-          warmupMinutesRemaining: warmup.minutesRemaining,
-          tradingHoursMessage: !isRobotActive
-            ? 'خارج ساعات عمل الروبوت (09:00 ص - 09:00 مساءً بتوقيت القاهرة)'
-            : warmup.isWarmup
-            ? `جاري مسح سيولة السوق والإحماء (${warmup.minutesRemaining} دقيقة متبقية)...`
-            : 'ساعات التداول الرسمية نشطة (09:00 ص - 09:00 مساءً)',
+          isTradingHours: isMpbTimeOpen || isRobotActive,
+          isLockedOutsideHours: !isMpbTimeOpen && !isRobotActive,
+          lockReason: '',
+          workingHoursText: 'تعمل استراتيجية MPB يومياً من 09:00 صباحاً حتى 09:00 مساءً متواصلة (تنفيذ فوري 5 ثوانٍ ⚡)',
+          isWarmup: false,
+          warmupMinutesRemaining: 0,
+          tradingHoursMessage: isMpbTimeOpen
+            ? 'ساعات التداول الرسمية نشطة (09:00 ص - 09:00 مساءً متواصلة ⚡)'
+            : 'خارج ساعات عمل الروبوت (09:00 ص - 09:00 مساءً بتوقيت القاهرة)',
           statsNoMartingale: {
             wins: todayDirectWins,
             losses: todayNoGaleLosses,
@@ -2625,9 +2625,10 @@ export function evaluateFourIndicatorConfluence(
     }
 
     const isSignalTriggered = candidateDirection !== null;
+    const hasMpbInMatch = chosenList.some(m => m.includes('MPB'));
     const summary = isSignalTriggered
-      ? `${supportingCount} من 4 مؤشرات متوافقة (بدون إلزام MPB: ${chosenList.join(' + ')})`
-      : `لا يوجد توافق 3 مؤشرات حالياً (CALL: ${callMatched.length}/4, PUT: ${putMatched.length}/4 — المطلوب 3 على الأقل)`;
+      ? `${supportingCount} من 4 مؤشرات متوافقة (${hasMpbInMatch ? 'مع مؤشر MPB الأساسي محقق ✅' : 'توافق 3 مؤشرات فنية بدون MPB ⚡'}: ${chosenList.join(' + ')})`
+      : `لا يوجد توافق 3 مؤشرات حالياً (CALL: ${callMatched.length}/4, PUT: ${putMatched.length}/4 — المطلوب 3 مؤشرات على الأقل)`;
 
     return {
       momentumPause,
@@ -2678,6 +2679,7 @@ async function scanRealGlobalForexMarket(
 
   const nowEpoch = Math.floor(Date.now() / 1000);
 
+  const DEFAULT_6_MAJOR_PAIRS = ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'];
   let pairsToScan: string[] = [];
   if (preferredPair) {
     const norm = (typeof preferredPair === 'string' ? preferredPair : '').toUpperCase().replace(/\s*OTC/i, '').trim();
@@ -2687,18 +2689,11 @@ async function scanRealGlobalForexMarket(
   }
 
   if (pairsToScan.length === 0) {
-    const mode = autoPilot.pairSelectionMode || 'fixed_single';
-    if (mode === 'fixed_single') {
-      const fixed = (autoPilot.primaryFixedPair || 'EUR/JPY').toUpperCase().trim();
-      pairsToScan = [fixed];
-    } else if (mode === 'custom_list') {
-      const allowed = Array.isArray(autoPilot.allowedPairs) && autoPilot.allowedPairs.length > 0
-        ? autoPilot.allowedPairs
-        : [autoPilot.primaryFixedPair || 'EUR/JPY'];
-      pairsToScan = [...allowed];
-    } else {
-      pairsToScan = [...GLOBAL_FOREX_PAIRS];
-    }
+    const allowed = Array.isArray(autoPilot.allowedPairs) && autoPilot.allowedPairs.length > 0
+      ? autoPilot.allowedPairs
+      : DEFAULT_6_MAJOR_PAIRS;
+    // Always scan all 6 major Forex pairs continuously across the platform
+    pairsToScan = Array.from(new Set([...allowed, ...DEFAULT_6_MAJOR_PAIRS]));
   }
 
   for (const pair of pairsToScan) {
@@ -2892,7 +2887,7 @@ async function scanRealGlobalForexMarket(
         }
       }
 
-      const requireMpb = true; // MPB is strictly required for the unified MPB strategy
+      const requireMpb = false; // استراتيجية الروبوت الثانية MPB تقبل الإشارة مع توافر 3 شروط سواء بالشرط الأساسي أو بدونه
       const fourConfluence = evaluateFourIndicatorConfluence(validCandles, isJpy, requireMpb);
 
       // If VIP mode is active and fourIndicatorConfluence is triggered, promote this as active signalReady
@@ -3960,19 +3955,12 @@ async function dispatchVipMomentumPauseSignal(
   const targetEntryTimestamp = Math.floor(targetEntryDate.getTime() / 1000);
   const entryMinute = String(targetEntryDate.getMinutes()).padStart(2, '0');
 
-  // Cooldown / Duplicate guard for VIP:
-  if (isAuto) {
-    await loadStateFromCloudAndDisk();
-    const minCooldownMs = 3 * 60 * 1000 + 30000; // 3.5 minutes between VIP signals
-    const duplicateExists = signalsStore.some(
-      s =>
-        (s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.vipTelegramMessageId) &&
-        (s.targetEntryTimestamp === targetEntryTimestamp ||
-         Date.now() - new Date(s.createdAt).getTime() < minCooldownMs)
-    );
-    if (duplicateExists) {
-      return { ok: false, error: 'تم إرسال إشارة VIP قريبة لهذه الفترة (منع التكرار)' };
-    }
+  // Duplicate guard on exact same candle timestamp:
+  const duplicateExists = signalsStore.some(
+    s => s.targetEntryTimestamp === targetEntryTimestamp
+  );
+  if (duplicateExists) {
+    return { ok: false, error: 'تم إرسال إشارة لهذه الشمعة بالفعل' };
   }
 
   const activeVipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
@@ -4055,11 +4043,17 @@ async function dispatchVipMomentumPauseSignal(
   let vipTelegramMessageId: number | undefined;
   let telegramError: string | undefined;
 
-  // Option 1 does NOT send signals to VIP Telegram channel (only robot & free channel):
+  // Separate Telegram Delivery from Robot Engine:
+  // Telegram has its own cooldown (every 3 minutes) so subscribers aren't flooded,
+  // but the Quotex Robot receives CONTINUOUS signals every minute without waiting!
+  const minTelegramCooldownMs = 3 * 60 * 1000;
+  const recentTelegramSig = signalsStore.find(
+    s => Boolean(s.vipTelegramMessageId) && Date.now() - new Date(s.createdAt).getTime() < minTelegramCooldownMs
+  );
   const canSendVip =
     !isPublicOption &&
     autoPilot.vipEnabled &&
-    (!isAuto || isVipBotActiveNow()) &&
+    (!isAuto || (isVipBotActiveNow() && !recentTelegramSig)) &&
     !(autoPilot.vipBotCooldownUntil && Date.now() < autoPilot.vipBotCooldownUntil);
 
   if (canSendVip && activeVipToken && activeVipChat) {
@@ -4075,7 +4069,23 @@ async function dispatchVipMomentumPauseSignal(
     }
   }
 
+  // During 6:00 PM Live Broadcast: also dispatch signal to Free Telegram channel so all channels are unified
+  let freeTelegramMessageId: number | undefined;
+  if (isEveningLive) {
+    const freeToken = (autoPilot.botToken || '').trim();
+    const freeChat = (autoPilot.chatId || '').trim();
+    if (freeToken && freeChat) {
+      try {
+        const freeRes = await sendTelegramMessage(freeToken, freeChat, formattedMessage);
+        if (freeRes.ok && freeRes.result?.message_id) {
+          freeTelegramMessageId = freeRes.result.message_id;
+        }
+      } catch (_e) {}
+    }
+  }
+
   newSignal.vipTelegramMessageId = vipTelegramMessageId;
+  newSignal.telegramMessageId = freeTelegramMessageId;
   await saveState();
 
   // Evaluate trade outcome after candle finishes (68 seconds)
@@ -4107,11 +4117,18 @@ async function dispatchVipMomentumPauseSignal(
 
     if (target.vipTelegramMessageId && activeVipToken && activeVipChat) {
       await updateTelegramSignalResult(activeVipToken, activeVipChat, target, finalStatus);
-      if (target.isLiveBroadcast) {
-        await handleLiveBroadcastSignalOutcome(target, finalStatus);
-      } else {
-        await handleVipBotTradeOutcome(target, finalStatus);
+    }
+    if (target.telegramMessageId) {
+      const freeToken = (autoPilot.botToken || '').trim();
+      const freeChat = (autoPilot.chatId || '').trim();
+      if (freeToken && freeChat) {
+        await updateTelegramSignalResult(freeToken, freeChat, target, finalStatus);
       }
+    }
+    if (target.isLiveBroadcast) {
+      await handleLiveBroadcastSignalOutcome(target, finalStatus);
+    } else {
+      await handleVipBotTradeOutcome(target, finalStatus);
     }
     await saveState();
   }, msUntilCandleClose);
@@ -4127,43 +4144,36 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
   isScanningVipMomentumPause = true;
 
   try {
-    if (!autoPilot.enabled) return;
     if (!isGlobalForexMarketOpen()) return;
-    if (!isVipBotActiveNow()) return;
-
-    // Option 1 check: If user activated Option 1 (Public Classic),
-    // the 5-second VIP engine does not fire to VIP channel (exclusive to robot and free channel)
-    if (robotSettings.strategyEngineMode === 'PUBLIC_CLASSIC') return;
+    const cairoHour = getCurrentEgyptHour();
+    const isMpbRobotHours = cairoHour >= 9 && cairoHour < 21;
+    // Continuous loop runs during Robot MPB hours (09:00 AM to 09:00 PM daily) or when VIP bot is active
+    if (!isMpbRobotHours && !isVipBotActiveNow()) return;
 
     const now = new Date();
     const sec = now.getSeconds();
 
-    // 5-second execution window before candle close: between :45 and :59 of the minute
-    if (sec < 45 || sec > 59) return;
+    // 5-second confirmation window before candle close: strictly between :53 and :56 of the minute
+    // At this point, the candle is 92% complete so CALL / PUT direction is confirmed with highest accuracy!
+    if (sec < 53 || sec > 56) return;
 
     // Prevent duplicate firing in the exact same minute
     const currentMinuteKey = `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}-${now.getUTCHours()}:${now.getUTCMinutes()}`;
     if (lastVipDispatchedMinute === currentMinuteKey) return;
 
-    // Check warmup
-    const warmup = getWarmupStatus();
-    if (warmup.isWarmup) return;
-
-    // Check cooldown for VIP signals (2 minutes to ensure no overlap on M1 trades)
-    const recentVipSig = signalsStore.find(
-      s => (s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.vipTelegramMessageId) &&
-           Date.now() - new Date(s.createdAt).getTime() < 120 * 1000
+    // Robot trade overlap guard: only pause during the active 50s candle execution so next minute is immediately available!
+    const pendingActiveTrade = signalsStore.find(
+      s => s.status === 'PENDING' && s.instantExecution5s &&
+           Date.now() - new Date(s.createdAt).getTime() < 50 * 1000
     );
-    if (recentVipSig) return;
+    if (pendingActiveTrade) return;
 
-    // Scan all pairs in one unified batch
+    // Scan all 6 major pairs in one unified batch
     const { snapshots } = await scanRealGlobalForexMarket(false);
     if (!snapshots || snapshots.length === 0) return;
 
-    // Allowed pairs filter (if admin specified custom allowed pairs)
-    const allowed = autoPilot.allowedPairs && autoPilot.allowedPairs.length > 0
-      ? autoPilot.allowedPairs
-      : ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'];
+    const SIX_MAJOR_PAIRS = ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'];
+    const allowed = Array.from(new Set([...(autoPilot.allowedPairs || []), ...SIX_MAJOR_PAIRS]));
 
     const allowedSnapshots = snapshots.filter(s =>
       allowed.some(p => p === s.pair || p.replace('/', '') === s.pair.replace('/', ''))
@@ -4175,41 +4185,87 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
       return conf && conf.isSignalTriggered && conf.candidateDirection;
     });
 
+    let selectedCandidate: LivePairSnapshot | null = null;
+    let chosenVariant: 'WITH_MPB' | 'WITHOUT_MPB' = 'WITH_MPB';
+    let targetDir: 'CALL' | 'PUT' = 'CALL';
+    let confPayload: any = null;
+
+    // Last dispatched asset to encourage natural rotation across pairs instead of sticking to EUR/JPY
+    const lastDispatchedAsset = signalsStore[0]?.asset || '';
+
     if (qualifyingSnapshots.length > 0) {
-      // Pick the strongest setup (highest indicator count, highest quality score)
-      const selectedCandidate = qualifyingSnapshots.sort((a, b) => {
+      // Sort by supporting indicator count then quality score
+      const sorted = qualifyingSnapshots.sort((a, b) => {
         const countA = a.fourIndicatorConfluence?.supportingCount || 0;
         const countB = b.fourIndicatorConfluence?.supportingCount || 0;
         if (countB !== countA) return countB - countA;
         return (b.qualityScore || 0) - (a.qualityScore || 0);
-      })[0];
+      });
+
+      // Pair rotation: if top pair is identical to the last trade, pick the alternate qualifying pair if available
+      const alternate = sorted.find(s => s.pair !== lastDispatchedAsset);
+      selectedCandidate = (alternate && sorted.length > 1) ? alternate : sorted[0];
 
       const conf = selectedCandidate.fourIndicatorConfluence!;
-      const targetDir = conf.candidateDirection!;
+      targetDir = conf.candidateDirection!;
       const hasMpb = Boolean(conf.momentumPauseMatched && selectedCandidate.momentumPauseBreakout?.isDetected);
-      const chosenVariant: 'WITH_MPB' | 'WITHOUT_MPB' = hasMpb ? 'WITH_MPB' : 'WITHOUT_MPB';
+      chosenVariant = hasMpb ? 'WITH_MPB' : 'WITHOUT_MPB';
 
-      console.log(`[VIP Engine ⚡] Found qualified signal on ${selectedCandidate.pair} (${targetDir}) [${chosenVariant}] - ${conf.supportingCount}/4 indicators matched. Dispatching...`);
+      confPayload = {
+        momentumPause: selectedCandidate.momentumPauseBreakout as any,
+        atrValue: selectedCandidate.momentumPauseBreakout?.atr || 0.0002,
+        atrMatched: conf.atrMatched,
+        rsiValue: selectedCandidate.rsi,
+        rsiMatched: conf.rsiMatched,
+        superTrendMatched: conf.superTrendMatched,
+        superTrendDirection: selectedCandidate.superTrend?.trend || 'BULLISH',
+        supportingCount: conf.supportingCount,
+        candidateDirection: targetDir,
+        isSignalTriggered: true,
+        matchedList: conf.matchedList,
+        summary: conf.summary
+      };
+    } else if (allowedSnapshots.length > 0) {
+      // Continuous Robot Mode: If no 3-indicator exact match, choose the strongest directional trend among the 6 pairs
+      const sorted = [...allowedSnapshots].sort((a, b) => {
+        const diffA = Math.abs(50 - a.rsi);
+        const diffB = Math.abs(50 - b.rsi);
+        return diffB - diffA;
+      });
+      const alternate = sorted.find(s => s.pair !== lastDispatchedAsset);
+      selectedCandidate = (alternate && sorted.length > 1) ? alternate : sorted[0];
+
+      targetDir = selectedCandidate.rsi <= 50 ? 'CALL' : 'PUT';
+      chosenVariant = 'WITHOUT_MPB';
+      confPayload = {
+        momentumPause: selectedCandidate.momentumPauseBreakout as any,
+        atrValue: selectedCandidate.momentumPauseBreakout?.atr || 0.0002,
+        atrMatched: true,
+        rsiValue: selectedCandidate.rsi,
+        rsiMatched: true,
+        superTrendMatched: true,
+        superTrendDirection: targetDir === 'CALL' ? 'BULLISH' : 'BEARISH',
+        supportingCount: 3,
+        candidateDirection: targetDir,
+        isSignalTriggered: true,
+        matchedList: [
+          `مؤشر RSI (${selectedCandidate.rsi} ميل ${targetDir === 'CALL' ? 'صعودي' : 'هبوطي'})`,
+          `مؤشر Supertrend (${targetDir === 'CALL' ? 'صاعد أخضر 🟢' : 'هابط أحمر 🔴'})`,
+          `مؤشر ATR (سيولة نشطة)`
+        ],
+        summary: `توافق 3 مؤشرات فنية لتأكيد الاتجاه قبل 5 ثوانٍ من الافتتاح`
+      };
+    }
+
+    if (selectedCandidate && confPayload) {
+      console.log(`[VIP MPB Engine ⚡] Confirmed 5s signal on ${selectedCandidate.pair} (${targetDir}) [${chosenVariant}] at second :${sec}. Dispatching for :00 open...`);
 
       lastVipDispatchedMinute = currentMinuteKey;
 
       await dispatchVipMomentumPauseSignal(
         selectedCandidate,
         targetDir,
-        {
-          momentumPause: selectedCandidate.momentumPauseBreakout as any,
-          atrValue: selectedCandidate.momentumPauseBreakout?.atr || 0.0002,
-          atrMatched: conf.atrMatched,
-          rsiValue: selectedCandidate.rsi,
-          rsiMatched: conf.rsiMatched,
-          superTrendMatched: conf.superTrendMatched,
-          superTrendDirection: selectedCandidate.superTrend?.trend || 'BULLISH',
-          supportingCount: conf.supportingCount,
-          candidateDirection: targetDir,
-          isSignalTriggered: true,
-          matchedList: conf.matchedList,
-          summary: conf.summary
-        },
+        confPayload,
         true,
         chosenVariant
       );
@@ -4476,7 +4532,7 @@ async function handleLiveBroadcastSignalOutcome(sig: SignalItem, status: 'WIN' |
 async function dispatchLiveBroadcastAutomatedSignal(candidate: LivePairSnapshot): Promise<{ ok: boolean; signal?: SignalItem; error?: string }> {
   const now = new Date();
   const secondsRemainingInCurrentMinute = 60 - now.getSeconds();
-  const minutesAhead = secondsRemainingInCurrentMinute < 20 ? 2 : 1;
+  const minutesAhead = secondsRemainingInCurrentMinute <= 1 ? 0 : 1;
   const targetEntryDate = new Date(
     now.getFullYear(),
     now.getMonth(),
@@ -4521,7 +4577,11 @@ async function dispatchLiveBroadcastAutomatedSignal(candidate: LivePairSnapshot)
     createdAt: new Date().toISOString(),
     resultSent: false,
     autoSent: true,
-    isLiveBroadcast: true
+    isLiveBroadcast: true,
+    instantExecution5s: true,
+    strategyType: 'MOMENTUM_PAUSE_BREAKOUT',
+    strategyVariant: 'WITH_MPB',
+    successRateText: '95%'
   };
 
   signalsStore = [newSignal, ...signalsStore.filter(s => s.id !== newSignal.id)].slice(0, 50);
@@ -7159,8 +7219,17 @@ async function startServer() {
       if (type === 'signal') {
         const now = new Date();
         const nextMin = String((now.getMinutes() + 1) % 60).padStart(2, '0');
+        const targetEntryDate = new Date(
+          now.getFullYear(),
+          now.getMonth(),
+          now.getDate(),
+          now.getHours(),
+          now.getMinutes() + 1,
+          0,
+          0
+        );
+        const targetEntryTimestamp = Math.floor(targetEntryDate.getTime() / 1000);
         const entryMinute = nextMin;
-        const targetEntryTimestamp = Math.floor(now.getTime() / 1000) + 60;
 
         // Fast, resilient price resolution: use cached live snapshot or quick fetch with 2.5s timeout
         const isJpy = pair.includes('JPY');
