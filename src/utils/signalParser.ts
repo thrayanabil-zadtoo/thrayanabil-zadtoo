@@ -397,8 +397,8 @@ export function appendResultToSignalMessage(
       : status === 'WIN_GALE1'
       ? '✅ ربح مضاعفة واحدة'
       : status === 'LOSS'
-      ? '❌'
-      : '⚖️';
+      ? '❌ خسارة'
+      : '⚖️ تعادل (استرداد رأس المال بالكامل 100% 🛡️)';
 
   const resultLine = (customResultLine && customResultLine.trim()) || defaultResultLine;
 

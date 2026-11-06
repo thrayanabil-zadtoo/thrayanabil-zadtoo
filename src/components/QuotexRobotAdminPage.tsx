@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import type { VipSubscriber, SignalItem, LivePairSnapshot } from '../App';
 
-export type RobotStrategyEngineMode = 'PUBLIC_CLASSIC' | 'VIP_WITH_MPB' | 'VIP_WITHOUT_MPB';
+export type RobotStrategyEngineMode = 'PUBLIC_CLASSIC' | 'VIP_WITH_MPB';
 
 export interface QuotexRobotSettings {
   isPublishedToVisitors: boolean;
@@ -1722,7 +1722,7 @@ export default function QuotexRobotAdminPage({
                           </span>
                         </div>
                         <select
-                          value={robotSettings.strategyEngineMode || 'VIP_WITH_MPB'}
+                          value={robotSettings.strategyEngineMode === 'PUBLIC_CLASSIC' ? 'PUBLIC_CLASSIC' : 'VIP_WITH_MPB'}
                           onChange={e => {
                             const newMode = e.target.value as RobotStrategyEngineMode;
                             setRobotSettings(prev => ({ ...prev, strategyEngineMode: newMode }));
@@ -1734,9 +1734,8 @@ export default function QuotexRobotAdminPage({
                           }}
                           className="w-full px-1.5 py-1 text-[9px] bg-[#070D18] border border-emerald-500/60 rounded text-white font-extrabold cursor-pointer focus:outline-none focus:border-emerald-400"
                         >
-                          <option value="PUBLIC_CLASSIC">📢 مؤشر القناة العامة (انتظار 1 دقيقة)</option>
-                          <option value="VIP_WITH_MPB">👑 VIP مع MPB (تنفيذ 5 ثوانٍ ⚡)</option>
-                          <option value="VIP_WITHOUT_MPB">⚡ VIP بدون MPB (تنفيذ 5 ثوانٍ ⚡)</option>
+                          <option value="PUBLIC_CLASSIC">📢 استراتيجية القناة العامة (انتظار 1 دقيقة ⏳)</option>
+                          <option value="VIP_WITH_MPB">💎 استراتيجية MPB (شرط أساسي + مؤشرين ⚡)</option>
                         </select>
                       </div>
 
@@ -2035,56 +2034,37 @@ export default function QuotexRobotAdminPage({
                   className="w-full px-3 py-2 bg-[#0B0F17] border-2 border-emerald-500/60 rounded-xl text-white font-extrabold text-xs sm:text-sm focus:outline-none focus:border-emerald-400 cursor-pointer shadow-inner"
                 >
                   <option value="PUBLIC_CLASSIC">
-                    1️⃣ الخيار الأول: تفعيل مؤشر القناة العامة (انتظار 1 دقيقة — خاص بالروبوت والقناة العامة)
+                    1️⃣ الخيار الأول: استراتيجية القناة العامة (انتظار 1 دقيقة ⏳ — الجلسة الصباحية فقط حتى 12:00 م)
                   </option>
                   <option value="VIP_WITH_MPB">
-                    2️⃣ الخيار الثاني: تفعيل مؤشر VIP مع MPB (تنفيذ 5 ثوانٍ ⚡ — شرط MPB إلزامي + 2 مؤشرات)
-                  </option>
-                  <option value="VIP_WITHOUT_MPB">
-                    3️⃣ الخيار الثالث: تفعيل مؤشر VIP بدون MPB (تنفيذ 5 ثوانٍ ⚡ — توافق 3 مؤشرات بدون إلزام MPB)
+                    2️⃣ الخيار الثاني: استراتيجية MPB (تنفيذ 5 ثوانٍ ⚡ — شرط MPB أساسي محقق + 2 مؤشرات إضافية)
                   </option>
                 </select>
 
                 {/* Dynamic Explanatory Banner for the Selected Option */}
                 <div className="p-2.5 rounded-lg text-[11px] leading-relaxed border transition-all">
-                  {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'PUBLIC_CLASSIC' && (
+                  {robotSettings.strategyEngineMode === 'PUBLIC_CLASSIC' ? (
                     <div className="bg-amber-950/30 border border-amber-500/40 text-amber-200 p-2.5 rounded-lg space-y-1.5">
                       <div className="font-extrabold flex items-center gap-1.5 text-amber-300">
-                        <span>📢 الخيار الأول نشط: مؤشر القناة العامة (انتظار 1 دقيقة)</span>
+                        <span>📢 الخيار الأول نشط: استراتيجية القناة العامة (انتظار 1 دقيقة ⏳)</span>
                       </div>
                       <div className="text-[10.5px] text-slate-300 space-y-1">
                         <div>• <b>فترة وساعات العمل:</b> يعمل في <b>الجلسة الصباحية فقط (09:00 ص حتى 12:00 ظهراً)</b> أو حتى تحقيق هدف الربح (2 رابحة متتالية، 3-1، أو سقف 65%).</div>
                         <div>• <b>قفل الأمان:</b> لا يعمل في فترة ما بعد الظهر أو المساء أو البث المباشر نهائياً، ويتم وضع <b>قفل أمان (🔒)</b> على الروبوت يوضح مواعيد العمل.</div>
                         <div>• <b>وقت الانتظار:</b> يتم الانتظار دقيقة كاملة (60 ثانية) لتأكيد افتتاح الشمعة قبل الدخول.</div>
-                        <div>• <b>قناة VIP:</b> لا تُرسل أي إشارات لقناة VIP نهائياً في هذا الوضع (خاص بالروبوت والقناة العامة فقط).</div>
+                        <div>• <b>القنوات المستهدفة:</b> البث العام للقناة العامة والروبوت العائم فقط.</div>
                       </div>
                     </div>
-                  )}
-
-                  {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'VIP_WITH_MPB' && (
+                  ) : (
                     <div className="bg-emerald-950/30 border border-emerald-500/40 text-emerald-200 p-2.5 rounded-lg space-y-1.5">
                       <div className="font-extrabold flex items-center gap-1.5 text-emerald-300">
-                        <span>👑 الخيار الثاني نشط: مؤشر VIP مع MPB (تنفيذ 5 ثوانٍ ⚡ — شرط أساسي)</span>
+                        <span>💎 الخيار الثاني نشط: استراتيجية MPB المشروطة (شرط أساسي + 2 مؤشرات ⚡)</span>
                       </div>
                       <div className="text-[10.5px] text-slate-300 space-y-1">
-                        <div>• <b>فترة وساعات العمل:</b> يعمل أثناء بث إشارات VIP: <b>الجلسة الصباحية (09:00 ص - 12:00 م)</b> و <b>جلسة البث المباشر (06:00 مساءً)</b> حتى تحقيق الهدف.</div>
-                        <div>• <b>قفل الأمان:</b> خارج هذه الأوقات يظهر الروبوت <b>قفل أمان (🔒)</b> مع مواعيد العمل وموعد الجلسة القادمة بدلاً من وضع الانتظار.</div>
-                        <div>• <b>الشرط الأساسي:</b> مؤشر <b>MPB (Momentum Pause Breakout)</b> شرط إلزامي + توفر 2 مؤشرات من (ATR, RSI, Supertrend).</div>
-                        <div>• <b>سرعة التنفيذ:</b> تنطلق الإشارة قبل افتتاح الشمعة بـ 5 ثوانٍ فقط وتُنفذ فورا على منصة كيوتكس وقناة VIP مع نسبة النجاح.</div>
-                      </div>
-                    </div>
-                  )}
-
-                  {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'VIP_WITHOUT_MPB' && (
-                    <div className="bg-sky-950/30 border border-sky-500/40 text-sky-200 p-2.5 rounded-lg space-y-1.5">
-                      <div className="font-extrabold flex items-center gap-1.5 text-sky-300">
-                        <span>⚡ الخيار الثالث نشط: مؤشر VIP بدون MPB (توافق 3 مؤشرات — تنفيذ 5 ثوانٍ ⚡)</span>
-                      </div>
-                      <div className="text-[10.5px] text-slate-300 space-y-1">
-                        <div>• <b>فترة وساعات العمل:</b> يعمل أثناء بث إشارات VIP: <b>الجلسة الصباحية (09:00 ص - 12:00 م)</b> و <b>جلسة البث المباشر (06:00 مساءً)</b>.</div>
-                        <div>• <b>قفل الأمان:</b> خارج أوقات العمل يظهر الروبوت <b>قفل أمان (🔒)</b> مع مواعيد العمل وموعد الجلسة القادمة بدلاً من وضع الانتظار.</div>
-                        <div>• <b>المرونة الفنية:</b> لا يشترط MPB كشرط إلزامي، بل يكفي توافق أي 3 من المؤشرات الـ 4 (MPB, ATR, RSI, Supertrend).</div>
-                        <div>• <b>سرعة التنفيذ:</b> تنطلق الإشارة قبل افتتاح الشمعة بـ 5 ثوانٍ وتُنفذ فورا على منصة كيوتكس وتصل لقناة VIP مع نسبة النجاح.</div>
+                        <div>• <b>الشرط الأساسي الإلزامي:</b> مؤشر <b>MPB (Momentum Pause Breakout)</b> شرط أساسي محقق + توافق 2 مؤشرات فنية من (ATR, RSI, Supertrend).</div>
+                        <div>• <b>فترة وساعات العمل:</b> يعمل أثناء جلسات إشارات VIP والجلسة الصباحية (حتى 12:00 ظهراً) وجلسة البث المباشر (06:00 مساءً — ممتدة تجريبياً حتى 09:00 مساءً اليوم).</div>
+                        <div>• <b>سرعة التنفيذ:</b> تنطلق الإشارة قبل افتتاح الشمعة بـ 5 ثوانٍ فقط وتُنفذ فورا على منصة كيوتكس وقنوات التليجرام مع نسبة النجاح والقوة المتوقعة.</div>
+                        <div>• <b>قفل الأمان:</b> خارج أوقات العمل يظهر الروبوت <b>قفل أمان (🔒)</b> مع مواعيد الجلسات بدلاً من وضع الانتظار.</div>
                       </div>
                     </div>
                   )}
