@@ -70,6 +70,7 @@ import { ZadtooAboutContactModal } from './components/ZadtooAboutContactModal';
 import { ZadtooForexNewsPage } from './components/ZadtooForexNewsPage';
 import { ZadtooPlansAndLinksManager } from './components/ZadtooPlansAndLinksManager';
 import { ZadtooAdminLiveBroadcast } from './components/ZadtooAdminLiveBroadcast';
+import { TelegramBotManager } from './components/TelegramBotManager';
 import {
   SubscriptionPlan,
   PlatformContactLinks,
@@ -328,7 +329,7 @@ export default function App() {
     () => typeof window !== 'undefined' && (sessionStorage.getItem('zad_admin_auth') === 'true' || localStorage.getItem('zad_admin_auth') === 'true')
   );
   const [activeView, setActiveView] = useState<'visitor' | 'admin' | 'stats' | 'robot'>('visitor');
-  const [zadtooTab, setZadtooTab] = useState<'home' | 'signals' | 'news' | 'autotrade' | 'memberships' | 'admin'>('home');
+  const [zadtooTab, setZadtooTab] = useState<'home' | 'signals' | 'news' | 'autotrade' | 'memberships' | 'admin' | 'telegram_bot'>('home');
   const [aboutContactType, setAboutContactType] = useState<'about' | 'contact' | null>(null);
   const [showLegacyAdminStudio, setShowLegacyAdminStudio] = useState<boolean>(false);
   const [robotSettings, setRobotSettings] = useState<QuotexRobotSettings>({
@@ -2897,6 +2898,11 @@ export default function App() {
           contactLinks={platformContactLinks}
           telegramLink={platformContactLinks.telegramChannelUrl}
         />
+      )}
+
+      {/* Screen 6: قسم بوت التليجرام الذكي */}
+      {zadtooTab === 'telegram_bot' && (
+        <TelegramBotManager />
       )}
 
       {/* Screen 5: لوحة تحكم الإدارة */}

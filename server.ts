@@ -335,6 +335,80 @@ export interface LiveBroadcastSessionConfig {
   lastDispatchedAt?: string;
 }
 
+export interface TelegramBotUser {
+  id: string;
+  telegramChatId: string;
+  username?: string;
+  name: string;
+  country: string;
+  language: 'ar' | 'en';
+  step: 'START' | 'AWAITING_NAME' | 'AWAITING_COUNTRY' | 'COMPLETED';
+  status: 'ACTIVE' | 'SUSPENDED' | 'BLOCKED';
+  membershipType: 'NONE' | 'FREE_REFERRAL' | 'PAID_VIP';
+  brokerId?: string;
+  notes?: string;
+  registeredAt: string;
+  lastInteractionAt: string;
+}
+
+export interface TelegramBotConfig {
+  isEnabled: boolean;
+  botToken: string;
+  botUsername: string;
+  adminTelegramUsername: string;
+  freeChannelLink: string;
+  officialWebsiteUrl: string;
+  quotexReferralUrl: string;
+  egyptPayment: {
+    instapayAccount: string;
+    instapayName: string;
+    vodafoneCash: string;
+    etisalatCash: string;
+    orangeCash: string;
+    wePay: string;
+  };
+  palestinePayment: {
+    country: string;
+    bankName: string;
+    beneficiaryName: string;
+    currency: string;
+    accountNumber: string;
+    iban: string;
+    branch: string;
+    notes: string;
+  };
+  internationalPayment: {
+    ibanEgp: {
+      country: string;
+      bankName: string;
+      beneficiaryName: string;
+      currency: string;
+      accountNumber: string;
+      iban: string;
+      swiftCode: string;
+      notes?: string;
+    };
+    ibanUsd: {
+      country: string;
+      bankName: string;
+      beneficiaryName: string;
+      currency: string;
+      accountNumber: string;
+      iban: string;
+      swiftCode: string;
+      notes?: string;
+    };
+  };
+  robotGuide: {
+    titleAr: string;
+    titleEn: string;
+    videoUrl: string;
+    imageUrl: string;
+    descriptionAr: string;
+    descriptionEn: string;
+  };
+}
+
 interface PersistedState {
   stateUpdatedAt?: string;
   signals: SignalItem[];
@@ -343,6 +417,8 @@ interface PersistedState {
   liveBroadcastSession?: LiveBroadcastSessionConfig;
   robotSettings?: QuotexRobotSettings;
   subscribers?: VipSubscriber[];
+  telegramBotUsers?: TelegramBotUser[];
+  telegramBotConfig?: TelegramBotConfig;
   quickNotes?: QuickNote[];
   dailyStats?: DailyStatRecord[];
   forexNews?: ForexNewsItem[];
@@ -800,41 +876,32 @@ export function getEveningLiveSessionStatus(): {
 }
 
 /**
- * Checks whether the Evening Live Broadcast (18:00 Egypt time) is active right now.
+ * Checks whether the Evening Live Broadcast (18:00 to 21:00 Egypt time) is active right now.
+ * Runs continuously without stopping on consecutive losses.
  */
 export function isEveningLiveNow(): boolean {
   if (!isGlobalForexMarketOpen()) return false;
   const cairoHour = getCurrentEgyptHour();
-  if (cairoHour < 18 || cairoHour >= 20) return false;
-  const status = getEveningLiveSessionStatus();
-  return !status.isSessionFinished;
+  return cairoHour >= 18 && cairoHour < 21;
 }
 
 /**
  * Checks whether VIP Bot is active right now.
- * VIP Bot operates strictly in two daily sessions:
- * 1) Morning Session: 09:00 AM to 12:00 PM (noon) Cairo Time
- * 2) Evening Live Broadcast Session: 06:00 PM (18:00) until session completed (target 2 wins reached)
+ * Operates strictly in two daily sessions with zero pauses or stops for losses:
+ * 1) First Session: 09:00 AM to 03:00 PM (15:00) Cairo Time
+ * 2) Evening Live Session: 06:00 PM (18:00) to 09:00 PM (21:00) Cairo Time
  */
 export function isVipBotActiveNow(): boolean {
   if (!autoPilot.vipEnabled) return false;
   if (!isGlobalForexMarketOpen()) return false;
-  if (autoPilot.vipBotCooldownUntil && Date.now() < autoPilot.vipBotCooldownUntil) {
-    return false; // Paused for 30 minutes due to 3 consecutive losses
-  }
   const cairoHour = getCurrentEgyptHour();
 
-  // طلب المستخدم الخاص: استمرار عمل الروبوت للتجربة حتى الساعة 09:00 مساءً (21:00 بتوقيت مصر)
-  if (cairoHour >= 9 && cairoHour < 21) {
+  // Session 1: 09:00 AM to 03:00 PM (15:00)
+  if (cairoHour >= 9 && cairoHour < 15) {
     return true;
   }
-
-  // Session 1: 09:00 AM to 12:00 PM
-  if (cairoHour >= 9 && cairoHour < 12) {
-    return true;
-  }
-  // Session 2: 06:00 PM (18:00) Live Session
-  if (isEveningLiveNow()) {
+  // Session 2: 06:00 PM to 09:00 PM (18:00 to 21:00)
+  if (cairoHour >= 18 && cairoHour < 21) {
     return true;
   }
   return false;
@@ -842,9 +909,8 @@ export function isVipBotActiveNow(): boolean {
 
 /**
  * Computes exact Working and Lock Status for the Quotex Robot based on the selected dropdown strategy:
- * - Option 1 (PUBLIC_CLASSIC): General channel indicator (1-minute entry countdown).
- * - Option 2 (VIP_WITH_MPB): MPB Strategy (Mandatory MPB condition + 2 supporting indicators, 5-second entry).
- * - Special testing mode: Robot remains active and unlocked until 9:00 PM (21:00) today.
+ * - Option 1 (PUBLIC_CLASSIC): Cancelled / disabled as per user instruction.
+ * - Option 2 (VIP_WITH_MPB): MPB Strategy (4 indicators with 3/4 confluence, 5s instant entry, runs 09:00-15:00 & 18:00-21:00).
  */
 export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
   isActive: boolean;
@@ -857,8 +923,8 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
   const cairoHour = getCurrentEgyptHour();
   const isMarketOpen = isGlobalForexMarketOpen();
   const title = mode === 'PUBLIC_CLASSIC'
-    ? 'استراتيجية القناة العامة (الخيار الأول 📢)'
-    : 'استراتيجية MPB (الخيار الثاني 💎)';
+    ? 'استراتيجية القناة العامة (ملغاة ومحجوبة 🚫)'
+    : 'استراتيجية VIP مع MPB (4 مؤشرات | 3 من 4 | تنفيذ 5 ثوانٍ 💎)';
 
   if (!isMarketOpen) {
     return {
@@ -872,47 +938,32 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
   }
 
   if (mode === 'PUBLIC_CLASSIC') {
-    // 1. الاستراتيجية الأولى: العامة تلتزم بالقوانين ومواعيد العمل الصباحية
-    // تعمل في الجلسة الصباحية فقط (09:00 ص - 12:00 م) وتتوقف فور تحقيق الهدف
-    const freeStatus = getFreeBotTargetStatus();
-    const isMorningHours = cairoHour >= 9 && cairoHour < 12;
-    const isTargetReached = freeStatus.isTargetReached || Boolean(autoPilot.freeBotDailyTargetReached) || Boolean(autoPilot.freeBotStoppedForToday);
-    const isActive = isMorningHours && !isTargetReached && isFreeBotActiveNow(autoPilot);
-
-    let lockReason = '';
-    let nextSessionText = '';
-    if (isTargetReached) {
-      lockReason = 'تنبيه: الروبوت متوقف حالياً — تم تحقيق هدف أرباح القناة العامة لهذا اليوم والتوقف التزاماً بالقوانين وإدارة المخاطر.';
-      nextSessionText = 'تبدأ الجلسة الصباحية القادمة غداً في تمام الساعة 09:00 صباحاً';
-    } else if (cairoHour < 9) {
-      lockReason = 'تنبيه: الروبوت متوقف حالياً — مواعيد عمل استراتيجية القناة العامة تبدأ الساعة 09:00 صباحاً.';
-      nextSessionText = 'تبدأ الجلسة الصباحية اليوم في تمام الساعة 09:00 صباحاً بتوقيت مصر';
-    } else {
-      lockReason = 'تنبيه: الروبوت متوقف حالياً — انتهت مواعيد عمل استراتيجية القناة العامة لليوم (أقصاها 12:00 ظهراً) ولا تعمل في الفترة المسائية.';
-      nextSessionText = 'تبدأ الجلسة الصباحية القادمة غداً في تمام الساعة 09:00 صباحاً';
-    }
-
     return {
-      isActive,
-      isLocked: !isActive,
-      lockReason,
+      isActive: false,
+      isLocked: true,
+      lockReason: 'تم إلغاء إشارات القناة العامة بالكامل بناءً على طلبك والاعتماد التام على استراتيجية VIP MPB.',
       strategyTitle: title,
-      workingHoursText: 'الجلسة الصباحية فقط: 09:00 ص - 12:00 م (تلتزم بقوانين التوقف والهدف)',
-      nextSessionText
+      workingHoursText: 'ملغاة — يرجى اختيار استراتيجية VIP مع MPB للعمل التلقائي الفوري',
+      nextSessionText: 'اختر استراتيجية MPB من القائمة المنسدلة'
     };
   } else {
-    // 2. الاستراتيجية الثانية: MPB
-    // الروبوت يعمل من الساعة 9 صباحاً وحتى 9 مساءً دون الالتزام بالتليجرام ودون أي إحصائيات ودون أي قوانين للتوقف
-    const isWorkingHours = cairoHour >= 9 && cairoHour < 21;
-    const isActive = isWorkingHours;
+    // 2. الاستراتيجية المعتمدة نهائياً: MPB بـ 4 مؤشرات (3 من 4)
+    // مواعيد العمل: الفترة الأولى (09:00 ص - 03:00 م) | البث المباشر (06:00 م - 09:00 م)
+    // استمرارية مطلقة دون أي توقف أو تجميد للخسارة
+    const isFirstSession = cairoHour >= 9 && cairoHour < 15;
+    const isSecondSession = cairoHour >= 18 && cairoHour < 21;
+    const isActive = isFirstSession || isSecondSession;
 
     let lockReason = '';
     let nextSessionText = '';
     if (cairoHour < 9) {
-      lockReason = 'تنبيه: الروبوت متوقف حالياً — مواعيد عمل استراتيجية MPB تبدأ الساعة 09:00 صباحاً وحتى 09:00 مساءً متواصلة.';
-      nextSessionText = 'تبدأ الجلسة اليوم في تمام الساعة 09:00 صباحاً بتوقيت مصر';
+      lockReason = 'تنبيه: الروبوت في وضع الاستعداد — مواعيد عمل الفترة الأولى تبدأ الساعة 09:00 صباحاً بتوقيت مصر.';
+      nextSessionText = 'تبدأ الفترة الأولى اليوم في تمام الساعة 09:00 صباحاً بتوقيت مصر';
+    } else if (cairoHour >= 15 && cairoHour < 18) {
+      lockReason = 'تنبيه: الروبوت في فترة راحة ما بعد الظهر — تنطلق جلسة البث المباشر المسائية الساعة 06:00 مساءً بتوقيت مصر.';
+      nextSessionText = 'تبدأ جلسة البث المباشر المسائية في تمام الساعة 06:00 مساءً';
     } else if (cairoHour >= 21) {
-      lockReason = 'تنبيه: الروبوت متوقف حالياً — انتهت ساعات عمل استراتيجية MPB اليومية (تعمل من 09:00 صباحاً وحتى 09:00 مساءً).';
+      lockReason = 'تنبيه: الروبوت متوقف حالياً — انتهت ساعات التداول الرسمية لليوم (الختام الساعة 09:00 مساءً).';
       nextSessionText = 'تبدأ ساعات العمل غداً في تمام الساعة 09:00 صباحاً';
     }
 
@@ -921,7 +972,7 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
       isLocked: !isActive,
       lockReason,
       strategyTitle: title,
-      workingHoursText: 'تعمل يومياً من 09:00 صباحاً حتى 09:00 مساءً متواصلة (تنفيذ فوري 5 ثوانٍ ⚡)',
+      workingHoursText: 'الفترة الأولى: 09:00 ص - 03:00 م | البث المباشر: 06:00 م - 09:00 م (تنفيذ فوري 5 ثوانٍ ⚡)',
       nextSessionText
     };
   }
@@ -1028,28 +1079,9 @@ function isSignalWithinEgyptTradingHours(dateObj: Date): boolean {
  * (Note: Free Bot operates from 09:00 AM until 70%-75% target is achieved, or until 12:00 PM noon,
  * with a 30-minute pause if 3 consecutive losses occur)
  */
-function isFreeBotActiveNow(cfg: AutoPilotConfig): boolean {
-  if (cfg.freeBotEnabled === false) return false;
-  const todayEgypt = getCurrentEgyptDateString(new Date());
-  if (
-    cfg.freeBotCelebrationSentDate === todayEgypt ||
-    cfg.freeBotDailyTargetReached === true ||
-    Boolean(cfg.freeBotStoppedForToday)
-  ) {
-    return false;
-  }
-  const freeStatus = getFreeBotTargetStatus();
-  if (freeStatus.isTargetReached) return false;
-
-  // 30-minute pause if 3 consecutive losses happened
-  if (cfg.freeBotCooldownUntil && Date.now() < cfg.freeBotCooldownUntil) {
-    return false;
-  }
-
-  // Trading starts at 09:00 AM Cairo Time and closes at 12:00 PM (12:00 noon)
-  const currentHour = getCurrentEgyptHour();
-  const endHour = cfg.freeEndHourEgypt || 12;
-  return currentHour >= 9 && currentHour < endHour;
+function isFreeBotActiveNow(_cfg: AutoPilotConfig): boolean {
+  // Permanently cancelled as per user instruction: public channel signals are completely cancelled
+  return false;
 }
 
 const initialSignals: SignalItem[] = [];
@@ -1145,6 +1177,116 @@ let liveBroadcastSession: LiveBroadcastSessionConfig = {
   closingReportSentDate: ''
 };
 let lastTelegramUpdateId = 0;
+let lastOnboardingBotUpdateId = 0;
+let isPollingOnboardingBot = false;
+
+const defaultTelegramBotConfig: TelegramBotConfig = {
+  isEnabled: true,
+  botToken: '9229198517:AAH026I-mlMHGtCZakEwxQuQQ6P341wKnkY',
+  botUsername: '@Zadfx_bot',
+  adminTelegramUsername: '@thrayanabil',
+  freeChannelLink: 'https://t.me/ZadNBFX',
+  officialWebsiteUrl: 'https://fx.zadtoo.com',
+  quotexReferralUrl: 'https://broker-qx.pro/sign-up/?lid=893976',
+  egyptPayment: {
+    instapayAccount: 'thraya@instapay',
+    instapayName: 'ثريا نبيل',
+    vodafoneCash: '01012345678',
+    etisalatCash: '01112345678',
+    orangeCash: '01212345678',
+    wePay: '01512345678'
+  },
+  palestinePayment: {
+    country: 'فلسطين 🇵🇸',
+    bankName: 'بنك فلسطين (Bank of Palestine)',
+    beneficiaryName: 'ثريا نبيل / ZAD FX',
+    currency: 'دولار أمريكي ($) / شيكل (ILS)',
+    accountNumber: '1987654',
+    iban: 'PS92PALS00000000001987654',
+    branch: 'الفرع الرئيسي',
+    notes: 'الإيداع النقدي المباشر أو التحويل البنكي الفوري عبر تطبيق بنك فلسطين'
+  },
+  internationalPayment: {
+    ibanEgp: {
+      country: 'جمهورية مصر العربية 🇪🇬',
+      bankName: 'البنك الأهلي المصري (National Bank of Egypt)',
+      beneficiaryName: 'ثريا نبيل / ZAD FX',
+      currency: 'الجنيه المصري (EGP)',
+      accountNumber: '10023456789012',
+      iban: 'EG380003000010023456789012',
+      swiftCode: 'NBEGEGCX',
+      notes: 'التحويل المصرفي الدولي بالجنيه المصري (IBAN EGP)'
+    },
+    ibanUsd: {
+      country: 'International / دولي 🌍',
+      bankName: 'National Bank of Egypt (NBE)',
+      beneficiaryName: 'Thraya Nabil / ZAD FX',
+      currency: 'الدولار الأمريكي (USD)',
+      accountNumber: '20098765432109',
+      iban: 'EG720003000020098765432109',
+      swiftCode: 'NBEGEGCX',
+      notes: 'التحويل المصرفي الدولي بالدولار الأمريكي (IBAN USD)'
+    }
+  },
+  robotGuide: {
+    titleAr: 'روبوت ZAD FX للتداول الآلي الذكي على كيوتكس',
+    titleEn: 'ZAD FX Quotex Automated Trading Robot',
+    videoUrl: 'https://youtube.com',
+    imageUrl: '/assets/aistudio/1_c5a8975d.PNG',
+    descriptionAr: 'روبوت مباشر يتصل بمنصة كيوتكس، يحلل 6 أزواج بالتوازي باستراتيجية المؤشرات الأربعة، ويفتح الصفقات بدقة 5 ثوانٍ قبل الشمعة بدون أي مضاعفات خاسرة.',
+    descriptionEn: 'Automated robot for Quotex platform, scanning 6 pairs simultaneously with 4 technical indicators and 5-second pre-candle execution.'
+  }
+};
+
+let telegramBotConfigStore: TelegramBotConfig = { ...defaultTelegramBotConfig };
+let telegramBotUsersStore: TelegramBotUser[] = [
+  {
+    id: 'tgu-seed-1',
+    telegramChatId: '589124011',
+    username: '@ahmed_fx_trader',
+    name: 'أحمد محمود العطار',
+    country: 'مصر 🇪🇬',
+    language: 'ar',
+    step: 'COMPLETED',
+    status: 'ACTIVE',
+    membershipType: 'PAID_VIP',
+    brokerId: '8910442',
+    notes: 'مشترك VIP - تم الدفع عبر إنستا باي',
+    registeredAt: '2026-11-05T14:20:00.000Z',
+    lastInteractionAt: '2026-11-07T08:15:00.000Z'
+  },
+  {
+    id: 'tgu-seed-2',
+    telegramChatId: '741290334',
+    username: '@tariq_almansoor',
+    name: 'طارق المنصور',
+    country: 'السعودية 🇸🇦',
+    language: 'ar',
+    step: 'COMPLETED',
+    status: 'ACTIVE',
+    membershipType: 'FREE_REFERRAL',
+    brokerId: '9012455',
+    notes: 'تم التسجيل برابط كيوتكس وإيداع 150$',
+    registeredAt: '2026-11-06T10:11:00.000Z',
+    lastInteractionAt: '2026-11-06T18:40:00.000Z'
+  },
+  {
+    id: 'tgu-seed-3',
+    telegramChatId: '612849012',
+    username: '@khalid_dubai',
+    name: 'خالد سعيد',
+    country: 'الإمارات 🇦🇪',
+    language: 'ar',
+    step: 'COMPLETED',
+    status: 'ACTIVE',
+    membershipType: 'PAID_VIP',
+    brokerId: '7721890',
+    notes: 'تحويل آيبان بالدولار الأمريكي',
+    registeredAt: '2026-11-07T02:00:00.000Z',
+    lastInteractionAt: '2026-11-07T07:30:00.000Z'
+  }
+];
+
 let liveMarketSnapshots: LivePairSnapshot[] = [];
 let isCloudStateLoaded = false;
 let currentStateUpdatedAt = '';
@@ -1152,6 +1294,15 @@ let currentStateUpdatedAt = '';
 function applyParsedState(parsed: Partial<PersistedState>) {
   if (parsed.stateUpdatedAt && parsed.stateUpdatedAt > currentStateUpdatedAt) {
     currentStateUpdatedAt = parsed.stateUpdatedAt;
+  }
+  if (parsed.telegramBotConfig) {
+    telegramBotConfigStore = {
+      ...defaultTelegramBotConfig,
+      ...parsed.telegramBotConfig
+    };
+  }
+  if (parsed.telegramBotUsers && Array.isArray(parsed.telegramBotUsers) && parsed.telegramBotUsers.length > 0) {
+    telegramBotUsersStore = parsed.telegramBotUsers;
   }
   if (parsed.lastDispatchedEpochMinute && parsed.lastDispatchedEpochMinute > lastDispatchedEpochMinute) {
     lastDispatchedEpochMinute = parsed.lastDispatchedEpochMinute;
@@ -1470,20 +1621,26 @@ async function loadStateFromCloudAndDisk() {
  * 2) Or if it just concluded within the last 20s (to display win/loss result animation before returning to WAIT)
  */
 function getLiveRobotActiveSignal(overrideMode?: RobotStrategyEngineMode): SignalItem | null {
+  // Strict Market Guard: Never return any active signal if global Forex market is closed
+  if (!isGlobalForexMarketOpen()) return null;
+
   const mode = overrideMode || robotSettings.strategyEngineMode || 'VIP_WITH_MPB';
   let candidate: SignalItem | null = null;
 
   if (mode === 'PUBLIC_CLASSIC') {
     // Mode 1: Public Classic Indicator (1 full minute countdown, not 5s instant)
-    candidate = signalsStore.find(s => !s.instantExecution5s && s.strategyType !== 'MOMENTUM_PAUSE_BREAKOUT') || null;
+    candidate = signalsStore.find(s =>
+      s.status === 'PENDING' &&
+      !s.instantExecution5s &&
+      s.strategyType !== 'MOMENTUM_PAUSE_BREAKOUT'
+    ) || null;
   } else {
     // Mode 2: MPB Strategy (Option 2 - works 09:00 AM to 09:00 PM, 5s instant confirmation at :55)
-    // Strictly prioritize instant 5-second signals so user/robot receives confirmation 5s before candle open!
+    // STRICT ISOLATION: ONLY signals belonging to MPB / Instant 5s execution.
+    // NEVER fall back to Strategy 1 (Public Classic / general VIP channel signals)
     candidate = signalsStore.find(s =>
       s.status === 'PENDING' &&
       (Boolean(s.instantExecution5s) || s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.isLiveBroadcast)
-    ) || signalsStore.find(s =>
-      s.status === 'PENDING' && Boolean(s.vipTelegramMessageId)
     ) || null;
   }
 
@@ -1547,6 +1704,8 @@ async function saveState(): Promise<boolean> {
       liveBroadcastSession,
       robotSettings,
       subscribers: subscribersStore.slice(0, 200),
+      telegramBotUsers: telegramBotUsersStore.slice(0, 500),
+      telegramBotConfig: telegramBotConfigStore,
       quickNotes: quickNotesStore.slice(0, 50),
       dailyStats: sortedDailyStats,
       forexNews: forexNewsStore,
@@ -2658,6 +2817,13 @@ async function scanRealGlobalForexMarket(
   snapshots: LivePairSnapshot[];
   selectedCandidate: LivePairSnapshot | null;
 }> {
+  if (!isGlobalForexMarketOpen()) {
+    return {
+      snapshots: [],
+      selectedCandidate: null
+    };
+  }
+
   const snapshots: LivePairSnapshot[] = [];
   
   // Dynamic thresholds based on strictnessLevel
@@ -3105,6 +3271,740 @@ async function sendTelegramPhoto(
     body: JSON.stringify(payload)
   });
   return (await tgRes.json()) as any;
+}
+
+function escapeTgHtml(s: string): string {
+  if (!s) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function isEgyptCountryText(country: string): boolean {
+  if (!country) return false;
+  const c = country.toLowerCase().trim();
+  return (
+    c.includes('مصر') ||
+    c.includes('egypt') ||
+    c.includes('cairo') ||
+    c.includes('قاهرة') ||
+    c.includes('إسكندرية') ||
+    c.includes('اسكندرية') ||
+    c === 'eg'
+  );
+}
+
+function isPalestineCountryText(country: string): boolean {
+  if (!country) return false;
+  const c = country.toLowerCase().trim();
+  return (
+    c.includes('فلسطين') ||
+    c.includes('palestine') ||
+    c.includes('غزة') ||
+    c.includes('gaza') ||
+    c.includes('القدس') ||
+    c.includes('jerusalem') ||
+    c.includes('رام الله') ||
+    c.includes('ramallah') ||
+    c.includes('الضفة') ||
+    c === 'ps' ||
+    c === 'pse'
+  );
+}
+
+export async function sendTelegramInlineMessage(
+  botToken: string,
+  chatId: string,
+  text: string,
+  inlineKeyboard?: Array<Array<{ text: string; callback_data?: string; url?: string }>>,
+  parseMode: 'HTML' | 'Markdown' = 'HTML'
+) {
+  const payload: Record<string, any> = {
+    chat_id: String(chatId).trim(),
+    text,
+    parse_mode: parseMode
+  };
+  if (inlineKeyboard && inlineKeyboard.length > 0) {
+    payload.reply_markup = {
+      inline_keyboard: inlineKeyboard
+    };
+  }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8500);
+  try {
+    const tgRes = await fetch(`https://api.telegram.org/bot${botToken.trim()}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
+    return (await tgRes.json()) as any;
+  } catch (err: any) {
+    console.warn('[sendTelegramInlineMessage Error]', err);
+    return { ok: false, description: err?.message || 'Error communicating with Telegram' };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+export async function answerTelegramCallbackQuery(botToken: string, callbackQueryId: string, text?: string) {
+  try {
+    await fetch(`https://api.telegram.org/bot${botToken.trim()}/answerCallbackQuery`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        callback_query_id: callbackQueryId,
+        text: text || ''
+      })
+    });
+  } catch (_e) {
+    // Ignore
+  }
+}
+
+async function sendTelegramBotMainMenu(token: string, chatId: string, user: TelegramBotUser) {
+  const cfg = telegramBotConfigStore;
+  const isAr = user.language !== 'en';
+  const cleanAdmin = (cfg.adminTelegramUsername || '@thrayanabil').replace(/^@/, '');
+  const contactUrl = `https://t.me/${cleanAdmin}`;
+  const webUrl = cfg.officialWebsiteUrl || 'https://fx.zadtoo.com';
+  const refUrl = cfg.quotexReferralUrl || 'https://broker-qx.pro/sign-up/?lid=893976';
+  const channelUrl = cfg.freeChannelLink || 'https://t.me/ZadNBFX';
+
+  const text = isAr
+    ? `📋 <b>القائمة الرئيسية — أكاديمية وروبوت ZAD FX للتداول الآلي 🚀</b>\n\n` +
+      `👤 <b>العضو:</b> ${escapeTgHtml(user.name)}\n` +
+      `🌍 <b>الدولة:</b> ${escapeTgHtml(user.country || 'غير محدد')}\n` +
+      `🆔 <b>معرف العضوية:</b> <code>${user.telegramChatId}</code>\n\n` +
+      `اختر من القائمة أدناه ما ترغب به:`
+    : `📋 <b>Main Menu — ZAD FX Automated Trading Bot 🚀</b>\n\n` +
+      `👤 <b>Member:</b> ${escapeTgHtml(user.name)}\n` +
+      `🌍 <b>Country:</b> ${escapeTgHtml(user.country || 'Not set')}\n` +
+      `🆔 <b>Member ID:</b> <code>${user.telegramChatId}</code>\n\n` +
+      `Please select an option from the menu below:`;
+
+  const keyboard = isAr
+    ? [
+        [
+          { text: '📢 قناة التليجرام المجانية', url: channelUrl },
+          { text: '💎 العضوية والاشتراكات', callback_data: 'onb_menu_subs' }
+        ],
+        [
+          { text: '🌐 الموقع الرسمي (fx.zadtoo.com)', url: webUrl },
+          { text: '💬 تواصل معنا (الدعم)', url: contactUrl }
+        ],
+        [
+          { text: '🤖 روبوت التداول الآلي', callback_data: 'onb_menu_robot' },
+          { text: '🔗 رابط الإحالة (Quotex)', url: refUrl }
+        ]
+      ]
+    : [
+        [
+          { text: '📢 Free Telegram Channel', url: channelUrl },
+          { text: '💎 Memberships & Subscriptions', callback_data: 'onb_menu_subs' }
+        ],
+        [
+          { text: '🌐 Official Website', url: webUrl },
+          { text: '💬 Contact Admin (Support)', url: contactUrl }
+        ],
+        [
+          { text: '🤖 Auto Trading Robot', callback_data: 'onb_menu_robot' },
+          { text: '🔗 Quotex Referral Link', url: refUrl }
+        ]
+      ];
+
+  await sendTelegramInlineMessage(token, chatId, text, keyboard, 'HTML');
+}
+
+async function processInteractiveTelegramBotUpdate(update: any, token: string) {
+  if (!telegramBotConfigStore.isEnabled) return;
+  const cfg = telegramBotConfigStore;
+  const cleanAdmin = (cfg.adminTelegramUsername || '@thrayanabil').replace(/^@/, '');
+  const contactUrl = `https://t.me/${cleanAdmin}`;
+
+  // 1. Handle Callback Queries (Inline Button Clicks)
+  if (update.callback_query) {
+    const cb = update.callback_query;
+    const callbackId = String(cb.id);
+    const data = String(cb.data || '');
+    const chatId = String(cb.message?.chat?.id || cb.from?.id);
+    const tgUsername = cb.from?.username ? `@${cb.from.username}` : '';
+    const firstName = cb.from?.first_name || '';
+    const lastName = cb.from?.last_name || '';
+    const fallbackName = [firstName, lastName].filter(Boolean).join(' ') || 'عضو جديد';
+
+    await answerTelegramCallbackQuery(token, callbackId);
+
+    let user = telegramBotUsersStore.find(u => u.telegramChatId === chatId);
+    if (!user) {
+      user = {
+        id: `tgu-${chatId}`,
+        telegramChatId: chatId,
+        username: tgUsername,
+        name: fallbackName,
+        country: '',
+        language: 'ar',
+        step: 'START',
+        status: 'ACTIVE',
+        membershipType: 'NONE',
+        registeredAt: new Date().toISOString(),
+        lastInteractionAt: new Date().toISOString()
+      };
+      telegramBotUsersStore.unshift(user);
+      saveState();
+    } else {
+      user.lastInteractionAt = new Date().toISOString();
+      if (tgUsername && !user.username) user.username = tgUsername;
+    }
+
+    if (user.status === 'BLOCKED') {
+      await sendTelegramInlineMessage(token, chatId, '⛔ عذراً، تم حظر هذا الحساب من استخدام خدمات ZAD FX.');
+      return;
+    }
+    if (user.status === 'SUSPENDED') {
+      await sendTelegramInlineMessage(
+        token,
+        chatId,
+        `⚠️ حسابك معلق مؤقتاً للمراجعة من قبل الإدارة.\nيرجى التواصل مع المشرف: ${contactUrl}`
+      );
+      return;
+    }
+
+    // Branch: Select Language Arabic
+    if (data === 'onb_lang_ar') {
+      user.language = 'ar';
+      user.step = 'AWAITING_NAME';
+      saveState();
+      const promptText =
+        `أهلاً وسهلاً بك في أكاديمية ZAD FX! 🌟\n\n` +
+        `يرجى كتابة <b>اسمك الكريم بالكامل</b> للمتابعة وتجهيز ملف عضويتك الخاص:`;
+      await sendTelegramInlineMessage(token, chatId, promptText, undefined, 'HTML');
+      return;
+    }
+
+    // Branch: Select Language English
+    if (data === 'onb_lang_en') {
+      user.language = 'en';
+      user.step = 'AWAITING_NAME';
+      saveState();
+      const promptText =
+        `Welcome to ZAD FX Academy! 🌟\n\n` +
+        `Please type your <b>Full Name</b> to continue and prepare your personal membership profile:`;
+      await sendTelegramInlineMessage(token, chatId, promptText, undefined, 'HTML');
+      return;
+    }
+
+    // Branch: Return to Main Menu
+    if (data === 'onb_menu_main') {
+      await sendTelegramBotMainMenu(token, chatId, user);
+      return;
+    }
+
+    // Branch: Memberships & Subscriptions Sub-menu
+    if (data === 'onb_menu_subs') {
+      const isAr = user.language !== 'en';
+      const text = isAr
+        ? `💎 <b>العضوية والاشتراكات في ZAD FX:</b>\n\n` +
+          `اختر نوع العضوية المطلوب:\n\n` +
+          `1️⃣ <b>الاشتراك المجاني عبر الإحالة:</b> تفعيل مجاني لقناة VIP وروبوت التداول الآلي عند التسجيل عبر رابط إحالتنا في منصة كيوتكس وعمل إيداع.\n` +
+          `2️⃣ <b>العضوية المدفوعة VIP:</b> اشتراك مباشر بالدفع الفوري والمحافظ (مصر) أو التحويل البنكي الدولي (آيبان باقي الدول).`
+        : `💎 <b>ZAD FX Memberships & Subscriptions:</b>\n\n` +
+          `Choose your membership option:\n\n` +
+          `1️⃣ <b>Free Membership via Referral:</b> Free access to VIP signals and Auto Robot when registering under our Quotex referral link and making a deposit.\n` +
+          `2️⃣ <b>Paid VIP Membership:</b> Direct subscription via instant electronic payment/wallets (Egypt) or international bank wire (IBAN).`;
+
+      const buttons = isAr
+        ? [
+            [
+              { text: '🎁 الاشتراك المجاني عبر الإحالة', callback_data: 'onb_sub_referral' },
+              { text: '💳 العضوية المدفوعة VIP', callback_data: 'onb_sub_paid' }
+            ],
+            [
+              { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+            ]
+          ]
+        : [
+            [
+              { text: '🎁 Free via Quotex Referral', callback_data: 'onb_sub_referral' },
+              { text: '💳 Paid VIP Membership', callback_data: 'onb_sub_paid' }
+            ],
+            [
+              { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
+            ]
+          ];
+
+      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      return;
+    }
+
+    // Branch: Free Referral Option
+    if (data === 'onb_sub_referral') {
+      user.membershipType = 'FREE_REFERRAL';
+      saveState();
+      const isAr = user.language !== 'en';
+      const refUrl = cfg.quotexReferralUrl || 'https://broker-qx.pro/sign-up/?lid=893976';
+
+      const text = isAr
+        ? `🎁 <b>الاشتراك المجاني في قناة VIP وروبوت التداول عبر الإحالة:</b>\n\n` +
+          `للحصول على تفعيل مجاني كامل، اتبع الخطوات التالية:\n\n` +
+          `1️⃣ افتح حساب جديد في منصة كيوتكس عبر رابط إحالتنا:\n` +
+          `🔗 <a href="${refUrl}">اضغط هنا لفتح حسابك في كيوتكس</a>\n\n` +
+          `2️⃣ قم بتوثيق حسابك وإيداع 100$ كحد أدنى للتداول بها في رصيدك الخاص.\n` +
+          `3️⃣ بعد التسجيل، أرسل لقطة شاشة للحساب مع رقم المعرف (Quotex ID) للمشرف.\n\n` +
+          `سيتم التحقق وتفعيل حسابك وإرسال رابط قناة VIP فوراً! 🚀`
+        : `🎁 <b>Free VIP & Robot Access via Quotex Referral:</b>\n\n` +
+          `To get full free activation, please follow these steps:\n\n` +
+          `1️⃣ Open a new Quotex account using our referral link:\n` +
+          `🔗 <a href="${refUrl}">Click here to register on Quotex</a>\n\n` +
+          `2️⃣ Verify your account and deposit a minimum of $100 for your own trading capital.\n` +
+          `3️⃣ Send a screenshot of your profile showing your Quotex ID to our admin.\n\n` +
+          `Your VIP access and Robot will be activated immediately upon verification! 🚀`;
+
+      const buttons = isAr
+        ? [
+            [{ text: '🔗 فتح حساب كيوتكس عبر الإحالة', url: refUrl }],
+            [{ text: '📩 إرسال لقطة الشاشة ورقم المعرف للمشرف', url: contactUrl }],
+            [
+              { text: '🔙 رجوع للاشتراكات', callback_data: 'onb_menu_subs' },
+              { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+            ]
+          ]
+        : [
+            [{ text: '🔗 Register on Quotex Now', url: refUrl }],
+            [{ text: '📩 Send Screenshot & Quotex ID to Admin', url: contactUrl }],
+            [
+              { text: '🔙 Back to Subscriptions', callback_data: 'onb_menu_subs' },
+              { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
+            ]
+          ];
+
+      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      return;
+    }
+
+    // Branch: Paid VIP Option (Geographical Routing)
+    if (data === 'onb_sub_paid') {
+      user.membershipType = 'PAID_VIP';
+      saveState();
+      const isPalestine = isPalestineCountryText(user.country);
+      const isEgypt = isEgyptCountryText(user.country);
+      const isAr = user.language !== 'en';
+
+      if (isPalestine) {
+        // 🇵🇸 PALESTINE ROUTING: Bank of Palestine Dedicated Account
+        const pal = cfg.palestinePayment || defaultTelegramBotConfig.palestinePayment;
+        const text =
+          `🇵🇸 <b>طرق الدفع والتحويل المتاحة داخل دولة فلسطين (${escapeTgHtml(user.country)}):</b>\n\n` +
+          `تم توجيهك لحساب الإيداع والتحويل الخاص في <b>بنك فلسطين (Bank of Palestine)</b>:\n\n` +
+          `🌍 <b>الدولة:</b> ${escapeTgHtml(pal.country || 'فلسطين 🇵🇸')}\n` +
+          `🏛 <b>اسم البنك:</b> ${escapeTgHtml(pal.bankName)}\n` +
+          `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(pal.beneficiaryName)}\n` +
+          `💰 <b>العملة:</b> ${escapeTgHtml(pal.currency)}\n` +
+          `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(pal.accountNumber)}</code>\n` +
+          `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(pal.iban)}</code>\n` +
+          `🏢 <b>الفرع:</b> ${escapeTgHtml(pal.branch)}\n\n` +
+          `📌 <i>ملاحظة: بعد إتمام الإيداع أو التحويل البنكي عبر تطبيق بنك فلسطين، يرجى إرسال صورة إشعار التحويل للمشرف للتفعيل الفوري.</i>`;
+
+        const buttons = [
+          [{ text: '📩 إرسال إشعار التحويل للمشرف', url: contactUrl }],
+          [
+            { text: '🔙 رجوع للاشتراكات', callback_data: 'onb_menu_subs' },
+            { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+          ]
+        ];
+
+        await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      } else if (isEgypt) {
+        // 🇪🇬 EGYPT ROUTING: InstaPay & Mobile Wallets
+        const text =
+          `🇪🇬 <b>طرق الدفع المتاحة داخل جمهورية مصر العربية:</b>\n\n` +
+          `تم توجيهك تلقائياً لنظام الدفع المحلي المعتمد في مصر:\n\n` +
+          `⚡ <b>إنستا باي (InstaPay):</b> تحويل لحظي فوري عبر التطبيق\n` +
+          `📱 <b>المحافظ الإلكترونية:</b> فودافون كاش، اتصالات كاش، أورنج كاش، وي باي\n\n` +
+          `يرجى اختيار وسيلة الدفع لعرض بيانات التحويل:`;
+
+        const buttons = [
+          [
+            { text: '⚡ إنستا باي (InstaPay)', callback_data: 'onb_pay_instapay' },
+            { text: '📱 المحافظ الإلكترونية (كاش)', callback_data: 'onb_pay_wallets' }
+          ],
+          [
+            { text: '🔙 رجوع للاشتراكات', callback_data: 'onb_menu_subs' },
+            { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+          ]
+        ];
+
+        await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      } else {
+        // 🌍 REST OF THE WORLD: Separate EGP vs USD
+        const text = isAr
+          ? `🌍 <b>خيارات التحويل البنكي الدولي المتاحة لدولتك (${escapeTgHtml(user.country || 'دولي')}):</b>\n\n` +
+            `تم توجيهك لنظام التحويل المصرفي الدولي عبر رقم الحساب البنكي الدولي (IBAN).\n` +
+            `يمكنك التحويل إما بالجنيه المصري (EGP) أو بالدولار الأمريكي (USD).\n\n` +
+            `يرجى اختيار العملة المطلوبة لعرض التفاصيل الكاملة (الدولة، البنك، المستفيد، والآيبان):`
+          : `🌍 <b>International Bank Transfer (IBAN) for (${escapeTgHtml(user.country || 'International')}):</b>\n\n` +
+            `You can transfer funds internationally via IBAN in either Egyptian Pounds (EGP) or US Dollars (USD).\n\n` +
+            `Please choose your preferred currency to view full details (Country, Bank, Beneficiary, and IBAN):`;
+
+        const buttons = isAr
+          ? [
+              [
+                { text: '🇪🇬 حساب بنكي بالجنيه المصري (EGP)', callback_data: 'onb_pay_iban_egp' },
+                { text: '🇺🇸 حساب بنكي بالدولار الأمريكي (USD)', callback_data: 'onb_pay_iban_usd' }
+              ],
+              [
+                { text: '🔙 رجوع للاشتراكات', callback_data: 'onb_menu_subs' },
+                { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+              ]
+            ]
+          : [
+              [
+                { text: '🇪🇬 Bank Account in EGP (Pounds)', callback_data: 'onb_pay_iban_egp' },
+                { text: '🇺🇸 Bank Account in USD (Dollars)', callback_data: 'onb_pay_iban_usd' }
+              ],
+              [
+                { text: '🔙 Back to Subscriptions', callback_data: 'onb_menu_subs' },
+                { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
+              ]
+            ];
+
+        await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      }
+      return;
+    }
+
+    // Branch: InstaPay Details
+    if (data === 'onb_pay_instapay') {
+      const eg = cfg.egyptPayment;
+      const text =
+        `⚡ <b>بيانات الدفع عبر تطبيق إنستا باي (InstaPay):</b>\n\n` +
+        `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(eg.instapayName)}\n` +
+        `🆔 <b>عنوان الدفع اللحظي (IPA):</b> <code>${escapeTgHtml(eg.instapayAccount)}</code>\n\n` +
+        `📌 <b>تنبيه هام:</b> بعد إتمام التحويل، يرجى التقاط صورة إيصال التحويل وإرسالها للمشرف مع اسمك لتفعيل اشتراكك وإضافتك لقناة VIP فوراً.`;
+
+      const buttons = [
+        [{ text: '📩 إرسال إيصال التحويل للمشرف', url: contactUrl }],
+        [
+          { text: '🔙 طرق الدفع في مصر', callback_data: 'onb_sub_paid' },
+          { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+        ]
+      ];
+
+      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      return;
+    }
+
+    // Branch: Mobile Wallets Details
+    if (data === 'onb_pay_wallets') {
+      const eg = cfg.egyptPayment;
+      const text =
+        `📱 <b>بيانات الدفع عبر المحافظ الإلكترونية المصرية (كاش):</b>\n\n` +
+        `🔴 <b>فودافون كاش:</b> <code>${escapeTgHtml(eg.vodafoneCash)}</code>\n` +
+        `🟢 <b>اتصالات كاش:</b> <code>${escapeTgHtml(eg.etisalatCash)}</code>\n` +
+        `🟠 <b>أورنج كاش:</b> <code>${escapeTgHtml(eg.orangeCash)}</code>\n` +
+        `🟣 <b>وي باي (WE):</b> <code>${escapeTgHtml(eg.wePay)}</code>\n\n` +
+        `📌 <b>تنبيه هام:</b> بعد إتمام التحويل من محفظتك، يرجى إرسال لقطة شاشة لرسالة التحويل إلى المشرف لتفعيل اشتراكك وروبوت التداول فوراً.`;
+
+      const buttons = [
+        [{ text: '📩 إرسال لقطة الشاشة للمشرف', url: contactUrl }],
+        [
+          { text: '🔙 طرق الدفع في مصر', callback_data: 'onb_sub_paid' },
+          { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+        ]
+      ];
+
+      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      return;
+    }
+
+    // Branch: IBAN EGP Details (Rest of World)
+    if (data === 'onb_pay_iban_egp') {
+      const ibanEgp = cfg.internationalPayment?.ibanEgp || defaultTelegramBotConfig.internationalPayment.ibanEgp;
+      const isAr = user.language !== 'en';
+      const text = isAr
+        ? `🏦 <b>تفاصيل الحساب البنكي والآيبان (بالجنيه المصري EGP):</b>\n\n` +
+          `🌍 <b>الدولة:</b> ${escapeTgHtml(ibanEgp.country || 'جمهورية مصر العربية 🇪🇬')}\n` +
+          `🏛 <b>اسم البنك:</b> ${escapeTgHtml(ibanEgp.bankName)}\n` +
+          `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(ibanEgp.beneficiaryName || (ibanEgp as any).accountName || 'ثريا نبيل / ZAD FX')}\n` +
+          `💰 <b>العملة:</b> ${escapeTgHtml(ibanEgp.currency || 'الجنيه المصري EGP')}\n` +
+          `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(ibanEgp.accountNumber)}</code>\n` +
+          `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(ibanEgp.iban)}</code>\n` +
+          `⚡ <b>سويفت كود (SWIFT/BIC):</b> <code>${escapeTgHtml(ibanEgp.swiftCode || 'NBEGEGCX')}</code>\n\n` +
+          `📌 <i>بعد إتمام الحوالة البنكية، يرجى إرسال صورة إشعار التحويل للمشرف لتفعيل اشتراكك وروبوت التداول فوراً.</i>`
+        : `🏦 <b>Bank Account & IBAN Details (in Egyptian Pounds EGP):</b>\n\n` +
+          `🌍 <b>Country:</b> ${escapeTgHtml(ibanEgp.country || 'Egypt 🇪🇬')}\n` +
+          `🏛 <b>Bank Name:</b> ${escapeTgHtml(ibanEgp.bankName)}\n` +
+          `👤 <b>Beneficiary Name:</b> ${escapeTgHtml(ibanEgp.beneficiaryName || (ibanEgp as any).accountName || 'Thraya Nabil / ZAD FX')}\n` +
+          `💰 <b>Currency:</b> ${escapeTgHtml(ibanEgp.currency || 'EGP (Egyptian Pounds)')}\n` +
+          `🔢 <b>Account Number:</b> <code>${escapeTgHtml(ibanEgp.accountNumber)}</code>\n` +
+          `🌐 <b>IBAN Code:</b> <code>${escapeTgHtml(ibanEgp.iban)}</code>\n` +
+          `⚡ <b>SWIFT / BIC Code:</b> <code>${escapeTgHtml(ibanEgp.swiftCode || 'NBEGEGCX')}</code>\n\n` +
+          `📌 <i>After wire transfer, please send receipt to admin for instant activation.</i>`;
+
+      const buttons = isAr
+        ? [
+            [{ text: '📩 إرسال إشعار التحويل للمشرف', url: contactUrl }],
+            [
+              { text: '🔙 اختيار عملة أخرى (دولار)', callback_data: 'onb_sub_paid' },
+              { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+            ]
+          ]
+        : [
+            [{ text: '📩 Send Receipt to Admin', url: contactUrl }],
+            [
+              { text: '🔙 Switch Currency (USD)', callback_data: 'onb_sub_paid' },
+              { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
+            ]
+          ];
+
+      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      return;
+    }
+
+    // Branch: IBAN USD Details (Rest of World)
+    if (data === 'onb_pay_iban_usd') {
+      const ibanUsd = cfg.internationalPayment?.ibanUsd || defaultTelegramBotConfig.internationalPayment.ibanUsd;
+      const isAr = user.language !== 'en';
+      const text = isAr
+        ? `💵 <b>تفاصيل الحساب البنكي والآيبان (بالدولار الأمريكي USD):</b>\n\n` +
+          `🌍 <b>الدولة:</b> ${escapeTgHtml(ibanUsd.country || 'دولي 🌍')}\n` +
+          `🏛 <b>اسم البنك:</b> ${escapeTgHtml(ibanUsd.bankName)}\n` +
+          `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(ibanUsd.beneficiaryName || (ibanUsd as any).accountName || 'ثريا نبيل / ZAD FX')}\n` +
+          `💰 <b>العملة:</b> ${escapeTgHtml(ibanUsd.currency || 'الدولار الأمريكي USD ($)')}\n` +
+          `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(ibanUsd.accountNumber)}</code>\n` +
+          `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(ibanUsd.iban)}</code>\n` +
+          `⚡ <b>سويفت كود (SWIFT/BIC):</b> <code>${escapeTgHtml(ibanUsd.swiftCode || 'NBEGEGCX')}</code>\n\n` +
+          `📌 <i>بعد إتمام الحوالة البنكية، يرجى إرسال صورة إشعار التحويل للمشرف للتفعيل المباشر.</i>`
+        : `💵 <b>Bank Account & IBAN Details (in US Dollars USD):</b>\n\n` +
+          `🌍 <b>Country:</b> ${escapeTgHtml(ibanUsd.country || 'International 🌍')}\n` +
+          `🏛 <b>Bank Name:</b> ${escapeTgHtml(ibanUsd.bankName)}\n` +
+          `👤 <b>Beneficiary Name:</b> ${escapeTgHtml(ibanUsd.beneficiaryName || (ibanUsd as any).accountName || 'Thraya Nabil / ZAD FX')}\n` +
+          `💰 <b>Currency:</b> ${escapeTgHtml(ibanUsd.currency || 'USD ($)')}\n` +
+          `🔢 <b>Account Number:</b> <code>${escapeTgHtml(ibanUsd.accountNumber)}</code>\n` +
+          `🌐 <b>IBAN Code:</b> <code>${escapeTgHtml(ibanUsd.iban)}</code>\n` +
+          `⚡ <b>SWIFT / BIC Code:</b> <code>${escapeTgHtml(ibanUsd.swiftCode || 'NBEGEGCX')}</code>\n\n` +
+          `📌 <i>After wire transfer, please send receipt to admin for instant activation.</i>`;
+
+      const buttons = isAr
+        ? [
+            [{ text: '📩 إرسال إشعار التحويل للمشرف', url: contactUrl }],
+            [
+              { text: '🔙 اختيار عملة أخرى (جنيه)', callback_data: 'onb_sub_paid' },
+              { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+            ]
+          ]
+        : [
+            [{ text: '📩 Send Receipt to Admin', url: contactUrl }],
+            [
+              { text: '🔙 Switch Currency (EGP)', callback_data: 'onb_sub_paid' },
+              { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
+            ]
+          ];
+
+      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      return;
+    }
+
+    // Branch: Robot Guide & Explanations
+    if (data === 'onb_menu_robot') {
+      const isAr = user.language !== 'en';
+      const webUrl = cfg.officialWebsiteUrl || 'https://fx.zadtoo.com';
+      const videoUrl = cfg.robotGuide.videoUrl || 'https://youtube.com';
+
+      const text = isAr
+        ? `🤖 <b>روبوت التداول الآلي الذكي ZAD FX:</b>\n\n` +
+          `🌟 <b>المواصفات والآلية:</b>\n` +
+          `• يعمل كإضافة تداول مباشر على منصة كيوتكس (Quotex).\n` +
+          `• يدمج 4 مؤشرات فنية: (Momentum Pause + ATR + RSI + SuperTrend).\n` +
+          `• يمسح 6 أزواج بالتوازي في نفس اللحظة.\n` +
+          `• يصدر الصفقة وينفذها بتأكيد 5 ثوانٍ قبل فتح الشمعة بدقة 00.00.\n\n` +
+          `⏰ <b>فترات العمل اليومية:</b>\n` +
+          `• الفترة الصباحية: 09:00 ص إلى 03:00 م (توقيت القاهرة)\n` +
+          `• الفترة المسائية: 06:00 م إلى 09:00 م (توقيت القاهرة)\n\n` +
+          `📹 يمكنك مشاهدة الفيديو التوضيحي لشرح طريقة التثبيت على متصفح Kiwi أو الكمبيوتر عبر الزر أدناه:`
+        : `🤖 <b>ZAD FX Automated Trading Robot:</b>\n\n` +
+          `🌟 <b>Key Features:</b>\n` +
+          `• Executes directly on the Quotex platform via smart userscript.\n` +
+          `• Fuses 4 indicators: Momentum Pause + ATR + RSI + SuperTrend.\n` +
+          `• Scans 6 currency pairs simultaneously.\n` +
+          `• 5-second pre-candle confirmation at 00.00.\n\n` +
+          `⏰ <b>Daily Trading Hours (Cairo Time):</b>\n` +
+          `• Morning Session: 09:00 AM - 03:00 PM\n` +
+          `• Evening Session: 06:00 PM - 09:00 PM\n\n` +
+          `📹 Click below to watch the setup tutorial video on Kiwi browser or PC:`;
+
+      const buttons = isAr
+        ? [
+            [
+              { text: '🎬 مشاهدة فيديو شرح التشغيل', url: videoUrl },
+              { text: '🌐 صفحة الروبوت بالموقع', url: `${webUrl}/#autotrade` }
+            ],
+            [
+              { text: '💬 استفسار من المشرف', url: contactUrl },
+              { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+            ]
+          ]
+        : [
+            [
+              { text: '🎬 Watch Robot Tutorial Video', url: videoUrl },
+              { text: '🌐 Robot Website Page', url: `${webUrl}/#autotrade` }
+            ],
+            [
+              { text: '💬 Contact Admin', url: contactUrl },
+              { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
+            ]
+          ];
+
+      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      return;
+    }
+  }
+
+  // 2. Handle Private Text Messages
+  if (update.message && update.message.chat?.type === 'private') {
+    const msg = update.message;
+    const chatId = String(msg.chat.id);
+    const text = String(msg.text || '').trim();
+    const tgUsername = msg.chat.username ? `@${msg.chat.username}` : '';
+    const firstName = msg.chat.first_name || '';
+    const lastName = msg.chat.last_name || '';
+    const fallbackName = [firstName, lastName].filter(Boolean).join(' ') || 'عضو جديد';
+
+    if (!text) return;
+
+    let user = telegramBotUsersStore.find(u => u.telegramChatId === chatId);
+    if (!user) {
+      user = {
+        id: `tgu-${chatId}`,
+        telegramChatId: chatId,
+        username: tgUsername,
+        name: fallbackName,
+        country: '',
+        language: 'ar',
+        step: 'START',
+        status: 'ACTIVE',
+        membershipType: 'NONE',
+        registeredAt: new Date().toISOString(),
+        lastInteractionAt: new Date().toISOString()
+      };
+      telegramBotUsersStore.unshift(user);
+      saveState();
+    } else {
+      user.lastInteractionAt = new Date().toISOString();
+      if (tgUsername && !user.username) user.username = tgUsername;
+    }
+
+    if (user.status === 'BLOCKED') {
+      await sendTelegramInlineMessage(token, chatId, '⛔ عذراً، تم حظر هذا الحساب من استخدام خدمات ZAD FX.');
+      return;
+    }
+    if (user.status === 'SUSPENDED') {
+      await sendTelegramInlineMessage(
+        token,
+        chatId,
+        `⚠️ حسابك معلق مؤقتاً للمراجعة من قبل الإدارة.\nيرجى التواصل مع المشرف: ${contactUrl}`
+      );
+      return;
+    }
+
+    // Command: /start or initial greeting
+    if (text.startsWith('/start') || text === 'ابدأ' || user.step === 'START') {
+      user.step = 'START';
+      saveState();
+      const welcome =
+        `مرحباً بك في بوت أكاديمية وروبوت ZAD FX للتداول الآلي 🚀\n` +
+        `<i>Welcome to ZAD FX Automated Trading Bot 🚀</i>\n\n` +
+        `يرجى اختيار لغة المتابعة / Please choose your preferred language:`;
+
+      const langButtons = [
+        [
+          { text: 'العربية 🇸🇦', callback_data: 'onb_lang_ar' },
+          { text: 'English 🇬🇧', callback_data: 'onb_lang_en' }
+        ]
+      ];
+
+      await sendTelegramInlineMessage(token, chatId, welcome, langButtons, 'HTML');
+      return;
+    }
+
+    // If awaiting Name
+    if (user.step === 'AWAITING_NAME') {
+      user.name = text;
+      user.step = 'AWAITING_COUNTRY';
+      saveState();
+
+      const isAr = user.language !== 'en';
+      const promptCountry = isAr
+        ? `أهلاً بك يا <b>${escapeTgHtml(user.name)}</b>! 🌍\n\n` +
+          `يرجى الآن كتابة <b>الدولة التي تقيم فيها حالياً</b> (لتحديد وسائل الدفع المناسبة لك):`
+        : `Welcome <b>${escapeTgHtml(user.name)}</b>! 🌍\n\n` +
+          `Please now enter the <b>Country where you currently reside</b> (to determine suitable payment methods):`;
+
+      await sendTelegramInlineMessage(token, chatId, promptCountry, undefined, 'HTML');
+      return;
+    }
+
+    // If awaiting Country
+    if (user.step === 'AWAITING_COUNTRY') {
+      user.country = text;
+      user.step = 'COMPLETED';
+      saveState();
+
+      const isAr = user.language !== 'en';
+      const confirmText = isAr
+        ? `✅ <b>تم تجهيز وتفعيل ملف عضويتك بنجاح!</b>\n\n` +
+          `👤 <b>الاسم:</b> ${escapeTgHtml(user.name)}\n` +
+          `🌍 <b>الدولة:</b> ${escapeTgHtml(user.country)}\n` +
+          `🆔 <b>معرف العضوية:</b> <code>${user.telegramChatId}</code>\n\n` +
+          `اختر ما ترغب به من القائمة الرئيسية أدناه:`
+        : `✅ <b>Your membership profile has been successfully prepared!</b>\n\n` +
+          `👤 <b>Name:</b> ${escapeTgHtml(user.name)}\n` +
+          `🌍 <b>Country:</b> ${escapeTgHtml(user.country)}\n` +
+          `🆔 <b>Member ID:</b> <code>${user.telegramChatId}</code>\n\n` +
+          `Choose an option from the main menu below:`;
+
+      await sendTelegramInlineMessage(token, chatId, confirmText, undefined, 'HTML');
+      await sendTelegramBotMainMenu(token, chatId, user);
+      return;
+    }
+
+    // If already completed and sent /menu
+    if (text.startsWith('/menu') || text === 'القائمة') {
+      await sendTelegramBotMainMenu(token, chatId, user);
+      return;
+    }
+
+    // If general text after completion, respond with the Main Menu
+    if (user.step === 'COMPLETED') {
+      await sendTelegramBotMainMenu(token, chatId, user);
+    }
+  }
+}
+
+async function pollOnboardingTelegramBotUpdates() {
+  if (isPollingOnboardingBot) return;
+  const cfg = telegramBotConfigStore;
+  if (!cfg.isEnabled) return;
+  const token = (cfg.botToken || '').trim() || autoPilot.botToken.trim() || DEFAULT_FREE_BOT_TOKEN;
+  if (!token) return;
+
+  isPollingOnboardingBot = true;
+  try {
+    const url = `https://api.telegram.org/bot${token}/getUpdates?offset=${lastOnboardingBotUpdateId + 1}&timeout=1`;
+    const res = await fetch(url);
+    const data = (await res.json()) as any;
+    if (data.ok && Array.isArray(data.result)) {
+      for (const update of data.result) {
+        lastOnboardingBotUpdateId = Math.max(lastOnboardingBotUpdateId, update.update_id);
+        await processInteractiveTelegramBotUpdate(update, token);
+      }
+    }
+  } catch (_e) {
+    // Ignore transient network hiccups
+  } finally {
+    isPollingOnboardingBot = false;
+  }
 }
 
 /**
@@ -3588,6 +4488,9 @@ async function deleteTelegramMessageIfDuplicate(botToken: string, chatId: string
 }
 
 async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boolean): Promise<{ ok: boolean; signal?: SignalItem; error?: string }> {
+  if (!isGlobalForexMarketOpen()) {
+    return { ok: false, error: 'السوق العالمي مغلق لعطلة نهاية الأسبوع (يغلق الجمعة 21:00 UTC ويفتح الأحد 21:00 UTC)' };
+  }
   // Schedule entry for the exact start (:00 seconds) of the upcoming minute candle
   const now = new Date();
   const secondsRemainingInCurrentMinute = 60 - now.getSeconds();
@@ -3937,6 +4840,9 @@ async function dispatchVipMomentumPauseSignal(
   isAuto = true,
   explicitVariant?: 'WITH_MPB' | 'WITHOUT_MPB'
 ): Promise<{ ok: boolean; signal?: SignalItem; error?: string }> {
+  if (!isGlobalForexMarketOpen()) {
+    return { ok: false, error: 'السوق العالمي مغلق لعطلة نهاية الأسبوع' };
+  }
   const now = new Date();
   const currentSec = now.getSeconds();
   const secondsRemainingInCurrentMinute = 60 - currentSec;
@@ -4043,18 +4949,8 @@ async function dispatchVipMomentumPauseSignal(
   let vipTelegramMessageId: number | undefined;
   let telegramError: string | undefined;
 
-  // Separate Telegram Delivery from Robot Engine:
-  // Telegram has its own cooldown (every 3 minutes) so subscribers aren't flooded,
-  // but the Quotex Robot receives CONTINUOUS signals every minute without waiting!
-  const minTelegramCooldownMs = 3 * 60 * 1000;
-  const recentTelegramSig = signalsStore.find(
-    s => Boolean(s.vipTelegramMessageId) && Date.now() - new Date(s.createdAt).getTime() < minTelegramCooldownMs
-  );
-  const canSendVip =
-    !isPublicOption &&
-    autoPilot.vipEnabled &&
-    (!isAuto || (isVipBotActiveNow() && !recentTelegramSig)) &&
-    !(autoPilot.vipBotCooldownUntil && Date.now() < autoPilot.vipBotCooldownUntil);
+  // Broadcast signals to both VIP Telegram Channel and Quotex Robot together without stopping:
+  const canSendVip = autoPilot.vipEnabled !== false && isVipBotActiveNow();
 
   if (canSendVip && activeVipToken && activeVipChat) {
     try {
@@ -4069,23 +4965,8 @@ async function dispatchVipMomentumPauseSignal(
     }
   }
 
-  // During 6:00 PM Live Broadcast: also dispatch signal to Free Telegram channel so all channels are unified
-  let freeTelegramMessageId: number | undefined;
-  if (isEveningLive) {
-    const freeToken = (autoPilot.botToken || '').trim();
-    const freeChat = (autoPilot.chatId || '').trim();
-    if (freeToken && freeChat) {
-      try {
-        const freeRes = await sendTelegramMessage(freeToken, freeChat, formattedMessage);
-        if (freeRes.ok && freeRes.result?.message_id) {
-          freeTelegramMessageId = freeRes.result.message_id;
-        }
-      } catch (_e) {}
-    }
-  }
-
   newSignal.vipTelegramMessageId = vipTelegramMessageId;
-  newSignal.telegramMessageId = freeTelegramMessageId;
+  newSignal.telegramMessageId = undefined;
   await saveState();
 
   // Evaluate trade outcome after candle finishes (68 seconds)
@@ -4190,7 +5071,8 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
     let targetDir: 'CALL' | 'PUT' = 'CALL';
     let confPayload: any = null;
 
-    // Last dispatched asset to encourage natural rotation across pairs instead of sticking to EUR/JPY
+    // Last dispatched assets to encourage natural rotation across all 6 pairs instead of sticking to EUR/JPY
+    const recentDispatched = signalsStore.slice(0, 4).map(s => s.asset);
     const lastDispatchedAsset = signalsStore[0]?.asset || '';
 
     if (qualifyingSnapshots.length > 0) {
@@ -4202,9 +5084,10 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
         return (b.qualityScore || 0) - (a.qualityScore || 0);
       });
 
-      // Pair rotation: if top pair is identical to the last trade, pick the alternate qualifying pair if available
+      // Pair rotation: pick pair not used recently among the 6 pairs
+      const freshPairCandidate = sorted.find(s => !recentDispatched.includes(s.pair));
       const alternate = sorted.find(s => s.pair !== lastDispatchedAsset);
-      selectedCandidate = (alternate && sorted.length > 1) ? alternate : sorted[0];
+      selectedCandidate = freshPairCandidate || alternate || sorted[0];
 
       const conf = selectedCandidate.fourIndicatorConfluence!;
       targetDir = conf.candidateDirection!;
@@ -5202,20 +6085,20 @@ async function checkAndSendVipMorning12Report(): Promise<void> {
   const todayEgypt = getCurrentEgyptDateString(new Date());
   if (autoPilot.vipMorningReportSentDate === todayEgypt) return;
   const currentH = getCurrentEgyptHour();
-  if (currentH < 12) return; // Only at or after 12:00 PM
+  if (currentH < 15) return; // Dispatches at 03:00 PM (15:00) at the end of the first session
 
   const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
   const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
   if (!vipToken || !vipChat) return;
 
-  // Filter VIP signals of today before 12:00 PM (excluding live broadcast)
+  // Filter VIP signals of today between 09:00 AM and 03:00 PM (excluding live broadcast)
   const morningVipSignals = signalsStore.filter(s => {
     if (!s.createdAt || s.status === 'PENDING') return false;
     if (s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'))) return false;
     if (!s.vipTelegramMessageId) return false;
     const d = new Date(s.createdAt);
     if (isNaN(d.getTime())) return false;
-    return getCurrentEgyptDateString(d) === todayEgypt && getEgyptHourFromDate(d) < 12;
+    return getCurrentEgyptDateString(d) === todayEgypt && getEgyptHourFromDate(d) < 15;
   });
 
   const is0Gale = !autoPilot.oneGaleEnabled;
@@ -5231,33 +6114,33 @@ async function checkAndSendVipMorning12Report(): Promise<void> {
   let message = '';
   if (isGoodWin) {
     message = [
-      '👑 التقرير الختامي للجلسة الصباحية لقناة VIP الخاصة وروبوت التداول الآلي 👑',
-      `📅 التاريخ: ${todayEgypt} (إغلاق الجلسة الصباحية 12:00 ظهراً بتوقيت مصر)`,
+      '👑 التقرير الختامي للفترة الأولى لقناة VIP الخاصة وروبوت التداول الآلي 👑',
+      `📅 التاريخ: ${todayEgypt} (إغلاق الفترة الأولى 03:00 عصراً بتوقيت مصر)`,
       '━━━━━━━━━━━━━━━━━━━━',
-      '🎉 ألف مبروك لجميع أعضاء ومتاجري قناة VIP وروبوت كيوتكس الأبطال!',
-      'جلسة صباحية ممتازة وأرباح وفيرة ومباركة بفضل الله تعالى 💰🏆',
+      '🎉 ألف مبروك لجميع أعضاء ومتاجري قناة VIP وروبوت التداول الآلي الأبطال!',
+      'جلسة أولى ممتازة وأرباح وفيرة ومباركة بفضل الله تعالى 💰🏆',
       '',
-      `📊 نتائج الجلسة الصباحية:`,
+      `📊 نتائج الفترة الأولى (09:00 ص - 03:00 م):`,
       `✅ عدد الصفقات الرابحة: ${wins}`,
       `❌ عدد الصفقات الخاسرة: ${losses}`,
       `🎯 نسبة النجاح المحققة: ${winRate}%`,
       '━━━━━━━━━━━━━━━━━━━━',
-      '🛑 تم اختتام الجلسة الصباحية بنجاح تام لحماية الأرباح المحققة.',
-      '🔴 موعدنا يتجدد معكم في بث مباشر حي وحصري الساعة 06:00 مساءً بتوقيت مصر ⚡',
-      'روبوت التداول الآلي في وضع قفل الأمان حتى موعد انطلاق البث المسائي 🛡️',
+      '🛑 تم اختتام الفترة الأولى بنجاح تام لتأمين الأرباح المحققة.',
+      '🔴 موعدنا القادم يتجدد معكم في البث المباشر الحي في تمام الساعة 06:00 مساءً بتوقيت مصر ⚡',
+      'روبوت التداول الآلي في وضع الاستراحة حتى انطلاق البث المسائي 🛡️',
       '━━━━━━━━━━━━━━━━━━━━',
       `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
     ].join('\n');
   } else {
     message = [
-      '🛡️ التقرير الختامي للجلسة الصباحية لقناة VIP وروبوت التداول الآلي 🛡️',
-      `📅 التاريخ: ${todayEgypt} (إغلاق الجلسة الصباحية 12:00 ظهراً بتوقيت مصر)`,
+      '🛡️ التقرير الختامي للفترة الأولى لقناة VIP وروبوت التداول الآلي 🛡️',
+      `📅 التاريخ: ${todayEgypt} (إغلاق الفترة الأولى 03:00 عصراً بتوقيت مصر)`,
       '━━━━━━━━━━━━━━━━━━━━',
-      'تم بحمد الله اختتام الجلسة الصباحية عند الساعة 12:00 ظهراً.',
-      'نطمئنكم جميعاً بأن السوق واجه بعض التذبذبات الصباحية، والتعويض قادم ومؤكد بإذن الله تعالى في جلسة البث المباشر المسائية وغداً 🤝✨',
+      'تم بحمد الله اختتام الفترة الأولى عند الساعة 03:00 عصراً.',
+      'نطمئنكم جميعاً بأن السوق واجه بعض التذبذبات، والتعويض قادم ومؤكد بإذن الله تعالى في جلسة البث المباشر المسائية 🤝✨',
       'التزامنا الصارم بإدارة رأس المال (1%) هو حصنكم المنيع الذي يحمي حساباتكم دائماً في كافة الظروف.',
       '',
-      `📊 نتائج الجلسة الصباحية:`,
+      `📊 نتائج الفترة الأولى (09:00 ص - 03:00 م):`,
       `✅ عدد الصفقات الرابحة: ${wins}`,
       `❌ عدد الصفقات الخاسرة: ${losses}`,
       `🎯 نسبة النجاح المحققة: ${winRate}%`,
@@ -5355,14 +6238,19 @@ async function checkFocusedGlobalMarketAutoPilot() {
   isCheckingAutoPilot = true;
 
   try {
+    const isMarketOpen = isGlobalForexMarketOpen();
+    autoPilot.marketOpenStatus = isMarketOpen;
+
+    if (!isMarketOpen) {
+      return;
+    }
+
     // Sync cloud state first so if another container (`ais-pre` or `ais-dev`) just sent a signal, we know immediately!
     await loadStateFromCloudAndDisk();
 
     if (enforceDailySignalReset()) {
       await saveState();
     }
-
-    autoPilot.marketOpenStatus = isGlobalForexMarketOpen();
 
     // Always refresh live market snapshots every minute so Admin & Visitor see real prices
     const { selectedCandidate } = await scanRealGlobalForexMarket(false);
@@ -5506,6 +6394,7 @@ async function checkFocusedGlobalMarketAutoPilot() {
 
 // Also keep Telegram Bot forward listener active ONLY for direct private messages (never channel_post to prevent echoing channel signals!)
 async function pollTelegramBotIncomingForwards() {
+  if (!isGlobalForexMarketOpen()) return;
   if (!autoPilot.enabled || !autoPilot.botToken.trim() || !autoPilot.chatId.trim()) return;
 
   try {
@@ -5604,6 +6493,11 @@ setInterval(() => {
 setInterval(() => {
   pollTelegramBotIncomingForwards();
 }, 6 * 1000);
+
+// 24/7 Interactive Onboarding Telegram Bot Polling Loop (Registration, Multi-Language, Payment Routing)
+setInterval(() => {
+  pollOnboardingTelegramBotUpdates();
+}, 2500);
 
 // 24/7 Permanent Keep-Alive: Pings external Cloud Run URL + localhost every 45s so container never enters idle sleep
 setInterval(() => {
@@ -6285,8 +7179,11 @@ async function startServer() {
     const isVipActive = isVipBotActiveNow();
 
     // Latest active/recent signal for the robot to alert & auto-execute on Quotex
-    // Strictly filtered to the user's selected strategy mode and operating hours!
-    const latestSig = (isRobotActive && !warmup.isWarmup) ? getLiveRobotActiveSignal(effectiveMode) : null;
+    // Strictly filtered to the user's selected strategy mode, operating hours, and market open!
+    const isGlobalMarketOpen = isGlobalForexMarketOpen();
+    const latestSig = (isGlobalMarketOpen && isRobotActive && !warmup.isWarmup)
+      ? getLiveRobotActiveSignal(effectiveMode)
+      : null;
     let activeSignalPayload = null;
 
     if (latestSig) {
@@ -6334,8 +7231,9 @@ async function startServer() {
       strategyTitle: workingStatus.strategyTitle,
       serverTimeIso: new Date().toISOString(),
       serverEpochSeconds: Math.floor(Date.now() / 1000),
-      marketOpen: isGlobalForexMarketOpen(),
-      isMarketOpen: isGlobalForexMarketOpen(),
+      marketOpen: isGlobalMarketOpen,
+      isMarketOpen: isGlobalMarketOpen,
+      serverMarketOpen: isGlobalMarketOpen,
       isTradingHours: isRobotActive,
       isLockedOutsideHours: isLocked,
       lockReason: workingStatus.lockReason,
@@ -6388,9 +7286,10 @@ async function startServer() {
         winRate: winRateNoGale
       },
       activeSignal: activeSignalPayload,
-      targetPair: autoPilot.pairSelectionMode === 'fixed_single' ? (autoPilot.primaryFixedPair || 'EUR/JPY') : (autoPilot.allowedPairs?.[0] || 'EUR/JPY'),
-      pairSelectionMode: autoPilot.pairSelectionMode || 'fixed_single',
-      allowedPairs: autoPilot.allowedPairs || ['EUR/JPY'],
+      targetPair: 'EUR/USD',
+      pairSelectionMode: 'multi_pair_scan',
+      allowedPairs: ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'],
+      scannedPairs: ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'],
       recentSignals: signalsStore.slice(0, 6).map(s => ({
         id: s.id,
         asset: s.asset,
@@ -8557,6 +9456,171 @@ async function startServer() {
       res.json({ ok: true, filename: 'NB_FX_Momentum_Pause_Breakout.mq4', code });
     } else {
       res.status(404).json({ ok: false, error: 'MT4 file not found' });
+    }
+  });
+
+  // =========================================================================
+  // TELEGRAM BOT HUB & ONBOARDING SYSTEM REST API ENDPOINTS
+  // =========================================================================
+
+  app.get('/api/telegram-bot/config', (_req, res) => {
+    res.json({ ok: true, config: telegramBotConfigStore });
+  });
+
+  app.post('/api/telegram-bot/config', async (req, res) => {
+    try {
+      telegramBotConfigStore = {
+        ...telegramBotConfigStore,
+        ...req.body
+      };
+      await saveState();
+      res.json({ ok: true, config: telegramBotConfigStore });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Failed to update config' });
+    }
+  });
+
+  app.get('/api/telegram-bot/users', (_req, res) => {
+    res.json({ ok: true, users: telegramBotUsersStore });
+  });
+
+  app.post('/api/telegram-bot/users', async (req, res) => {
+    try {
+      const b = req.body;
+      const newUser: TelegramBotUser = {
+        id: `tgu-${Date.now()}`,
+        telegramChatId: String(b.telegramChatId || '').trim(),
+        username: b.username ? String(b.username).trim() : '',
+        name: String(b.name || 'عضو جديد').trim(),
+        country: String(b.country || 'مصر 🇪🇬').trim(),
+        language: b.language === 'en' ? 'en' : 'ar',
+        step: 'COMPLETED',
+        status: b.status || 'ACTIVE',
+        membershipType: b.membershipType || 'NONE',
+        brokerId: b.brokerId ? String(b.brokerId).trim() : '',
+        notes: b.notes ? String(b.notes).trim() : '',
+        registeredAt: new Date().toISOString(),
+        lastInteractionAt: new Date().toISOString()
+      };
+      telegramBotUsersStore.unshift(newUser);
+      await saveState();
+      res.json({ ok: true, user: newUser });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Failed to add user' });
+    }
+  });
+
+  app.put('/api/telegram-bot/users/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const idx = telegramBotUsersStore.findIndex(u => u.id === id);
+      if (idx === -1) {
+        return res.status(404).json({ ok: false, error: 'User not found' });
+      }
+      telegramBotUsersStore[idx] = {
+        ...telegramBotUsersStore[idx],
+        ...req.body,
+        id
+      };
+      await saveState();
+      res.json({ ok: true, user: telegramBotUsersStore[idx] });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Failed to update user' });
+    }
+  });
+
+  app.delete('/api/telegram-bot/users/:id', async (req, res) => {
+    try {
+      const { id } = req.params;
+      telegramBotUsersStore = telegramBotUsersStore.filter(u => u.id !== id);
+      await saveState();
+      res.json({ ok: true });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Failed to delete user' });
+    }
+  });
+
+  app.post('/api/telegram-bot/users/:id/status', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body;
+      const user = telegramBotUsersStore.find(u => u.id === id);
+      if (!user) {
+        return res.status(404).json({ ok: false, error: 'User not found' });
+      }
+      user.status = status;
+      await saveState();
+      res.json({ ok: true, user });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Failed to update status' });
+    }
+  });
+
+  app.post('/api/telegram-bot/users/:id/message', async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { message } = req.body;
+      const user = telegramBotUsersStore.find(u => u.id === id);
+      if (!user) {
+        return res.status(404).json({ ok: false, error: 'User not found' });
+      }
+      const token = telegramBotConfigStore.botToken.trim() || autoPilot.botToken.trim() || DEFAULT_FREE_BOT_TOKEN;
+      const sendRes = await sendTelegramInlineMessage(token, user.telegramChatId, message, undefined, 'HTML');
+      if (sendRes?.ok) {
+        res.json({ ok: true, result: sendRes });
+      } else {
+        res.status(400).json({ ok: false, error: sendRes?.description || 'Failed to send telegram message' });
+      }
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Failed to send message' });
+    }
+  });
+
+  app.post('/api/telegram-bot/broadcast', async (req, res) => {
+    try {
+      const { message, targetLanguage, targetStatus } = req.body;
+      if (!message || !message.trim()) {
+        return res.status(400).json({ ok: false, error: 'Message text is required' });
+      }
+      const token = telegramBotConfigStore.botToken.trim() || autoPilot.botToken.trim() || DEFAULT_FREE_BOT_TOKEN;
+      let sentCount = 0;
+      let failedCount = 0;
+
+      const recipients = telegramBotUsersStore.filter(u => {
+        if (targetLanguage && targetLanguage !== 'all' && u.language !== targetLanguage) return false;
+        if (targetStatus && targetStatus !== 'all' && u.status !== targetStatus) return false;
+        return true;
+      });
+
+      for (const u of recipients) {
+        try {
+          const r = await sendTelegramInlineMessage(token, u.telegramChatId, message, undefined, 'HTML');
+          if (r?.ok) sentCount++;
+          else failedCount++;
+        } catch (_err) {
+          failedCount++;
+        }
+      }
+
+      res.json({ ok: true, sentCount, failedCount, totalRecipients: recipients.length });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Broadcast failed' });
+    }
+  });
+
+  app.post('/api/telegram-bot/test-token', async (req, res) => {
+    try {
+      const { token } = req.body;
+      const checkToken = (token || telegramBotConfigStore.botToken || autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
+      const tgRes = await fetch(`https://api.telegram.org/bot${checkToken}/getMe`);
+      const data = await tgRes.json();
+      if (data.ok) {
+        res.json({ ok: true, bot: data.result });
+      } else {
+        res.status(400).json({ ok: false, error: data.description || 'Token invalid' });
+      }
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err?.message || 'Connection test failed' });
     }
   });
 

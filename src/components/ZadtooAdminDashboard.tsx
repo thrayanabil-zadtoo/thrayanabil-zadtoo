@@ -38,6 +38,7 @@ import { getPairFlags } from './ZadtooSignalsPage';
 import { ZadtooPlansAndLinksManager } from './ZadtooPlansAndLinksManager';
 import { ZadtooPaymentsManager } from './ZadtooPaymentsManager';
 import { ZadtooAdminLiveBroadcast } from './ZadtooAdminLiveBroadcast';
+import { TelegramBotManager } from './TelegramBotManager';
 import type { SubscriptionPlan, PlatformContactLinks } from '../types/platformConfig';
 import type { AutoPilotConfig } from '../App';
 
@@ -81,7 +82,7 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
   onConfigChanged
 }) => {
   const [activeAdminNav, setActiveAdminNav] = useState<
-    'overview' | 'pairs' | 'signals' | 'users' | 'subs' | 'reports' | 'settings' | 'plans_links' | 'payments' | 'admin_live'
+    'overview' | 'pairs' | 'signals' | 'users' | 'subs' | 'reports' | 'settings' | 'plans_links' | 'payments' | 'admin_live' | 'telegram_bot'
   >('overview');
 
   const [showAddSignalModal, setShowAddSignalModal] = useState(false);
@@ -494,6 +495,22 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
 
             <button
               type="button"
+              onClick={() => setActiveAdminNav('telegram_bot')}
+              className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl transition-colors cursor-pointer text-right ${
+                activeAdminNav === 'telegram_bot'
+                  ? 'bg-indigo-50 text-indigo-900 font-extrabold border border-indigo-300 shadow-xs'
+                  : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
+              }`}
+            >
+              <Send className="w-4 h-4 text-indigo-600" />
+              <span>بوت التليجرام</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-indigo-100 text-indigo-800 font-bold mr-auto">
+                تحكم كامل 🤖
+              </span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setActiveAdminNav('plans_links')}
               className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl transition-colors cursor-pointer text-right ${
                 activeAdminNav === 'plans_links'
@@ -756,6 +773,26 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               autoPilot={autoPilot}
               onNavigateHome={() => setActiveAdminNav('overview')}
             />
+          </div>
+        ) : activeAdminNav === 'telegram_bot' ? (
+          <div className="space-y-4">
+            <div className="flex items-center justify-between bg-indigo-50 border border-indigo-200 p-3.5 rounded-2xl">
+              <div className="flex items-center gap-2">
+                <Send className="w-5 h-5 text-indigo-600 shrink-0" />
+                <span className="text-xs sm:text-sm font-black text-indigo-950">
+                  لوحة إدارة وتحكم بوت التليجرام التفاعلي — المشتركين، أنظمة الدفع، روابط الإحالة والبث المباشر
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActiveAdminNav('overview')}
+                className="px-3.5 py-1.5 bg-white hover:bg-indigo-100/60 text-indigo-900 text-xs font-bold rounded-xl border border-indigo-300 transition-colors cursor-pointer"
+              >
+                ← العودة إلى لوحة التحكم الرئيسية
+              </button>
+            </div>
+
+            <TelegramBotManager />
           </div>
         ) : (
           <>

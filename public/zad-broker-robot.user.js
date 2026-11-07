@@ -193,13 +193,14 @@
 
   // التحقق من حالة فتح السوق العالمي (الفوركس يغلق الجمعة 21:00 UTC ويفتح الأحد 21:00 UTC)
   function isForexMarketOpen() {
-    if (typeof serverMarketOpen === "boolean") return serverMarketOpen;
+    if (serverMarketOpen === false) return false;
     const now = new Date();
     const day = now.getUTCDay(); // 0 = Sun, 5 = Fri, 6 = Sat
     const hour = now.getUTCHours();
     if (day === 6) return false; // السبت مغلق
     if (day === 5 && hour >= 21) return false; // الجمعة بعد 21:00 UTC مغلق
     if (day === 0 && hour < 21) return false; // الأحد قبل 21:00 UTC مغلق
+    if (typeof serverMarketOpen === "boolean") return serverMarketOpen;
     return true;
   }
 
@@ -345,10 +346,29 @@
         <span style="color:#93c5fd;font-weight:bold;display:flex;align-items:center;gap:2px;"><span>🎯</span><span>استراتيجية المؤشرات:</span></span>
         <span id="zad-strategy-badge" style="color:#fde047;font-weight:bold;font-family:monospace;font-size:8px;background:#0f172a;padding:1px 4px;border-radius:3px;border:1px solid #334155;">${ROBOT_STRATEGY_MODE === 'PUBLIC_CLASSIC' ? '1 دقيقة ⏳' : '5 ثوانٍ ⚡'}</span>
       </div>
-      <select id="zad-robot-strategy-mode" style="width:100%;background:#06101e;color:#f8fafc;border:1px solid #0284c7;border-radius:4px;padding:2px 3px;font-size:9px;font-weight:bold;cursor:pointer;outline:none;" title="اختر استراتيجية واحدة حصرية">
-        <option value="PUBLIC_CLASSIC" ${ROBOT_STRATEGY_MODE === 'PUBLIC_CLASSIC' ? 'selected' : ''}>📢 استراتيجية القناة العامة (التزام بالقوانين ⏳)</option>
-        <option value="VIP_WITH_MPB" ${ROBOT_STRATEGY_MODE !== 'PUBLIC_CLASSIC' ? 'selected' : ''}>💎 استراتيجية MPB (09:00 ص - 09:00 م | 5 ثوانٍ ⚡)</option>
+      <select id="zad-robot-strategy-mode" style="width:100%;background:#06101e;color:#f8fafc;border:1px solid #0284c7;border-radius:4px;padding:2px 3px;font-size:9px;font-weight:bold;cursor:pointer;outline:none;" title="الاستراتيجية المعتمدة رسمياً">
+        <option value="VIP_WITH_MPB" selected>💎 استراتيجية VIP مع MPB (4 مؤشرات | 3 من 4 | 5 ثوانٍ ⚡)</option>
+        <option value="PUBLIC_CLASSIC" disabled style="color:#64748b;">🚫 استراتيجية القناة العامة (ملغاة ومحجوبة بطلبك)</option>
       </select>
+    </div>
+
+    <!-- شريط مسح الأزواج الستة في الوقت الحقيقي (6 Pairs Active Scanner) -->
+    <div style="background:#09101f;border:1px solid #1e293b;border-radius:6px;padding:3.5px 5px;margin-bottom:4px;" id="zad-six-pairs-panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2.5px;font-size:8px;">
+        <span style="color:#38bdf8;font-weight:bold;display:flex;align-items:center;gap:3px;">
+          <span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:#10b981;box-shadow:0 0 5px #10b981;"></span>
+          <span>مسح حي لـ 6 أزواج بالتوازي:</span>
+        </span>
+        <span id="zad-scanner-active-count" style="color:#34d399;font-weight:extrabold;font-family:monospace;font-size:8px;">(6/6 متصل)</span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(6, 1fr);gap:2px;text-align:center;" id="zad-pairs-chips">
+        <div class="zad-pair-chip" id="chip-EURUSD" style="background:#0f172a;border:1px solid #334155;border-radius:3px;padding:1.5px 0;font-size:7px;color:#94a3b8;font-weight:bold;">EUR/USD</div>
+        <div class="zad-pair-chip" id="chip-EURJPY" style="background:#0f172a;border:1px solid #334155;border-radius:3px;padding:1.5px 0;font-size:7px;color:#94a3b8;font-weight:bold;">EUR/JPY</div>
+        <div class="zad-pair-chip" id="chip-GBPUSD" style="background:#0f172a;border:1px solid #334155;border-radius:3px;padding:1.5px 0;font-size:7px;color:#94a3b8;font-weight:bold;">GBP/USD</div>
+        <div class="zad-pair-chip" id="chip-USDJPY" style="background:#0f172a;border:1px solid #334155;border-radius:3px;padding:1.5px 0;font-size:7px;color:#94a3b8;font-weight:bold;">USD/JPY</div>
+        <div class="zad-pair-chip" id="chip-AUDUSD" style="background:#0f172a;border:1px solid #334155;border-radius:3px;padding:1.5px 0;font-size:7px;color:#94a3b8;font-weight:bold;">AUD/USD</div>
+        <div class="zad-pair-chip" id="chip-USDCAD" style="background:#0f172a;border:1px solid #334155;border-radius:3px;padding:1.5px 0;font-size:7px;color:#94a3b8;font-weight:bold;">USD/CAD</div>
+      </div>
     </div>
 
     <!-- صندوق الإشارة: يعرض إما الإشارة الحية مع العداد التنازلي أو 'وضع الانتظار WAIT' لمنع التكرار -->
@@ -1288,14 +1308,28 @@
     return null;
   }
 
+  // قفل حماية حديدي مانع لتكرار الصفقات (Strict Single Trade Mutex)
+  let globalTradeLockUntil = 0;
+
   // تنفيذ النقر على زر المنصة مع وميض توهج بصري للتأكيد
   function triggerBrokerTrade(direction, isTestMode) {
     try {
+      const now = Date.now();
+      // قفل أمان صارم: منع فتح أي صفقة إذا تم فتح صفقة خلال آخر 50 ثانية
+      if (!isTestMode && now < globalTradeLockUntil) {
+        console.warn("[روبوت ZAD FX] ⚠️ تم حظر فتح صفقة مكررة بواسطة القفل الحديدي (Strict Mutex Lock)");
+        return { success: false, button: null, message: "صفقة جارية بالمنصة بالفعل — منع التكرار" };
+      }
+
       const isCall = direction === "CALL";
       const dirArabic = isCall ? "الشراء (CALL 🟢)" : "البيع (PUT 🔴)";
       const btn = findBrokerTradeButton(direction);
 
       if (btn) {
+        if (!isTestMode) {
+          globalTradeLockUntil = now + 50000; // قفل 50 ثانية كاملة
+        }
+
         // وميض توهج بصري بارز على الزر لتأكيد اكتشافه
         const originalOutline = btn.style.outline;
         const originalBoxShadow = btn.style.boxShadow;
@@ -1308,21 +1342,18 @@
           } catch(e) {}
         }, 2500);
 
-        // محاكاة نقرة واحدة حصرية ومؤكدة على الزر (Single Precise Click)
-        const rect = btn.getBoundingClientRect();
-        const clientX = rect.left + rect.width / 2;
-        const clientY = rect.top + rect.height / 2;
+        // نقرة واحدة نظيفة ودقيقة بنسبة 100% (Single Clean Click - لا ترسل أحداثاً متعددة متزامنة)
+        try {
+          if (typeof btn.click === "function") {
+            btn.click();
+          } else {
+            btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+          }
+        } catch(e) {
+          btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        }
 
-        try { if (typeof btn.focus === "function") btn.focus(); } catch(e) {}
-        const downOpts = { bubbles: true, cancelable: true, composed: true, view: window, clientX, clientY, button: 0, buttons: 1 };
-        const upOpts = { bubbles: true, cancelable: true, composed: true, view: window, clientX, clientY, button: 0, buttons: 0 };
-        try { btn.dispatchEvent(new PointerEvent('pointerdown', downOpts)); } catch(e) {}
-        try { btn.dispatchEvent(new MouseEvent('mousedown', downOpts)); } catch(e) {}
-        try { btn.dispatchEvent(new PointerEvent('pointerup', upOpts)); } catch(e) {}
-        try { btn.dispatchEvent(new MouseEvent('mouseup', upOpts)); } catch(e) {}
-        try { btn.click(); } catch(e) {}
-
-        console.log(`%c[روبوت ZAD FX] 🚀 تم إرسال أمر فتح صفقة ${dirArabic} بالثانية للمنصة بنجاح!`, "color:#10b981;font-weight:bold;font-size:12px;");
+        console.log(`%c[روبوت ZAD FX] 🚀 تم إرسال أمر فتح صفقة واحدة ${dirArabic} بالثانية للمنصة بنجاح!`, "color:#10b981;font-weight:bold;font-size:12px;");
 
         return {
           success: true,
@@ -1892,6 +1923,75 @@
   let LAST_EXECUTED_TIMESTAMP = parseInt(localStorage.getItem("zad_last_executed_time") || "0", 10);
   let isTradeExecuting = false;
 
+  // كاشف السعر اللحظي الدقيق من شاشة المنصة للتحقق من عدم انعكاس الشمعة قبل ثانية :00
+  function detectBrokerLivePrice() {
+    try {
+      const priceSelectors = [
+        ".current-price",
+        ".deal-form__price",
+        ".chart-tooltip__price",
+        ".chart-cursor-price",
+        "[data-test='current-price']",
+        ".active-price"
+      ];
+      for (const sel of priceSelectors) {
+        const el = document.querySelector(sel);
+        if (el && el.textContent) {
+          const num = parseFloat(el.textContent.replace(/[^0-9.]/g, ""));
+          if (!isNaN(num) && num > 0) return num;
+        }
+      }
+      const titleMatch = document.title.match(/([0-9]+\.[0-9]+)/);
+      if (titleMatch) {
+        const num = parseFloat(titleMatch[1]);
+        if (!isNaN(num) && num > 0) return num;
+      }
+    } catch(e) {}
+    return null;
+  }
+
+  // بروتوكول إيقاف فتح الصفقة لوضع طارئ عند انعكاس اتجاه الشمعة قبل ثانية :00
+  function abortEmergencyCandleReversal(reason) {
+    console.warn(`%c[روبوت ZAD FX] 🛑 تم إيقاف فتح الصفقة لوضع طارئ: ${reason}`, "color:#ef4444;font-weight:bold;font-size:12px;");
+    const sigAsset = activeSignalObj ? activeSignalObj.asset : "";
+    const sigDir = activeSignalObj ? activeSignalObj.direction : "";
+
+    activeSignalObj = null;
+    currentActiveSignalId = null;
+    currentTargetEntryEpoch = null;
+
+    const cdContainer = document.getElementById("zad-robot-countdown");
+    if (cdContainer) cdContainer.style.display = "none";
+    const manContainer = document.getElementById("zad-manual-trigger-container");
+    if (manContainer) manContainer.style.display = "none";
+
+    const sigElem = document.getElementById("zad-robot-signal");
+    const actElem = document.getElementById("zad-robot-action");
+    if (sigElem) {
+      sigElem.innerHTML = `
+        <div style="background:rgba(239,68,68,0.2);border:2px solid #ef4444;border-radius:8px;padding:6px 8px;text-align:center;box-shadow:0 0 16px rgba(239,68,68,0.5);">
+          <div style="color:#f87171;font-size:11px;font-weight:900;display:flex;align-items:center;justify-content:center;gap:4px;">
+            <span style="font-size:13px;">🛑</span>
+            <span>إيقاف فتح الصفقة (إجراء طارئ ⚠️)</span>
+          </div>
+          <div style="color:#fecdd3;font-size:9px;margin-top:2.5px;font-weight:bold;">
+            انعكست الشمعة فجأة قبل نقطة الدخول (:00) — تم إلغاء الصفقة لحماية المحفظة
+          </div>
+          <div style="color:#cbd5e1;font-size:8px;margin-top:2px;">الزوج: ${sigAsset} | الاتجاه السابق: ${sigDir}</div>
+        </div>
+      `;
+    }
+    if (actElem) {
+      actElem.innerHTML = `<span style="color:#ef4444;font-weight:bold;">⚠️ تم إلغاء الصفقة قبل ثانية :00 لانعكاس اتجاه الشمعة (حماية طارئة)</span>`;
+    }
+    widget.style.borderColor = '#ef4444';
+    widget.style.boxShadow = '0 0 25px rgba(239,68,68,0.6)';
+
+    setTimeout(() => {
+      renderWaitingState();
+    }, 4500);
+  }
+
   // دالة الحماية الحصرية لفتح صفقة واحدة فقط لا غير (Strict Single Trade Mutex)
   function executeSingleTrade(sigId, direction, source) {
     if (!sigId || isTradeExecuting) return false;
@@ -1980,6 +2080,20 @@
     const isStrict00Moment = (currentSec === 59 && currentMs >= 850) || (currentSec === 0 && currentMs <= 200);
 
     if (isStrict00Moment && remainingSec <= 0.4 && remainingSec >= -1.0) {
+      // فحص أخير طارئ قبل النقر: هل عكست الشمعة اتجاهها؟
+      const livePriceNow = detectBrokerLivePrice();
+      const signalBasePrice = parseFloat(activeSignalObj.livePrice) || activeSignalObj.entryPriceNumeric;
+      if (livePriceNow && signalBasePrice) {
+        const pDiff = livePriceNow - signalBasePrice;
+        const isReversed =
+          (activeSignalObj.direction === "CALL" && pDiff < -0.00012) ||
+          (activeSignalObj.direction === "PUT" && pDiff > 0.00012);
+        if (isReversed) {
+          abortEmergencyCandleReversal("انعكاس مفاجئ للشمعة في ثانية الافتتاح :00.00");
+          return;
+        }
+      }
+
       if (cdVal) cdVal.textContent = "🚀 ادخل الآن (:00.00)!";
       if (cdLabel) cdLabel.textContent = "نقطة الدخول الفورية:";
 
@@ -2014,6 +2128,22 @@
       if (cdBar) cdBar.style.width = Math.min(100, Math.max(5, (displaySec / maxBarSec) * 100)) + "%";
 
       if (displaySec <= 5) {
+        // فحص طارئ أثناء العد التنازلي: هل عكست الشمعة اتجاهها فجأة؟
+        if (displaySec <= 3) {
+          const livePriceNow = detectBrokerLivePrice();
+          const signalBasePrice = parseFloat(activeSignalObj.livePrice) || activeSignalObj.entryPriceNumeric;
+          if (livePriceNow && signalBasePrice) {
+            const pDiff = livePriceNow - signalBasePrice;
+            const isReversed =
+              (activeSignalObj.direction === "CALL" && pDiff < -0.00015) ||
+              (activeSignalObj.direction === "PUT" && pDiff > 0.00015);
+            if (isReversed) {
+              abortEmergencyCandleReversal("انعكاس مفاجئ في حركة الشمعة قبل ثانية :00");
+              return;
+            }
+          }
+        }
+
         if (cdTip && cdTip.dataset.state !== "alert") {
           cdTip.dataset.state = "alert";
           cdTip.innerHTML = `<span style="color:#fca5a5;font-weight:900;">⚡ تأكيد فوري (5 ثوانٍ)! تنفيذ الصفقة عند ثانية :00.00 تماماً</span>`;
@@ -2110,7 +2240,17 @@
       return;
     }
 
-    // فحص قفل الأمان:
+    // 1. فحص أمان صارم: إغلاق السوق العالمي (عطلة نهاية الأسبوع من الجمعة 21:00 UTC حتى الأحد 21:00 UTC)
+    const isMarketOpenNow = isForexMarketOpen();
+    if (!isMarketOpenNow || serverMarketOpen === false) {
+      activeSignalObj = null;
+      currentActiveSignalId = null;
+      currentTargetEntryEpoch = null;
+      renderWaitingState(); // يعرض كارت "مغلق السوق" بالأحمر ويرفض أي صفقات
+      return;
+    }
+
+    // 2. فحص قفل ساعات العمل:
     // استراتيجية MPB معزولة بالكامل وتعمل متواصلة من 09:00 ص حتى 09:00 م ولا تتأثر بالتليجرام
     const isMpbSelected = (ROBOT_STRATEGY_MODE !== "PUBLIC_CLASSIC");
     const cairoNow = new Date(Date.now() + 2 * 60 * 60 * 1000); // Egypt UTC+2
@@ -2123,7 +2263,7 @@
       shouldLock = Boolean(data.isLockedOutsideHours || data.isTradingHours === false);
     } else {
       // استراتيجية MPB معزولة ومستمرة طوال 9:00 ص حتى 9:00 م يومياً
-      shouldLock = !isMpbTimeOpen || (serverMarketOpen === false);
+      shouldLock = !isMpbTimeOpen;
     }
 
     if (shouldLock) {
@@ -2134,8 +2274,53 @@
       return;
     }
 
-    // لا يتم استحداث أي إشارة محلية إطلاقاً - الروبوت يستقبل حصرياً الإشارات الرسمية
+    // 3. عزل الاستراتيجيات 100%:
+    // عند اختيار الاستراتيجية الثانية (MPB): يتم إلغاء ومنع أي إشارة تخص الاستراتيجية العامة نهائياً
     const sig = data.activeSignal;
+    if (sig) {
+      if (isMpbSelected) {
+        // استراتيجية MPB ترفض إشارات القناة العامة
+        if (!sig.instantExecution5s && sig.strategyType !== 'MOMENTUM_PAUSE_BREAKOUT') {
+          activeSignalObj = null;
+          currentActiveSignalId = null;
+          currentTargetEntryEpoch = null;
+          renderWaitingState();
+          return;
+        }
+      } else {
+        // استراتيجية القناة العامة ترفض إشارات MPB الفورية
+        if (sig.instantExecution5s || sig.strategyType === 'MOMENTUM_PAUSE_BREAKOUT') {
+          activeSignalObj = null;
+          currentActiveSignalId = null;
+          currentTargetEntryEpoch = null;
+          renderWaitingState();
+          return;
+        }
+      }
+    }
+
+    // 4. تحديث مؤشرات مسح الأزواج الستة في الواجهة
+    const ALL_6_PAIRS = ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'];
+    const activePairCode = (sig && sig.asset) ? sig.asset.toUpperCase().replace(/\s*OTC/i, '').trim() : '';
+    ALL_6_PAIRS.forEach(p => {
+      const chipId = 'chip-' + p.replace('/', '');
+      const el = document.getElementById(chipId);
+      if (el) {
+        if (activePairCode && (activePairCode === p || activePairCode.replace('/', '') === p.replace('/', ''))) {
+          el.style.background = '#065f46';
+          el.style.borderColor = '#10b981';
+          el.style.color = '#34d399';
+          el.style.boxShadow = '0 0 8px rgba(16,185,129,0.5)';
+        } else {
+          el.style.background = '#0f172a';
+          el.style.borderColor = '#334155';
+          el.style.color = '#94a3b8';
+          el.style.boxShadow = 'none';
+        }
+      }
+    });
+
+    // لا يتم استحداث أي إشارة محلية إطلاقاً - الروبوت يستقبل حصرياً الإشارات الرسمية المفلترة
     if (sig && sig.status === "PENDING") {
       activeSignalObj = sig;
       const isCall = sig.direction === "CALL";
