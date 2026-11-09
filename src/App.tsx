@@ -2878,6 +2878,7 @@ export default function App() {
       {/* Screen 3: صفحة التداول الآلي */}
       {zadtooTab === 'autotrade' && (
         <ZadtooAutoTradePage
+          isAdmin={isAdminAuthenticated}
           onOpenRobotAdmin={() => {
             setZadtooTab('admin');
             setShowLegacyAdminStudio(true);

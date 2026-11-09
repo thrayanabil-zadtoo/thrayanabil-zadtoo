@@ -1710,8 +1710,8 @@ export default function QuotexRobotAdminPage({
                         </button>
                       </div>
 
-                      {/* 3-Option Strategy Dropdown Selector (قائمة منسدلة حصرية) */}
-                      <div className="space-y-1 bg-[#09121f] p-1.5 rounded-lg border border-slate-800">
+                      {/* 3-Option Strategy Dropdown Selector (تعمل في الخلفية ومخفية عن الواجهة لتقليل المساحة) */}
+                      <div className="hidden space-y-1 bg-[#09121f] p-1.5 rounded-lg border border-slate-800">
                         <div className="flex items-center justify-between text-[9px]">
                           <span className="text-slate-300 font-bold flex items-center gap-1">
                             <span>🎯</span>

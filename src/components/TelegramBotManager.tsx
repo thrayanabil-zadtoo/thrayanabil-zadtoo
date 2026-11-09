@@ -29,21 +29,27 @@ import {
   Eye,
   ArrowRight,
   Flame,
-  FileText
+  FileText,
+  Lock,
+  Unlock,
+  Coins
 } from 'lucide-react';
+import { saveCloudTelegramBotState, loadCloudTelegramBotState } from '../firebase';
 
 export interface TelegramBotUser {
   id: string;
   telegramChatId: string;
   username?: string;
   name: string;
+  email?: string;
   country: string;
   language: 'ar' | 'en';
-  step: 'START' | 'AWAITING_NAME' | 'AWAITING_COUNTRY' | 'COMPLETED';
+  step: 'START' | 'AWAITING_NAME' | 'AWAITING_COUNTRY' | 'COMPLETED' | 'EDIT_NAME' | 'EDIT_EMAIL' | 'EDIT_COUNTRY';
   status: 'ACTIVE' | 'SUSPENDED' | 'BLOCKED';
   membershipType: 'NONE' | 'FREE_REFERRAL' | 'PAID_VIP';
   brokerId?: string;
   notes?: string;
+  countryLocked?: boolean;
   registeredAt: string;
   lastInteractionAt: string;
 }
@@ -95,6 +101,13 @@ export interface TelegramBotConfig {
       swiftCode: string;
       notes?: string;
     };
+  };
+  usdtPayment: {
+    network: string;
+    address: string;
+    qrImageUrl?: string;
+    notesAr?: string;
+    notesEn?: string;
   };
   robotGuide: {
     titleAr: string;
@@ -154,6 +167,13 @@ const DEFAULT_CONFIG: TelegramBotConfig = {
       notes: 'Wire Transfer / Swift Transfer in USD accepted worldwide'
     }
   },
+  usdtPayment: {
+    network: 'USDT (TRC20)',
+    address: 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo',
+    qrImageUrl: '/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg',
+    notesAr: 'تحويل فوري مباشر بالدولار الرقمي USDT عبر شبكة ترون (TRC20) متاح لجميع المشتركين والدول',
+    notesEn: 'Direct USDT crypto payment via TRON network (TRC20) accepted worldwide'
+  },
   robotGuide: {
     titleAr: 'روبوت ZAD FX للتداول الآلي الذكي على كيوتكس',
     titleEn: 'ZAD FX Quotex Automated Trading Robot',
@@ -187,6 +207,7 @@ export const TelegramBotManager: React.FC = () => {
   // New Member Form
   const [newMember, setNewMember] = useState<Partial<TelegramBotUser>>({
     name: '',
+    email: '',
     country: 'مصر 🇪🇬',
     language: 'ar',
     telegramChatId: '',
@@ -209,25 +230,75 @@ export const TelegramBotManager: React.FC = () => {
   const [simName, setSimName] = useState('كريم الأحمدي');
   const [simCountry, setSimCountry] = useState('مصر');
 
-  // Fetch initial data
+  // Fetch initial data (from Local API and Firebase Cloud)
   const fetchData = async () => {
     setIsLoading(true);
+    let gotUsers = false;
+    let gotConfig = false;
+
     try {
       const [resUsers, resConfig] = await Promise.all([
-        fetch('/api/telegram-bot/users'),
-        fetch('/api/telegram-bot/config')
+        fetch('/api/telegram-bot/users').catch(() => null),
+        fetch('/api/telegram-bot/config').catch(() => null)
       ]);
-      const dataUsers = await resUsers.json();
-      const dataConfig = await resConfig.json();
 
-      if (dataUsers?.users && Array.isArray(dataUsers.users)) {
-        setUsers(dataUsers.users);
+      if (resUsers && resUsers.ok) {
+        const dataUsers = await resUsers.json();
+        if (dataUsers?.users && Array.isArray(dataUsers.users)) {
+          setUsers(dataUsers.users);
+          gotUsers = true;
+        }
       }
-      if (dataConfig?.config) {
-        setConfig(dataConfig.config);
+      if (resConfig && resConfig.ok) {
+        const dataConfig = await resConfig.json();
+        if (dataConfig?.config) {
+          setConfig(prev => ({
+            ...prev,
+            ...dataConfig.config,
+            usdtPayment: {
+              ...DEFAULT_CONFIG.usdtPayment,
+              ...(dataConfig.config.usdtPayment || {})
+            }
+          }));
+          gotConfig = true;
+        }
       }
     } catch (e) {
-      console.error('Failed to load telegram bot data:', e);
+      console.warn('Local API check failed, checking cloud Firestore:', e);
+    }
+
+    // Fallback or Two-way cloud sync: If on fx.zadtoo.com or API returned empty/failed, load from Firebase
+    try {
+      const cloudState = await loadCloudTelegramBotState();
+      if (cloudState) {
+        if (!gotConfig && cloudState.config) {
+          setConfig(prev => ({
+            ...prev,
+            ...cloudState.config,
+            usdtPayment: {
+              ...DEFAULT_CONFIG.usdtPayment,
+              ...(cloudState.config.usdtPayment || {})
+            }
+          }));
+        }
+        if (!gotUsers && Array.isArray(cloudState.users)) {
+          setUsers(cloudState.users);
+        } else if (Array.isArray(cloudState.users) && cloudState.users.length > 0) {
+          // Merge any users from cloud that might be newly registered
+          setUsers(prev => {
+            const existingIds = new Set(prev.map(u => u.telegramChatId || u.id));
+            const fresh = [...prev];
+            for (const u of cloudState.users || []) {
+              if (!existingIds.has(u.telegramChatId || u.id)) {
+                fresh.push(u);
+              }
+            }
+            return fresh;
+          });
+        }
+      }
+    } catch (errCloud) {
+      console.warn('Firebase cloud state load notice:', errCloud);
     } finally {
       setIsLoading(false);
     }
@@ -242,10 +313,13 @@ export const TelegramBotManager: React.FC = () => {
     setTimeout(() => setStatusMessage(null), 4000);
   };
 
-  // Save Settings
+  // Save Settings (Saves to Server API AND Firebase Cloud Firestore)
   const handleSaveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    let apiSuccess = false;
+    let cloudSuccess = false;
+
     try {
       const res = await fetch('/api/telegram-bot/config', {
         method: 'POST',
@@ -253,48 +327,51 @@ export const TelegramBotManager: React.FC = () => {
         body: JSON.stringify(config)
       });
       const data = await res.json();
-      if (data.ok) {
-        showToast('✅ تم حفظ كافة إعدادات بوت التليجرام والمدفوعات بنجاح!');
-      } else {
-        showToast(`❌ فشل الحفظ: ${data.error || 'خطأ غير معروف'}`, 'error');
-      }
+      if (data?.ok) apiSuccess = true;
     } catch (_err) {
-      showToast('❌ تعذر الاتصال بالسيرفر لحفظ الإعدادات', 'error');
-    } finally {
-      setIsLoading(false);
+      // API call might fail if fx.zadtoo.com runs as client-only
+    }
+
+    try {
+      cloudSuccess = await saveCloudTelegramBotState(config, users);
+    } catch (_errCloud) {}
+
+    setIsLoading(false);
+    if (apiSuccess || cloudSuccess) {
+      showToast('✅ تم حفظ كافة إعدادات بوت التليجرام والمدفوعات بنجاح ومزامنتها لحظياً!');
+    } else {
+      showToast('❌ تعذر حفظ الإعدادات، يرجى التأكد من اتصال الإنترنت', 'error');
     }
   };
 
   // Toggle user status
   const handleUpdateUserStatus = async (id: string, status: 'ACTIVE' | 'SUSPENDED' | 'BLOCKED') => {
+    const updatedUsers = users.map(u => (u.id === id ? { ...u, status } : u));
+    setUsers(updatedUsers);
     try {
-      const res = await fetch(`/api/telegram-bot/users/${id}/status`, {
+      await fetch(`/api/telegram-bot/users/${id}/status`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status })
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setUsers(prev => prev.map(u => (u.id === id ? { ...u, status } : u)));
-        showToast(`✅ تم تحديث حالة العضو إلى: ${status === 'ACTIVE' ? 'نشط' : status === 'SUSPENDED' ? 'معلق' : 'موقوف'}`);
-      }
+      }).catch(() => null);
+      await saveCloudTelegramBotState(config, updatedUsers);
+      showToast(`✅ تم تحديث حالة العضو إلى: ${status === 'ACTIVE' ? 'نشط' : status === 'SUSPENDED' ? 'معلق' : 'موقوف'}`);
     } catch (_err) {
-      showToast('❌ فشل تغيير حالة العضو', 'error');
+      showToast('❌ حدث خطأ أثناء تحديث حالة العضو', 'error');
     }
   };
 
   // Delete User
   const handleDeleteUser = async (id: string, name: string) => {
     if (!window.confirm(`هل أنت متأكد من حذف العضو "${name}" نهائياً من سجل البوت؟`)) return;
+    const updatedUsers = users.filter(u => u.id !== id);
+    setUsers(updatedUsers);
     try {
-      const res = await fetch(`/api/telegram-bot/users/${id}`, {
+      await fetch(`/api/telegram-bot/users/${id}`, {
         method: 'DELETE'
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setUsers(prev => prev.filter(u => u.id !== id));
-        showToast(`🗑️ تم حذف العضو "${name}" بنجاح`);
-      }
+      }).catch(() => null);
+      await saveCloudTelegramBotState(config, updatedUsers);
+      showToast(`🗑️ تم حذف العضو "${name}" بنجاح ومزامنة السحابة`);
     } catch (_err) {
       showToast('❌ تعذر حذف العضو', 'error');
     }
@@ -304,18 +381,18 @@ export const TelegramBotManager: React.FC = () => {
   const handleSaveEditUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser) return;
+    const updatedUsers = users.map(u => (u.id === editingUser.id ? editingUser : u));
+    setUsers(updatedUsers);
+    setEditingUser(null);
+
     try {
-      const res = await fetch(`/api/telegram-bot/users/${editingUser.id}`, {
+      await fetch(`/api/telegram-bot/users/${editingUser.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editingUser)
-      });
-      const data = await res.json();
-      if (data.ok) {
-        setUsers(prev => prev.map(u => (u.id === editingUser.id ? editingUser : u)));
-        setEditingUser(null);
-        showToast('✅ تم حفظ تعديلات ملف العضو بنجاح');
-      }
+      }).catch(() => null);
+      await saveCloudTelegramBotState(config, updatedUsers);
+      showToast('✅ تم حفظ وتثبيت تعديلات ملف العضو بنجاح ومزامنتها مع البوت');
     } catch (_err) {
       showToast('❌ تعذر حفظ تعديلات العضو', 'error');
     }
@@ -340,6 +417,7 @@ export const TelegramBotManager: React.FC = () => {
         setIsAddModalOpen(false);
         setNewMember({
           name: '',
+          email: '',
           country: 'مصر 🇪🇬',
           language: 'ar',
           telegramChatId: '',
@@ -718,6 +796,9 @@ export const TelegramBotManager: React.FC = () => {
                                 </div>
                                 <div>
                                   <div className="font-extrabold text-white text-sm">{user.name}</div>
+                                  {user.email && (
+                                    <div className="text-[11px] text-emerald-400 font-mono mt-0.5">{user.email}</div>
+                                  )}
                                   <div className="flex items-center gap-2 text-[11px] text-slate-400 mt-0.5">
                                     <span>ID: {user.telegramChatId}</span>
                                     {user.username && (
@@ -737,7 +818,7 @@ export const TelegramBotManager: React.FC = () => {
 
                             {/* Country & Language */}
                             <td className="py-3.5 px-4">
-                              <div className="flex items-center gap-1.5 font-bold text-slate-200">
+                              <div className="flex items-center gap-1.5 font-bold text-slate-200 flex-wrap">
                                 <span>{user.country || 'غير محدد'}</span>
                                 {isEg && (
                                   <span className="text-[10px] px-1.5 py-0.2 bg-amber-500/20 text-amber-300 rounded font-black border border-amber-500/30">
@@ -747,6 +828,12 @@ export const TelegramBotManager: React.FC = () => {
                                 {isPal && (
                                   <span className="text-[10px] px-1.5 py-0.2 bg-emerald-500/20 text-emerald-300 rounded font-black border border-emerald-500/30">
                                     فلسطين 🇵🇸
+                                  </span>
+                                )}
+                                {user.countryLocked && (
+                                  <span className="text-[9px] px-1.5 py-0.5 bg-indigo-500/20 text-indigo-300 rounded font-black border border-indigo-500/30 flex items-center gap-0.5" title="الدولة مثبتة ومقفلة">
+                                    <Lock className="w-2.5 h-2.5 text-indigo-400" />
+                                    <span>مثبتة</span>
                                   </span>
                                 )}
                               </div>
@@ -1494,6 +1581,115 @@ export const TelegramBotManager: React.FC = () => {
               </div>
             </div>
 
+            {/* USDT (TRC20) Payment Section (Available for ALL Countries) */}
+            <div className="bg-slate-800/80 border border-emerald-500/30 rounded-2xl p-6 shadow-md relative overflow-hidden">
+              <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-700">
+                <Coins className="w-5 h-5 text-emerald-400" />
+                <div>
+                  <h3 className="text-base font-extrabold text-emerald-300">نظام الدفع بالعملات الرقمية USDT (TRC20) - متاح لجميع المشاركين والدول</h3>
+                  <p className="text-xs text-slate-400">يظهر كخيار دفع فوري إضافي لجميع الأعضاء (مصر، فلسطين، وكافة دول العالم)</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-2 space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-300 mb-1.5">الشبكة المعتمدة (Network)</label>
+                      <input
+                        type="text"
+                        value={config.usdtPayment?.network || 'USDT (TRC20)'}
+                        onChange={e => setConfig({
+                          ...config,
+                          usdtPayment: { ...(config.usdtPayment || DEFAULT_CONFIG.usdtPayment), network: e.target.value }
+                        })}
+                        placeholder="USDT (TRC20)"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-bold"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-300 mb-1.5">عنوان المحفظة (Wallet Address - TRC20)</label>
+                      <div className="relative">
+                        <input
+                          type="text"
+                          value={config.usdtPayment?.address || 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo'}
+                          onChange={e => setConfig({
+                            ...config,
+                            usdtPayment: { ...(config.usdtPayment || DEFAULT_CONFIG.usdtPayment), address: e.target.value }
+                          })}
+                          placeholder="TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo"
+                          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-emerald-400 focus:outline-none focus:border-emerald-500 font-mono font-bold"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 mb-1.5">رابط صورة باركود الدفع (QR Code Image)</label>
+                    <input
+                      type="text"
+                      value={config.usdtPayment?.qrImageUrl || '/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg'}
+                      onChange={e => setConfig({
+                        ...config,
+                        usdtPayment: { ...(config.usdtPayment || DEFAULT_CONFIG.usdtPayment), qrImageUrl: e.target.value }
+                      })}
+                      placeholder="/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg"
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-slate-300 focus:outline-none focus:border-indigo-500 font-mono"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-300 mb-1.5">ملاحظات التحويل (بالعربية)</label>
+                      <input
+                        type="text"
+                        value={config.usdtPayment?.notesAr || ''}
+                        onChange={e => setConfig({
+                          ...config,
+                          usdtPayment: { ...(config.usdtPayment || DEFAULT_CONFIG.usdtPayment), notesAr: e.target.value }
+                        })}
+                        placeholder="تحويل فوري مباشر بالدولار الرقمي USDT عبر شبكة ترون (TRC20)"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-white"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-300 mb-1.5">ملاحظات التحويل (بالإنجليزية)</label>
+                      <input
+                        type="text"
+                        value={config.usdtPayment?.notesEn || ''}
+                        onChange={e => setConfig({
+                          ...config,
+                          usdtPayment: { ...(config.usdtPayment || DEFAULT_CONFIG.usdtPayment), notesEn: e.target.value }
+                        })}
+                        placeholder="Direct USDT payment via TRON network (TRC20) accepted worldwide"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-white"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* QR Code Preview Card */}
+                <div className="bg-slate-900/90 border border-slate-700 rounded-xl p-4 flex flex-col items-center justify-center text-center space-y-2.5">
+                  <span className="text-xs font-bold text-slate-300">معاينة باركود المحفظة (QR Code):</span>
+                  <div className="w-36 h-36 bg-white rounded-xl p-1.5 shadow-lg border-2 border-emerald-500/40 flex items-center justify-center overflow-hidden">
+                    <img
+                      src={config.usdtPayment?.qrImageUrl || '/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg'}
+                      alt="USDT QR Code"
+                      className="w-full h-full object-contain"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = '/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg';
+                      }}
+                    />
+                  </div>
+                  <span className="text-[11px] font-mono font-bold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                    USDT TRC20 GasFree
+                  </span>
+                </div>
+              </div>
+            </div>
+
             {/* Robot Guide & Media Section */}
             <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-6 shadow-md">
               <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-700">
@@ -2189,6 +2385,17 @@ export const TelegramBotManager: React.FC = () => {
                 />
               </div>
 
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">البريد الإلكتروني (Email)</label>
+                <input
+                  type="email"
+                  value={editingUser.email || ''}
+                  onChange={e => setEditingUser({ ...editingUser, email: e.target.value })}
+                  placeholder="name@example.com"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"
+                />
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-bold text-slate-300 mb-1">الدولة</label>
@@ -2262,6 +2469,28 @@ export const TelegramBotManager: React.FC = () => {
                 />
               </div>
 
+              <div className="flex items-center justify-between p-3.5 bg-slate-900 border border-slate-700 rounded-xl">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    {editingUser.countryLocked ? (
+                      <Lock className="w-4 h-4 text-amber-400" />
+                    ) : (
+                      <Unlock className="w-4 h-4 text-slate-400" />
+                    )}
+                    <span className="text-xs font-bold text-white">تثبيت وقفل الدولة (Country Lock)</span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    عند التفعيل، يُمنع العضو من تغيير دولته في البوت وتعديلها محصور بالمشرف فقط
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={Boolean(editingUser.countryLocked)}
+                  onChange={e => setEditingUser({ ...editingUser, countryLocked: e.target.checked })}
+                  className="w-5 h-5 accent-indigo-600 rounded cursor-pointer"
+                />
+              </div>
+
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
@@ -2306,6 +2535,17 @@ export const TelegramBotManager: React.FC = () => {
                   placeholder="مثال: محمد السيد"
                   value={newMember.name}
                   onChange={e => setNewMember({ ...newMember, name: e.target.value })}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">البريد الإلكتروني (Email)</label>
+                <input
+                  type="email"
+                  placeholder="name@example.com"
+                  value={newMember.email || ''}
+                  onChange={e => setNewMember({ ...newMember, email: e.target.value })}
                   className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white"
                 />
               </div>

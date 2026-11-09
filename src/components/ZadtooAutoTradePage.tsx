@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 
 interface ZadtooAutoTradePageProps {
+  isAdmin?: boolean;
   onOpenRobotAdmin?: () => void;
   userscriptCode?: string;
   onDownloadScript?: () => void;
@@ -40,6 +41,7 @@ interface SimulatedTrade {
 }
 
 export const ZadtooAutoTradePage: React.FC<ZadtooAutoTradePageProps> = ({
+  isAdmin = false,
   onOpenRobotAdmin,
   userscriptCode = '',
   onDownloadScript,
@@ -220,25 +222,39 @@ export const ZadtooAutoTradePage: React.FC<ZadtooAutoTradePageProps> = ({
               </div>
 
               <div className="pt-2 flex flex-wrap gap-3 justify-center lg:justify-start">
-                <a
-                  href={`${appOrigin}/api/quotex-robot/zad-broker-robot.user.js`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-6 py-2.5 bg-sky-600 hover:bg-sky-500 text-white font-extrabold text-sm rounded-xl transition-all cursor-pointer shadow-md flex items-center gap-2"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>تثبيت الروبوت في المتصفح بنقرة واحدة</span>
-                </a>
+                {isAdmin ? (
+                  <>
+                    <a
+                      href={`${appOrigin}/api/quotex-robot/zad-broker-robot.user.js`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="px-6 py-2.5 bg-sky-600 hover:bg-sky-500 text-white font-extrabold text-sm rounded-xl transition-all cursor-pointer shadow-md flex items-center gap-2"
+                    >
+                      <Download className="w-4 h-4" />
+                      <span>تثبيت الروبوت في المتصفح بنقرة واحدة (مشرف)</span>
+                    </a>
 
-                {onOpenRobotAdmin && (
-                  <button
-                    type="button"
-                    onClick={onOpenRobotAdmin}
-                    className="px-4 py-2.5 bg-white hover:bg-slate-50 text-slate-700 font-bold text-sm rounded-xl border border-slate-300 transition-all cursor-pointer flex items-center gap-1.5"
+                    {onOpenRobotAdmin && (
+                      <button
+                        type="button"
+                        onClick={onOpenRobotAdmin}
+                        className="px-4 py-2.5 bg-white hover:bg-slate-50 text-slate-700 font-bold text-sm rounded-xl border border-slate-300 transition-all cursor-pointer flex items-center gap-1.5"
+                      >
+                        <Settings className="w-4 h-4 text-slate-500" />
+                        <span>إعدادات الروبوت المتقدمة</span>
+                      </button>
+                    )}
+                  </>
+                ) : (
+                  <a
+                    href="https://t.me/Zadfx_bot"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-6 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-extrabold text-sm rounded-xl transition-all cursor-pointer shadow-md flex items-center gap-2"
                   >
-                    <Settings className="w-4 h-4 text-slate-500" />
-                    <span>إعدادات الروبوت المتقدمة</span>
-                  </button>
+                    <Sparkles className="w-4 h-4" />
+                    <span>طلب تفعيل واستخدام الروبوت عبر بوت التليجرام 🚀</span>
+                  </a>
                 )}
               </div>
             </div>
@@ -415,68 +431,114 @@ export const ZadtooAutoTradePage: React.FC<ZadtooAutoTradePageProps> = ({
           </div>
         </div>
 
-        {/* Quick Script Installer Box for Users */}
-        <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
-            <div>
-              <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
-                <Cpu className="w-5 h-5 text-emerald-600" />
-                <span>روبوت ZAD FX العائم (Universal Broker Pro Bot v3.6)</span>
-              </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                يعمل مستقلاً 100% كنافذة عائمة على المنصة مع عد تنازلي بالثانية وتنفيذ آلي فوري.
-              </p>
+        {/* Quick Script Installer Box - ONLY visible for Admin */}
+        {isAdmin ? (
+          <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-xs space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                  <Cpu className="w-5 h-5 text-emerald-600" />
+                  <span>لوحة المشرف: روبوت ZAD FX العائم (Universal Broker Pro Bot v3.6)</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  أدوات المشرف الخاصة بتثبيت وتحديث سكريبت الروبوت العائم.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <a
+                  href={`${appOrigin}/api/quotex-robot/zad-broker-robot.user.js`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-3.5 py-1.5 bg-sky-500 hover:bg-sky-400 text-white font-extrabold text-xs rounded-lg flex items-center gap-1 transition-all"
+                >
+                  <span>تثبيت مباشر بنقرة واحدة ↗</span>
+                </a>
+
+                {onDownloadScript && (
+                  <button
+                    type="button"
+                    onClick={onDownloadScript}
+                    className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-lg flex items-center gap-1 transition-all cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>تحميل ملف .user.js</span>
+                  </button>
+                )}
+
+                {userscriptCode && (
+                  <button
+                    type="button"
+                    onClick={handleCopyCode}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg border border-slate-300 transition-all cursor-pointer flex items-center gap-1"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>{copied ? '✓ تم النسخ' : 'نسخ الكود'}</span>
+                  </button>
+                )}
+              </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-slate-600">
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+                <strong className="text-slate-900 block mb-1">1. التثبيت السريع:</strong>
+                قم بتثبيت إضافة Tampermonkey في متصفحك (كروم/إيدج/أوبرا).
+              </div>
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+                <strong className="text-slate-900 block mb-1">2. إضافة السكريبت:</strong>
+                اضغط على زر التثبيت المباشر أو انسخ الكود والصقه في إضافة Tampermonkey.
+              </div>
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
+                <strong className="text-slate-900 block mb-1">3. التداول المباشر:</strong>
+                افتح منصة كيوتكس وستظهر لك النافذة العائمة الذكية جاهزة بالثانية!
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* Secure Public Card (Zero code, Zero downloads, Zero Tampermonkey) */
+          <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 rounded-2xl p-6 border border-emerald-500/30 shadow-lg text-white space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-700/80 pb-4">
+              <div>
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-400 text-xs font-black border border-emerald-500/30 mb-2">
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>روبوت تداول خاص بمشتركي قناة VIP المعتمدين</span>
+                </div>
+                <h3 className="text-base sm:text-lg font-black text-white flex items-center gap-2">
+                  <Cpu className="w-5 h-5 text-emerald-400" />
+                  <span>روبوت ZAD FX الذكي للتنفيذ التلقائي</span>
+                </h3>
+                <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                  يعمل الروبوت بالتزامن المباشر مع استراتيجية MPB وبث إشارات VIP لتنفيذ الصفقات بالثانية على المنصة. لتفعيل اشتراكك واستلام كود التشغيل الخاص بك، يرجى التسجيل عبر بوت التليجرام.
+                </p>
+              </div>
+
               <a
-                href={`${appOrigin}/api/quotex-robot/zad-broker-robot.user.js`}
+                href="https://t.me/Zadfx_bot"
                 target="_blank"
                 rel="noreferrer"
-                className="px-3.5 py-1.5 bg-sky-500 hover:bg-sky-400 text-white font-extrabold text-xs rounded-lg flex items-center gap-1 transition-all"
+                className="px-6 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-sm rounded-xl flex items-center justify-center gap-2 transition-all shadow-lg shadow-emerald-500/20 shrink-0"
               >
-                <span>تثبيت مباشر بنقرة واحدة ↗</span>
+                <span>طلب تفعيل الروبوت بالبوت</span>
+                <span>🚀</span>
               </a>
+            </div>
 
-              {onDownloadScript && (
-                <button
-                  type="button"
-                  onClick={onDownloadScript}
-                  className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs rounded-lg flex items-center gap-1 transition-all cursor-pointer"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>تحميل ملف .user.js</span>
-                </button>
-              )}
-
-              {userscriptCode && (
-                <button
-                  type="button"
-                  onClick={handleCopyCode}
-                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs rounded-lg border border-slate-300 transition-all cursor-pointer flex items-center gap-1"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>{copied ? '✓ تم النسخ' : 'نسخ الكود'}</span>
-                </button>
-              )}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-slate-300">
+              <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700/60">
+                <strong className="text-emerald-400 block mb-1">🔒 تفعيل مشفر وخاص:</strong>
+                يتم تخصيص مفتاح التفعيل وربطه بحساب العضو حصراً من قبل المشرف لضمان الأمان.
+              </div>
+              <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700/60">
+                <strong className="text-emerald-400 block mb-1">⚡ تنفيذ دقيق بالثانية:</strong>
+                الروبوت يستقبل صفقات استراتيجية MPB قبل بداية الشمعة بـ 5 ثوانٍ لتنفيذ فوري ومثالي.
+              </div>
+              <div className="p-3.5 bg-slate-800/80 rounded-xl border border-slate-700/60">
+                <strong className="text-emerald-400 block mb-1">💎 دعم فني وإشراف مباشر:</strong>
+                مساعدة ومتابعة مستمرة في تجهيز الإعدادات وتثبيت التشغيل خطوة بخطوة.
+              </div>
             </div>
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs text-slate-600">
-            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
-              <strong className="text-slate-900 block mb-1">1. التثبيت السريع:</strong>
-              قم بتثبيت إضافة Tampermonkey في متصفحك (كروم/إيدج/أوبرا).
-            </div>
-            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
-              <strong className="text-slate-900 block mb-1">2. إضافة السكريبت:</strong>
-              اضغط على زر التثبيت المباشر أو انسخ الكود والصقه في إضافة Tampermonkey.
-            </div>
-            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80">
-              <strong className="text-slate-900 block mb-1">3. التداول المباشر:</strong>
-              افتح منصة كيوتكس وستظهر لك النافذة العائمة الذكية جاهزة بالثانية!
-            </div>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );

@@ -116,22 +116,24 @@ export const ZadtooNavbar: React.FC<ZadtooNavbarProps> = ({
             العضويات
           </button>
 
-          {/* Telegram Bot Tab */}
-          <button
-            type="button"
-            onClick={() => setActiveTab('telegram_bot')}
-            className={`px-3.5 py-2 text-sm font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 ${
-              activeTab === 'telegram_bot'
-                ? 'text-indigo-700 bg-indigo-50 font-extrabold shadow-xs'
-                : 'text-slate-600 hover:text-indigo-600 hover:bg-indigo-50/60'
-            }`}
-          >
-            <Send className="w-3.5 h-3.5 text-indigo-500" />
-            <span>بوت التليجرام</span>
-            <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-indigo-100 text-indigo-700 font-black border border-indigo-200">
-              جديد 🤖
-            </span>
-          </button>
+          {/* Telegram Bot Tab (Restricted to Admin only) */}
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('telegram_bot')}
+              className={`px-3.5 py-2 text-sm font-bold rounded-lg transition-colors cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'telegram_bot'
+                  ? 'text-indigo-700 bg-indigo-50 font-extrabold shadow-xs'
+                  : 'text-slate-600 hover:text-indigo-600 hover:bg-indigo-50/60'
+              }`}
+            >
+              <Send className="w-3.5 h-3.5 text-indigo-500" />
+              <span>بوت التليجرام</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-indigo-100 text-indigo-700 font-black border border-indigo-200">
+                مشرف ⚙️
+              </span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -234,14 +236,16 @@ export const ZadtooNavbar: React.FC<ZadtooNavbarProps> = ({
         >
           العضويات
         </button>
-        <button
-          type="button"
-          onClick={() => setActiveTab('telegram_bot')}
-          className={`px-2.5 py-1 rounded flex items-center gap-1 ${activeTab === 'telegram_bot' ? 'text-indigo-700 bg-indigo-100 font-extrabold' : 'text-indigo-600'}`}
-        >
-          <Send className="w-3 h-3" />
-          <span>بوت التليجرام</span>
-        </button>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => setActiveTab('telegram_bot')}
+            className={`px-2.5 py-1 rounded flex items-center gap-1 ${activeTab === 'telegram_bot' ? 'text-indigo-700 bg-indigo-100 font-extrabold' : 'text-indigo-600'}`}
+          >
+            <Send className="w-3 h-3" />
+            <span>بوت التليجرام</span>
+          </button>
+        )}
         {isAdmin && (
           <button
             type="button"

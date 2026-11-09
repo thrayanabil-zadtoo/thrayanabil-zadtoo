@@ -277,3 +277,44 @@ export async function loadCloudSystemState<T = any>(): Promise<T | null> {
     return null;
   }
 }
+
+export const TELEGRAM_BOT_STATE_DOC_ID = 'telegram_bot_state';
+
+export async function saveCloudTelegramBotState(config: any, users: any[]): Promise<boolean> {
+  const fullPath = `${SYSTEM_STATE_DOC_PATH}/${TELEGRAM_BOT_STATE_DOC_ID}`;
+  try {
+    const nowIso = new Date().toISOString();
+    const payload = JSON.stringify({
+      config,
+      users: Array.isArray(users) ? users.slice(0, 500) : []
+    });
+    if (payload.length > 495000) return false;
+    await setDoc(doc(db, SYSTEM_STATE_DOC_PATH, TELEGRAM_BOT_STATE_DOC_ID), {
+      updatedAt: nowIso,
+      payload
+    });
+    return true;
+  } catch (error) {
+    console.warn('[Firebase] Could not save telegram bot state to cloud:', error);
+    return false;
+  }
+}
+
+export async function loadCloudTelegramBotState(): Promise<{ config?: any; users?: any[] } | null> {
+  const fullPath = `${SYSTEM_STATE_DOC_PATH}/${TELEGRAM_BOT_STATE_DOC_ID}`;
+  try {
+    const snap = await getDoc(doc(db, SYSTEM_STATE_DOC_PATH, TELEGRAM_BOT_STATE_DOC_ID));
+    if (snap.exists()) {
+      const d = snap.data();
+      if (d?.payload && typeof d.payload === 'string') {
+        const parsed = JSON.parse(d.payload);
+        return parsed;
+      }
+    }
+    return null;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, fullPath);
+    return null;
+  }
+}
+

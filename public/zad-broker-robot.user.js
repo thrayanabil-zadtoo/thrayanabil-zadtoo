@@ -340,8 +340,8 @@
       <button id="zad-mode-manual" style="padding:3.5px 2px;font-size:9.5px;font-weight:bold;border-radius:6px;border:1px solid ${ROBOT_MODE === 'MANUAL' ? '#f59e0b' : '#334155'};background:${ROBOT_MODE === 'MANUAL' ? '#f59e0b' : '#1e293b'};color:${ROBOT_MODE === 'MANUAL' ? '#020617' : '#cbd5e1'};cursor:pointer;">🖐️ تداول يدوي</button>
     </div>
 
-    <!-- قائمة منسدلة حصرية لاختيار استراتيجية المؤشرات (خياران حصريان) -->
-    <div style="background:#09121f;border:1px solid #1e3a8a;border-radius:6px;padding:3.5px 4px;margin-bottom:4px;">
+    <!-- قائمة منسدلة حصرية لاختيار استراتيجية المؤشرات (تعمل في الخلفية ومخفية عن الواجهة لتقليل المساحة) -->
+    <div style="display:none;" id="zad-strategy-wrapper">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;font-size:8.5px;">
         <span style="color:#93c5fd;font-weight:bold;display:flex;align-items:center;gap:2px;"><span>🎯</span><span>استراتيجية المؤشرات:</span></span>
         <span id="zad-strategy-badge" style="color:#fde047;font-weight:bold;font-family:monospace;font-size:8px;background:#0f172a;padding:1px 4px;border-radius:3px;border:1px solid #334155;">${ROBOT_STRATEGY_MODE === 'PUBLIC_CLASSIC' ? '1 دقيقة ⏳' : '5 ثوانٍ ⚡'}</span>
@@ -352,8 +352,8 @@
       </select>
     </div>
 
-    <!-- شريط مسح الأزواج الستة في الوقت الحقيقي (6 Pairs Active Scanner) -->
-    <div style="background:#09101f;border:1px solid #1e293b;border-radius:6px;padding:3.5px 5px;margin-bottom:4px;" id="zad-six-pairs-panel">
+    <!-- شريط مسح الأزواج الستة في الوقت الحقيقي (يعمل في الخلفية ومخفي عن الواجهة لتقليل المساحة) -->
+    <div style="display:none;" id="zad-six-pairs-panel">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2.5px;font-size:8px;">
         <span style="color:#38bdf8;font-weight:bold;display:flex;align-items:center;gap:3px;">
           <span style="display:inline-block;width:5px;height:5px;border-radius:50%;background:#10b981;box-shadow:0 0 5px #10b981;"></span>

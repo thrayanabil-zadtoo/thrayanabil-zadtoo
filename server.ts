@@ -5,7 +5,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { initializeApp } from 'firebase/app';
-import { initializeFirestore, doc, getDoc, setDoc, runTransaction, setLogLevel } from 'firebase/firestore';
+import { initializeFirestore, doc, getDoc, setDoc, runTransaction, setLogLevel, onSnapshot } from 'firebase/firestore';
 import {
   parseRawQuotexSignal,
   formatSignalMessage,
@@ -340,13 +340,15 @@ export interface TelegramBotUser {
   telegramChatId: string;
   username?: string;
   name: string;
+  email?: string;
   country: string;
   language: 'ar' | 'en';
-  step: 'START' | 'AWAITING_NAME' | 'AWAITING_COUNTRY' | 'COMPLETED';
+  step: 'START' | 'AWAITING_NAME' | 'AWAITING_COUNTRY' | 'COMPLETED' | 'EDIT_NAME' | 'EDIT_EMAIL' | 'EDIT_COUNTRY';
   status: 'ACTIVE' | 'SUSPENDED' | 'BLOCKED';
   membershipType: 'NONE' | 'FREE_REFERRAL' | 'PAID_VIP';
   brokerId?: string;
   notes?: string;
+  countryLocked?: boolean;
   registeredAt: string;
   lastInteractionAt: string;
 }
@@ -399,6 +401,13 @@ export interface TelegramBotConfig {
       notes?: string;
     };
   };
+  usdtPayment: {
+    network: string;
+    address: string;
+    qrImageUrl?: string;
+    notesAr?: string;
+    notesEn?: string;
+  };
   robotGuide: {
     titleAr: string;
     titleEn: string;
@@ -427,6 +436,7 @@ interface PersistedState {
   paymentMethods?: PaymentMethodConfig[];
   paymentTransactions?: PaymentTransactionRecord[];
   lastDispatchedEpochMinute?: number;
+  lastOnboardingBotUpdateId?: number;
 }
 
 const defaultRobotSettings: QuotexRobotSettings = {
@@ -702,20 +712,6 @@ function getWarmupStatus(): { isWarmup: boolean; minutesRemaining: number; reaso
     };
   }
 
-  // Engine start warmup (first 10 minutes after startup)
-  if (autoPilot.engineStartedAt) {
-    const elapsedMs = Date.now() - autoPilot.engineStartedAt;
-    const tenMinsMs = 10 * 60 * 1000;
-    if (elapsedMs < tenMinsMs) {
-      const remaining = Math.max(1, Math.ceil((tenMinsMs - elapsedMs) / 60000));
-      return {
-        isWarmup: true,
-        minutesRemaining: remaining,
-        reason: `فترة مسح السوق والإحماء بعد انطلاق البوت (${remaining} دقيقة متبقية)`
-      };
-    }
-  }
-
   return { isWarmup: false, minutesRemaining: 0, reason: '' };
 }
 
@@ -896,21 +892,14 @@ export function isVipBotActiveNow(): boolean {
   if (!isGlobalForexMarketOpen()) return false;
   const cairoHour = getCurrentEgyptHour();
 
-  // Session 1: 09:00 AM to 03:00 PM (15:00)
-  if (cairoHour >= 9 && cairoHour < 15) {
-    return true;
-  }
-  // Session 2: 06:00 PM to 09:00 PM (18:00 to 21:00)
-  if (cairoHour >= 18 && cairoHour < 21) {
-    return true;
-  }
-  return false;
+  // Continuous working hours from 09:00 AM to 09:00 PM (21:00) Cairo Time
+  return cairoHour >= 9 && cairoHour < 21;
 }
 
 /**
  * Computes exact Working and Lock Status for the Quotex Robot based on the selected dropdown strategy:
  * - Option 1 (PUBLIC_CLASSIC): Cancelled / disabled as per user instruction.
- * - Option 2 (VIP_WITH_MPB): MPB Strategy (4 indicators with 3/4 confluence, 5s instant entry, runs 09:00-15:00 & 18:00-21:00).
+ * - Option 2 (VIP_WITH_MPB): MPB Strategy (4 indicators with 3/4 confluence, 5s instant entry, runs 09:00 AM - 09:00 PM continuously).
  */
 export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
   isActive: boolean;
@@ -947,21 +936,14 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
       nextSessionText: 'اختر استراتيجية MPB من القائمة المنسدلة'
     };
   } else {
-    // 2. الاستراتيجية المعتمدة نهائياً: MPB بـ 4 مؤشرات (3 من 4)
-    // مواعيد العمل: الفترة الأولى (09:00 ص - 03:00 م) | البث المباشر (06:00 م - 09:00 م)
-    // استمرارية مطلقة دون أي توقف أو تجميد للخسارة
-    const isFirstSession = cairoHour >= 9 && cairoHour < 15;
-    const isSecondSession = cairoHour >= 18 && cairoHour < 21;
-    const isActive = isFirstSession || isSecondSession;
+    // Continuous 9-9 Working Hours (09:00 AM to 09:00 PM) without any stops or pauses for losses/volatility
+    const isActive = cairoHour >= 9 && cairoHour < 21;
 
     let lockReason = '';
     let nextSessionText = '';
     if (cairoHour < 9) {
-      lockReason = 'تنبيه: الروبوت في وضع الاستعداد — مواعيد عمل الفترة الأولى تبدأ الساعة 09:00 صباحاً بتوقيت مصر.';
-      nextSessionText = 'تبدأ الفترة الأولى اليوم في تمام الساعة 09:00 صباحاً بتوقيت مصر';
-    } else if (cairoHour >= 15 && cairoHour < 18) {
-      lockReason = 'تنبيه: الروبوت في فترة راحة ما بعد الظهر — تنطلق جلسة البث المباشر المسائية الساعة 06:00 مساءً بتوقيت مصر.';
-      nextSessionText = 'تبدأ جلسة البث المباشر المسائية في تمام الساعة 06:00 مساءً';
+      lockReason = 'تنبيه: الروبوت في وضع الاستعداد — تبدأ ساعات العمل الرسمية الساعة 09:00 صباحاً بتوقيت مصر.';
+      nextSessionText = 'تبدأ ساعات العمل اليوم في تمام الساعة 09:00 صباحاً بتوقيت مصر';
     } else if (cairoHour >= 21) {
       lockReason = 'تنبيه: الروبوت متوقف حالياً — انتهت ساعات التداول الرسمية لليوم (الختام الساعة 09:00 مساءً).';
       nextSessionText = 'تبدأ ساعات العمل غداً في تمام الساعة 09:00 صباحاً';
@@ -972,7 +954,7 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
       isLocked: !isActive,
       lockReason,
       strategyTitle: title,
-      workingHoursText: 'الفترة الأولى: 09:00 ص - 03:00 م | البث المباشر: 06:00 م - 09:00 م (تنفيذ فوري 5 ثوانٍ ⚡)',
+      workingHoursText: 'ساعات العمل الرسمية: متواصل من 09:00 ص حتى 09:00 م بتوقيت مصر (تنفيذ فوري 5 ثوانٍ ⚡)',
       nextSessionText
     };
   }
@@ -1117,6 +1099,23 @@ let forexNewsStore: ForexNewsItem[] = [...INITIAL_WEEKLY_FOREX_NEWS];
 let plansStore: SubscriptionPlan[] = [...INITIAL_SUBSCRIPTION_PLANS];
 let contactLinksStore: PlatformContactLinks = { ...INITIAL_CONTACT_LINKS };
 let paymentMethodsStore: PaymentMethodConfig[] = [...INITIAL_PAYMENT_METHODS];
+
+/**
+ * Checks if a high-impact news event is currently occurring (+/- 10 minutes).
+ * Allows the robot to pause during high-impact economic news releases as requested by user.
+ */
+export function isHighImpactNewsPauseActiveNow(): { isPaused: boolean; newsTitle?: string } {
+  const now = Date.now();
+  for (const item of forexNewsStore) {
+    if (item.impact === 'high' && item.targetEpochMs) {
+      const diffMs = now - item.targetEpochMs;
+      if (diffMs >= -10 * 60 * 1000 && diffMs <= 10 * 60 * 1000) {
+        return { isPaused: true, newsTitle: item.title || item.currency };
+      }
+    }
+  }
+  return { isPaused: false };
+}
 let paymentTransactionsStore: PaymentTransactionRecord[] = [
   {
     id: 'tx-1793080001',
@@ -1179,6 +1178,7 @@ let liveBroadcastSession: LiveBroadcastSessionConfig = {
 let lastTelegramUpdateId = 0;
 let lastOnboardingBotUpdateId = 0;
 let isPollingOnboardingBot = false;
+const processedOnboardingUpdateIds = new Set<number>();
 
 const defaultTelegramBotConfig: TelegramBotConfig = {
   isEnabled: true,
@@ -1227,6 +1227,13 @@ const defaultTelegramBotConfig: TelegramBotConfig = {
       swiftCode: 'NBEGEGCX',
       notes: 'التحويل المصرفي الدولي بالدولار الأمريكي (IBAN USD)'
     }
+  },
+  usdtPayment: {
+    network: 'USDT (TRC20)',
+    address: 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo',
+    qrImageUrl: '/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg',
+    notesAr: 'تحويل فوري مباشر بالدولار الرقمي USDT عبر شبكة ترون (TRC20) متاح لجميع المشتركين والدول',
+    notesEn: 'Direct USDT crypto payment via TRON network (TRC20) accepted worldwide'
   },
   robotGuide: {
     titleAr: 'روبوت ZAD FX للتداول الآلي الذكي على كيوتكس',
@@ -1302,7 +1309,15 @@ function applyParsedState(parsed: Partial<PersistedState>) {
     };
   }
   if (parsed.telegramBotUsers && Array.isArray(parsed.telegramBotUsers) && parsed.telegramBotUsers.length > 0) {
-    telegramBotUsersStore = parsed.telegramBotUsers;
+    const existingChatIds = new Set(telegramBotUsersStore.map(u => u.telegramChatId));
+    for (const u of parsed.telegramBotUsers) {
+      if (!existingChatIds.has(u.telegramChatId)) {
+        telegramBotUsersStore.push(u);
+      }
+    }
+  }
+  if (typeof parsed.lastOnboardingBotUpdateId === 'number' && parsed.lastOnboardingBotUpdateId > lastOnboardingBotUpdateId) {
+    lastOnboardingBotUpdateId = parsed.lastOnboardingBotUpdateId;
   }
   if (parsed.lastDispatchedEpochMinute && parsed.lastDispatchedEpochMinute > lastDispatchedEpochMinute) {
     lastDispatchedEpochMinute = parsed.lastDispatchedEpochMinute;
@@ -1533,6 +1548,46 @@ function applyParsedState(parsed: Partial<PersistedState>) {
   }
 }
 
+let isTelegramBotFirestoreListenerActive = false;
+function initTelegramBotFirestoreSync() {
+  if (!serverFirestoreDb || isTelegramBotFirestoreListenerActive) return;
+  try {
+    const botDocRef = doc(serverFirestoreDb, 'system_state', 'telegram_bot_state');
+    onSnapshot(botDocRef, (snap) => {
+      if (!snap.exists()) return;
+      const data = snap.data();
+      if (!data?.payload) return;
+      try {
+        const parsed = JSON.parse(data.payload);
+        if (parsed?.config) {
+          telegramBotConfigStore = {
+            ...defaultTelegramBotConfig,
+            ...telegramBotConfigStore,
+            ...parsed.config,
+            usdtPayment: {
+              ...defaultTelegramBotConfig.usdtPayment,
+              ...(parsed.config.usdtPayment || {})
+            }
+          };
+        }
+        if (Array.isArray(parsed?.users) && parsed.users.length > 0) {
+          for (const u of parsed.users) {
+            const idx = telegramBotUsersStore.findIndex(ex => ex.telegramChatId === u.telegramChatId || ex.id === u.id);
+            if (idx >= 0) {
+              telegramBotUsersStore[idx] = { ...telegramBotUsersStore[idx], ...u };
+            } else {
+              telegramBotUsersStore.push(u);
+            }
+          }
+        }
+      } catch (_err) {}
+    }, (err) => {
+      console.warn('Telegram bot Firestore snapshot error:', err);
+    });
+    isTelegramBotFirestoreListenerActive = true;
+  } catch (_e) {}
+}
+
 async function loadStateFromCloudAndDisk() {
   let diskState: Partial<PersistedState> | null = null;
   // 1. Load local disk first for instant boot
@@ -1578,6 +1633,43 @@ async function loadStateFromCloudAndDisk() {
           }
         }
       } catch (_e) {}
+
+      // Load dedicated telegram_bot_state document from Firestore (for fx.zadtoo.com two-way sync)
+      try {
+        const botDocRef = doc(serverFirestoreDb, 'system_state', 'telegram_bot_state');
+        const botSnap = await getDoc(botDocRef);
+        if (botSnap.exists()) {
+          const bData = botSnap.data();
+          if (bData?.payload) {
+            const parsedBot = JSON.parse(bData.payload);
+            if (parsedBot?.config) {
+              telegramBotConfigStore = {
+                ...defaultTelegramBotConfig,
+                ...telegramBotConfigStore,
+                ...parsedBot.config,
+                usdtPayment: {
+                  ...defaultTelegramBotConfig.usdtPayment,
+                  ...(parsedBot.config.usdtPayment || {})
+                }
+              };
+            }
+            if (Array.isArray(parsedBot?.users) && parsedBot.users.length > 0) {
+              const existingChatIds = new Set(telegramBotUsersStore.map(u => u.telegramChatId));
+              for (const u of parsedBot.users) {
+                const idx = telegramBotUsersStore.findIndex(ex => ex.telegramChatId === u.telegramChatId);
+                if (idx >= 0) {
+                  telegramBotUsersStore[idx] = { ...telegramBotUsersStore[idx], ...u };
+                } else {
+                  telegramBotUsersStore.push(u);
+                }
+              }
+            }
+          }
+        }
+      } catch (_e) {}
+
+      // Start live snapshot listener so updates from fx.zadtoo.com reflect in server memory immediately
+      initTelegramBotFirestoreSync();
 
       const docRef = doc(serverFirestoreDb, 'system_state', 'zad_main_state_v1');
       const snap = await getDoc(docRef);
@@ -1663,9 +1755,9 @@ function getLiveRobotActiveSignal(overrideMode?: RobotStrategyEngineMode): Signa
   // If signal is PENDING:
   if (candidate.status === 'PENDING') {
     if (mode === 'VIP_WITH_MPB') {
-      // In MPB 5-second mode: Deliver the signal ONLY within 15s of candle entry (5 to 7s confirmation before :00)
-      // or while the 60s candle trade is actively in progress (diffUntilEntry between 0 and -65s)
-      if (diffUntilEntry >= -65 && diffUntilEntry <= 15 && sigAgeSec <= 90) {
+      // In MPB mode: Deliver the signal as soon as dispatched (within 75s of candle entry)
+      // and while the 60s candle trade is actively in progress (diffUntilEntry between 0 and -65s)
+      if (diffUntilEntry >= -65 && diffUntilEntry <= 75 && sigAgeSec <= 120) {
         return candidate;
       }
       return null;
@@ -1713,7 +1805,8 @@ async function saveState(): Promise<boolean> {
       contactLinks: contactLinksStore,
       paymentMethods: paymentMethodsStore,
       paymentTransactions: paymentTransactionsStore.slice(0, 150),
-      lastDispatchedEpochMinute
+      lastDispatchedEpochMinute,
+      lastOnboardingBotUpdateId
     };
     const serialized = JSON.stringify(state);
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
@@ -1788,6 +1881,20 @@ async function saveState(): Promise<boolean> {
         });
       } catch (errLinks) {
         console.warn('Could not write dedicated platform_contact_links doc:', errLinks);
+      }
+
+      // Persist dedicated telegram_bot_state doc to Firestore for 100% two-way sync with fx.zadtoo.com
+      try {
+        const botDocRef = doc(serverFirestoreDb, 'system_state', 'telegram_bot_state');
+        await setDoc(botDocRef, {
+          updatedAt: nowIso,
+          payload: JSON.stringify({
+            config: telegramBotConfigStore,
+            users: telegramBotUsersStore.slice(0, 500)
+          })
+        });
+      } catch (errBot) {
+        console.warn('Could not write dedicated telegram_bot_state doc:', errBot);
       }
 
       // Also publish lightweight public live feed for Quotex Robot (zero-cookie direct stream)
@@ -2862,7 +2969,7 @@ async function scanRealGlobalForexMarket(
     pairsToScan = Array.from(new Set([...allowed, ...DEFAULT_6_MAJOR_PAIRS]));
   }
 
-  for (const pair of pairsToScan) {
+  await Promise.all(pairsToScan.map(async (pair) => {
     const yahooSymbol = `${pair.replace('/', '')}=X`;
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1m&range=1d`;
@@ -2871,7 +2978,7 @@ async function scanRealGlobalForexMarket(
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
       });
-      if (!res.ok) continue;
+      if (!res.ok) return;
       const data = (await res.json()) as any;
       const result = data?.chart?.result?.[0];
       const quote = result?.indicators?.quote?.[0];
@@ -2906,14 +3013,14 @@ async function scanRealGlobalForexMarket(
         }
       }
 
-      if (validCandles.length < 25) continue;
+      if (validCandles.length < 25) return;
 
       const lastCandle = validCandles[validCandles.length - 1];
       const prevCandle = validCandles[validCandles.length - 2] || lastCandle;
 
       // Phase 2 Filter: Check Data Freshness (discard if feed is completely disconnected > 15 mins)
       if (lastCandle.timestamp > 0 && Math.abs(nowEpoch - lastCandle.timestamp) > 900) {
-        continue;
+        return;
       }
 
       // Safe candle range for calculations without dropping the pair
@@ -3130,7 +3237,7 @@ async function scanRealGlobalForexMarket(
     } catch (_e) {
       // Continue scanning other pairs if one fails
     }
-  }
+  }));
 
   if (snapshots.length > 0) {
     liveMarketSnapshots = snapshots;
@@ -3142,7 +3249,7 @@ async function scanRealGlobalForexMarket(
     .sort((a, b) => (b.qualityScore || 0) - (a.qualityScore || 0));
 
   // Helper to check if an asset is currently inside the per-asset cooldown window
-  const assetCooldownMs = Math.max(5, autoPilot.assetCooldownMinutes || 20) * 60 * 1000;
+  const assetCooldownMs = Math.max(2, autoPilot.assetCooldownMinutes || 2) * 60 * 1000;
   const isPairInCooldown = (p: string) =>
     signalsStore.some(
       s => s.asset === p && Date.now() - new Date(s.createdAt).getTime() < assetCooldownMs
@@ -3227,28 +3334,72 @@ async function sendTelegramMessage(botToken: string, chatId: string, text: strin
 }
 
 /**
- * Sends a photo (from a base64 data URL or HTTP URL) with a caption to a Telegram channel/chat
+ * Sends a photo (from a local file, base64 data URL, or HTTP URL) with optional HTML caption and inline keyboard
  */
 async function sendTelegramPhoto(
   botToken: string,
   chatId: string,
-  photoDataUrl: string,
+  photoSource: string,
   caption?: string,
-  replyToMessageId?: number
+  replyToMessageId?: number,
+  inlineKeyboard?: Array<Array<{ text: string; callback_data?: string; url?: string }>>
 ) {
-  if (photoDataUrl.startsWith('data:image/')) {
-    const matches = photoDataUrl.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
-    if (matches) {
-      const mimeType = matches[1];
-      const base64Data = matches[2];
-      const buffer = Buffer.from(base64Data, 'base64');
-      const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
+  try {
+    // 1. If base64 data URL
+    if (photoSource.startsWith('data:image/')) {
+      const matches = photoSource.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+      if (matches) {
+        const mimeType = matches[1];
+        const base64Data = matches[2];
+        const buffer = Buffer.from(base64Data, 'base64');
+        const ext = mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
+        const formData = new FormData();
+        formData.append('chat_id', chatId.trim());
+        if (caption) {
+          formData.append('caption', caption);
+          formData.append('parse_mode', 'HTML');
+        }
+        if (replyToMessageId) formData.append('reply_to_message_id', String(replyToMessageId));
+        if (inlineKeyboard && inlineKeyboard.length > 0) {
+          formData.append('reply_markup', JSON.stringify({ inline_keyboard: inlineKeyboard }));
+        }
+        const blob = new Blob([buffer], { type: mimeType });
+        formData.append('photo', blob, `photo.${ext}`);
+
+        const tgRes = await fetch(`https://api.telegram.org/bot${botToken.trim()}/sendPhoto`, {
+          method: 'POST',
+          body: formData
+        });
+        return (await tgRes.json()) as any;
+      }
+    }
+
+    // 2. If local filesystem image (e.g. /public/assets/..., /assets/...)
+    let localDiskPath = '';
+    if (photoSource.startsWith('/assets/')) {
+      localDiskPath = path.join(process.cwd(), 'public', photoSource);
+    } else if (photoSource.startsWith('/public/assets/')) {
+      localDiskPath = path.join(process.cwd(), photoSource);
+    } else if (photoSource.startsWith('/') && fs.existsSync(photoSource)) {
+      localDiskPath = photoSource;
+    }
+
+    if (localDiskPath && fs.existsSync(localDiskPath)) {
+      const fileBuf = fs.readFileSync(localDiskPath);
+      const ext = path.extname(localDiskPath).toLowerCase().replace('.', '') || 'jpg';
+      const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
       const formData = new FormData();
       formData.append('chat_id', chatId.trim());
-      if (caption) formData.append('caption', caption);
+      if (caption) {
+        formData.append('caption', caption);
+        formData.append('parse_mode', 'HTML');
+      }
       if (replyToMessageId) formData.append('reply_to_message_id', String(replyToMessageId));
-      const blob = new Blob([buffer], { type: mimeType });
-      formData.append('photo', blob, `result.${ext}`);
+      if (inlineKeyboard && inlineKeyboard.length > 0) {
+        formData.append('reply_markup', JSON.stringify({ inline_keyboard: inlineKeyboard }));
+      }
+      const blob = new Blob([fileBuf], { type: mimeType });
+      formData.append('photo', blob, `photo.${ext}`);
 
       const tgRes = await fetch(`https://api.telegram.org/bot${botToken.trim()}/sendPhoto`, {
         method: 'POST',
@@ -3256,21 +3407,31 @@ async function sendTelegramPhoto(
       });
       return (await tgRes.json()) as any;
     }
+
+    // 3. Remote URL or fallback
+    const payload: Record<string, any> = {
+      chat_id: chatId.trim(),
+      photo: photoSource
+    };
+    if (caption) {
+      payload.caption = caption;
+      payload.parse_mode = 'HTML';
+    }
+    if (replyToMessageId) payload.reply_to_message_id = replyToMessageId;
+    if (inlineKeyboard && inlineKeyboard.length > 0) {
+      payload.reply_markup = { inline_keyboard: inlineKeyboard };
+    }
+
+    const tgRes = await fetch(`https://api.telegram.org/bot${botToken.trim()}/sendPhoto`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return (await tgRes.json()) as any;
+  } catch (err: any) {
+    console.warn('[sendTelegramPhoto Error]', err);
+    return { ok: false, description: err?.message || 'خطأ في إرسال الصورة' };
   }
-
-  const payload: Record<string, any> = {
-    chat_id: chatId.trim(),
-    photo: photoDataUrl
-  };
-  if (caption) payload.caption = caption;
-  if (replyToMessageId) payload.reply_to_message_id = replyToMessageId;
-
-  const tgRes = await fetch(`https://api.telegram.org/bot${botToken.trim()}/sendPhoto`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-  return (await tgRes.json()) as any;
 }
 
 function escapeTgHtml(s: string): string {
@@ -3291,7 +3452,12 @@ function isEgyptCountryText(country: string): boolean {
     c.includes('قاهرة') ||
     c.includes('إسكندرية') ||
     c.includes('اسكندرية') ||
-    c === 'eg'
+    c.includes('الجيزة') ||
+    c.includes('جيزة') ||
+    c.includes('giza') ||
+    c.includes('alexandria') ||
+    c === 'eg' ||
+    c === 'egp'
   );
 }
 
@@ -3348,6 +3514,52 @@ export async function sendTelegramInlineMessage(
   }
 }
 
+export async function editOrSendTelegramInlineMessage(
+  botToken: string,
+  chatId: string,
+  text: string,
+  inlineKeyboard?: Array<Array<{ text: string; callback_data?: string; url?: string }>>,
+  parseMode: 'HTML' | 'Markdown' = 'HTML',
+  messageIdToEdit?: number
+) {
+  if (messageIdToEdit) {
+    const editPayload: Record<string, any> = {
+      chat_id: String(chatId).trim(),
+      message_id: messageIdToEdit,
+      text,
+      parse_mode: parseMode
+    };
+    if (inlineKeyboard && inlineKeyboard.length > 0) {
+      editPayload.reply_markup = {
+        inline_keyboard: inlineKeyboard
+      };
+    }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8500);
+    try {
+      const editRes = await fetch(`https://api.telegram.org/bot${botToken.trim()}/editMessageText`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editPayload),
+        signal: controller.signal
+      });
+      const data = (await editRes.json()) as any;
+      if (data.ok) return data;
+      if (data.description && (data.description.includes('message is not modified') || data.description.includes('message to edit not found'))) {
+        if (data.description.includes('message is not modified')) {
+          return { ok: true, result: data.result };
+        }
+      }
+    } catch (_e) {
+      // Fall through to sendMessage
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  return await sendTelegramInlineMessage(botToken, chatId, text, inlineKeyboard, parseMode);
+}
+
 export async function answerTelegramCallbackQuery(botToken: string, callbackQueryId: string, text?: string) {
   try {
     await fetch(`https://api.telegram.org/bot${botToken.trim()}/answerCallbackQuery`, {
@@ -3363,7 +3575,13 @@ export async function answerTelegramCallbackQuery(botToken: string, callbackQuer
   }
 }
 
-async function sendTelegramBotMainMenu(token: string, chatId: string, user: TelegramBotUser) {
+async function sendTelegramBotMainMenu(
+  token: string,
+  chatId: string,
+  user: TelegramBotUser,
+  messageIdToEdit?: number,
+  headerNotice?: string
+) {
   const cfg = telegramBotConfigStore;
   const isAr = user.language !== 'en';
   const cleanAdmin = (cfg.adminTelegramUsername || '@thrayanabil').replace(/^@/, '');
@@ -3373,61 +3591,108 @@ async function sendTelegramBotMainMenu(token: string, chatId: string, user: Tele
   const channelUrl = cfg.freeChannelLink || 'https://t.me/ZadNBFX';
 
   const text = isAr
-    ? `📋 <b>القائمة الرئيسية — أكاديمية وروبوت ZAD FX للتداول الآلي 🚀</b>\n\n` +
+    ? (headerNotice ? `${headerNotice}\n\n` : '') +
+      `🔔 <b>تنويه هام:</b>\n` +
+      `خدماتنا <b>مجانية 100%</b> بالكامل ولا تتطلب أي رسوم اشتراكات!\n` +
+      `كل ما عليك هو أن تتبع <b>رابط الإحالة</b> لتكون ضمن الفريق المستفيد. 🎁\n\n` +
+      `📋 <b>القائمة الرئيسية — أكاديمية وروبوت ZAD FX للتداول الآلي 🚀</b>\n\n` +
       `👤 <b>العضو:</b> ${escapeTgHtml(user.name)}\n` +
-      `🌍 <b>الدولة:</b> ${escapeTgHtml(user.country || 'غير محدد')}\n` +
+      `📧 <b>البريد:</b> ${escapeTgHtml(user.email || 'لم يُضَف بعد')}\n` +
+      `🌍 <b>الدولة:</b> ${escapeTgHtml(user.country || 'غير محددة')} <i>(قابلة للتعديل)</i>\n` +
       `🆔 <b>معرف العضوية:</b> <code>${user.telegramChatId}</code>\n\n` +
       `اختر من القائمة أدناه ما ترغب به:`
-    : `📋 <b>Main Menu — ZAD FX Automated Trading Bot 🚀</b>\n\n` +
+    : (headerNotice ? `${headerNotice}\n\n` : '') +
+      `🔔 <b>Important Notice:</b>\n` +
+      `Our service is <b>100% FREE</b> with NO subscription fees required!\n` +
+      `All you need is to follow our <b>referral link</b> to join our beneficiary team. 🎁\n\n` +
+      `📋 <b>Main Menu — ZAD FX Automated Trading Bot 🚀</b>\n\n` +
       `👤 <b>Member:</b> ${escapeTgHtml(user.name)}\n` +
-      `🌍 <b>Country:</b> ${escapeTgHtml(user.country || 'Not set')}\n` +
+      `📧 <b>Email:</b> ${escapeTgHtml(user.email || 'Not added')}\n` +
+      `🌍 <b>Country:</b> ${escapeTgHtml(user.country || 'Not set')} <i>(Editable)</i>\n` +
       `🆔 <b>Member ID:</b> <code>${user.telegramChatId}</code>\n\n` +
       `Please select an option from the menu below:`;
 
   const keyboard = isAr
     ? [
         [
+          { text: '🎁 تفعيل مجاني 100% عبر الإحالة (ابدأ هنا)', callback_data: 'onb_sub_referral' }
+        ],
+        [
           { text: '📢 قناة التليجرام المجانية', url: channelUrl },
           { text: '💎 العضوية والاشتراكات', callback_data: 'onb_menu_subs' }
         ],
         [
-          { text: '🌐 الموقع الرسمي (fx.zadtoo.com)', url: webUrl },
+          { text: '👤 الملف الشخصي (البروفايل)', callback_data: 'onb_menu_profile' },
           { text: '💬 تواصل معنا (الدعم)', url: contactUrl }
         ],
         [
           { text: '🤖 روبوت التداول الآلي', callback_data: 'onb_menu_robot' },
-          { text: '🔗 رابط الإحالة (Quotex)', url: refUrl }
+          { text: '🌐 الموقع الرسمي', url: webUrl }
+        ],
+        [
+          { text: '🔗 رابط الإحالة الرسمي (Quotex)', url: refUrl }
         ]
       ]
     : [
+        [
+          { text: '🎁 100% Free via Referral (Start Here)', callback_data: 'onb_sub_referral' }
+        ],
         [
           { text: '📢 Free Telegram Channel', url: channelUrl },
           { text: '💎 Memberships & Subscriptions', callback_data: 'onb_menu_subs' }
         ],
         [
-          { text: '🌐 Official Website', url: webUrl },
+          { text: '👤 My Profile (Settings)', callback_data: 'onb_menu_profile' },
           { text: '💬 Contact Admin (Support)', url: contactUrl }
         ],
         [
           { text: '🤖 Auto Trading Robot', callback_data: 'onb_menu_robot' },
-          { text: '🔗 Quotex Referral Link', url: refUrl }
+          { text: '🌐 Official Website', url: webUrl }
+        ],
+        [
+          { text: '🔗 Official Referral Link (Quotex)', url: refUrl }
         ]
       ];
 
-  await sendTelegramInlineMessage(token, chatId, text, keyboard, 'HTML');
+  if (messageIdToEdit) {
+    await editOrSendTelegramInlineMessage(token, chatId, text, keyboard, 'HTML', messageIdToEdit);
+  } else {
+    await sendTelegramInlineMessage(token, chatId, text, keyboard, 'HTML');
+  }
 }
+
+const recentUserActions = new Map<string, number>();
+function isDebouncedUserAction(chatId: string, actionKey: string): boolean {
+  const key = `${chatId}:${actionKey}`;
+  const now = Date.now();
+  const lastTime = recentUserActions.get(key) || 0;
+  if (now - lastTime < 1500) {
+    return true; // Ignore rapid duplicate clicks
+  }
+  recentUserActions.set(key, now);
+  if (recentUserActions.size > 2000) {
+    const firstKey = recentUserActions.keys().next().value;
+    if (firstKey !== undefined) recentUserActions.delete(firstKey);
+  }
+  return false;
+}
+
+const processedTelegramMessageKeys = new Set<string>();
+const processedTelegramCallbackKeys = new Set<string>();
 
 async function processInteractiveTelegramBotUpdate(update: any, token: string) {
   if (!telegramBotConfigStore.isEnabled) return;
   const cfg = telegramBotConfigStore;
   const cleanAdmin = (cfg.adminTelegramUsername || '@thrayanabil').replace(/^@/, '');
   const contactUrl = `https://t.me/${cleanAdmin}`;
+  const webUrl = cfg.officialWebsiteUrl || 'https://fx.zadtoo.com';
 
   // 1. Handle Callback Queries (Inline Button Clicks)
   if (update.callback_query) {
     const cb = update.callback_query;
     const callbackId = String(cb.id);
     const data = String(cb.data || '');
+    const messageId = cb.message?.message_id;
     const chatId = String(cb.message?.chat?.id || cb.from?.id);
     const tgUsername = cb.from?.username ? `@${cb.from.username}` : '';
     const firstName = cb.from?.first_name || '';
@@ -3435,6 +3700,20 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
     const fallbackName = [firstName, lastName].filter(Boolean).join(' ') || 'عضو جديد';
 
     await answerTelegramCallbackQuery(token, callbackId);
+
+    // Filter out rapid duplicate clicks
+    if (isDebouncedUserAction(chatId, data)) {
+      return;
+    }
+
+    if (processedTelegramCallbackKeys.has(callbackId)) {
+      return;
+    }
+    processedTelegramCallbackKeys.add(callbackId);
+    if (processedTelegramCallbackKeys.size > 2000) {
+      const f = processedTelegramCallbackKeys.values().next().value;
+      if (f !== undefined) processedTelegramCallbackKeys.delete(f);
+    }
 
     let user = telegramBotUsersStore.find(u => u.telegramChatId === chatId);
     if (!user) {
@@ -3459,14 +3738,17 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
     }
 
     if (user.status === 'BLOCKED') {
-      await sendTelegramInlineMessage(token, chatId, '⛔ عذراً، تم حظر هذا الحساب من استخدام خدمات ZAD FX.');
+      await editOrSendTelegramInlineMessage(token, chatId, '⛔ عذراً، تم حظر هذا الحساب من استخدام خدمات ZAD FX.', undefined, 'HTML', messageId);
       return;
     }
     if (user.status === 'SUSPENDED') {
-      await sendTelegramInlineMessage(
+      await editOrSendTelegramInlineMessage(
         token,
         chatId,
-        `⚠️ حسابك معلق مؤقتاً للمراجعة من قبل الإدارة.\nيرجى التواصل مع المشرف: ${contactUrl}`
+        `⚠️ حسابك معلق مؤقتاً للمراجعة من قبل الإدارة.\nيرجى التواصل مع المشرف: ${contactUrl}`,
+        undefined,
+        'HTML',
+        messageId
       );
       return;
     }
@@ -3479,7 +3761,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
       const promptText =
         `أهلاً وسهلاً بك في أكاديمية ZAD FX! 🌟\n\n` +
         `يرجى كتابة <b>اسمك الكريم بالكامل</b> للمتابعة وتجهيز ملف عضويتك الخاص:`;
-      await sendTelegramInlineMessage(token, chatId, promptText, undefined, 'HTML');
+      await editOrSendTelegramInlineMessage(token, chatId, promptText, undefined, 'HTML', messageId);
       return;
     }
 
@@ -3491,28 +3773,360 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
       const promptText =
         `Welcome to ZAD FX Academy! 🌟\n\n` +
         `Please type your <b>Full Name</b> to continue and prepare your personal membership profile:`;
-      await sendTelegramInlineMessage(token, chatId, promptText, undefined, 'HTML');
+      await editOrSendTelegramInlineMessage(token, chatId, promptText, undefined, 'HTML', messageId);
+      return;
+    }
+
+    // Direct Country Set Callbacks (Onboarding) - Fully Editable, NO Double Messages
+    if (data === 'onb_set_country_eg') {
+      user.country = 'جمهورية مصر العربية 🇪🇬';
+      user.step = 'COMPLETED';
+      saveState();
+      await sendTelegramBotMainMenu(token, chatId, user, messageId, '✅ <b>تم حفظ وتحديد دولتك: جمهورية مصر العربية 🇪🇬</b>');
+      return;
+    }
+
+    if (data === 'onb_set_country_ps') {
+      user.country = 'دولة فلسطين 🇵🇸';
+      user.step = 'COMPLETED';
+      saveState();
+      await sendTelegramBotMainMenu(token, chatId, user, messageId, '✅ <b>تم حفظ وتحديد دولتك: دولة فلسطين 🇵🇸</b>');
+      return;
+    }
+
+    if (data === 'onb_set_country_intl') {
+      user.country = 'دولي 🌍';
+      user.step = 'COMPLETED';
+      saveState();
+      await sendTelegramBotMainMenu(token, chatId, user, messageId, '✅ <b>تم حفظ وتحديد دولتك: دولي 🌍</b>');
+      return;
+    }
+
+    // =========================================================================
+    // MEMBER PROFILE & DATA EDITING (NAME, EMAIL, COUNTRY)
+    // =========================================================================
+    if (data === 'onb_menu_profile') {
+      const isAr = user.language !== 'en';
+      const profText = isAr
+        ? `👤 <b>الملف الشخصي للعضو — أكاديمية ZAD FX 🚀</b>\n\n` +
+          `🏷️ <b>الاسم:</b> ${escapeTgHtml(user.name)}\n` +
+          `📧 <b>البريد الإلكتروني:</b> ${escapeTgHtml(user.email || 'لم يتم الإضافة بعد')}\n` +
+          `🌍 <b>الدولة الحالية:</b> ${escapeTgHtml(user.country || 'غير محددة')} <i>(متاحة للتعديل)</i>\n` +
+          `🆔 <b>معرف التليجرام (Chat ID):</b> <code>${user.telegramChatId}</code>\n` +
+          `💎 <b>نوع العضوية:</b> ${user.membershipType === 'PAID_VIP' ? 'عضوية مدفوعة VIP 👑' : user.membershipType === 'FREE_REFERRAL' ? 'اشتراك مجاني عبر الإحالة 🎁' : 'عضو مسجل (عادي)'}\n\n` +
+          `💡 <i>يمكنك تعديل أي من بياناتك أو تغيير دولتك بحرية في أي وقت:</i>`
+        : `👤 <b>User Profile — ZAD FX Academy 🚀</b>\n\n` +
+          `🏷️ <b>Name:</b> ${escapeTgHtml(user.name)}\n` +
+          `📧 <b>Email:</b> ${escapeTgHtml(user.email || 'Not added')}\n` +
+          `🌍 <b>Current Country:</b> ${escapeTgHtml(user.country || 'Not set')} <i>(Editable)</i>\n` +
+          `🆔 <b>Telegram ID:</b> <code>${user.telegramChatId}</code>\n` +
+          `💎 <b>Membership:</b> ${user.membershipType}\n\n` +
+          `💡 <i>You can edit your personal details or country anytime:</i>`;
+
+      const profButtons = isAr
+        ? [
+            [
+              { text: '✏️ تعديل الاسم', callback_data: 'onb_prof_edit_name' },
+              { text: '📧 إضافة / تعديل البريد', callback_data: 'onb_prof_edit_email' }
+            ],
+            [
+              { text: '🌍 تغيير وتعديل الدولة', callback_data: 'onb_prof_edit_country' }
+            ],
+            [
+              { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+            ]
+          ]
+        : [
+            [
+              { text: '✏️ Edit Name', callback_data: 'onb_prof_edit_name' },
+              { text: '📧 Add / Edit Email', callback_data: 'onb_prof_edit_email' }
+            ],
+            [
+              { text: '🌍 Change Country', callback_data: 'onb_prof_edit_country' }
+            ],
+            [
+              { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
+            ]
+          ];
+
+      await editOrSendTelegramInlineMessage(token, chatId, profText, profButtons, 'HTML', messageId);
+      return;
+    }
+
+    if (data === 'onb_prof_edit_name') {
+      user.step = 'EDIT_NAME';
+      saveState();
+      const isAr = user.language !== 'en';
+      const prompt = isAr
+        ? `✏️ <b>تعديل الاسم:</b>\n\nالاسم الحالي: <b>${escapeTgHtml(user.name)}</b>\n\nيرجى كتابة وإرسال اسمك الجديد الآن في رسالة نصية:`
+        : `✏️ <b>Edit Name:</b>\n\nCurrent name: <b>${escapeTgHtml(user.name)}</b>\n\nPlease type and send your new full name:`;
+      const cancelButtons = isAr
+        ? [[{ text: '🔙 إلغاء والرجوع للملف الشخصي', callback_data: 'onb_menu_profile' }]]
+        : [[{ text: '🔙 Cancel', callback_data: 'onb_menu_profile' }]];
+      await editOrSendTelegramInlineMessage(token, chatId, prompt, cancelButtons, 'HTML', messageId);
+      return;
+    }
+
+    if (data === 'onb_prof_edit_email') {
+      user.step = 'EDIT_EMAIL';
+      saveState();
+      const isAr = user.language !== 'en';
+      const prompt = isAr
+        ? `📧 <b>إضافة أو تعديل البريد الإلكتروني:</b>\n\nالبريد الحالي: <b>${escapeTgHtml(user.email || 'لم يُضَف')}</b>\n\nيرجى كتابة وإرسال بريدك الإلكتروني الآن (مثال: name@example.com):`
+        : `📧 <b>Add or Edit Email:</b>\n\nCurrent email: <b>${escapeTgHtml(user.email || 'None')}</b>\n\nPlease type and send your email address:`;
+      const cancelButtons = isAr
+        ? [[{ text: '🔙 إلغاء والرجوع للملف الشخصي', callback_data: 'onb_menu_profile' }]]
+        : [[{ text: '🔙 Cancel', callback_data: 'onb_menu_profile' }]];
+      await editOrSendTelegramInlineMessage(token, chatId, prompt, cancelButtons, 'HTML', messageId);
+      return;
+    }
+
+    if (data === 'onb_prof_edit_country') {
+      const isAr = user.language !== 'en';
+      const ipVerifyUrl = `${webUrl}/api/verify-country?chatId=${user.telegramChatId}`;
+      const prompt = isAr
+        ? `🌍 <b>تحديد وتعديل الدولة:</b>\n\n` +
+          `الدولة الحالية المسجلة: <b>${escapeTgHtml(user.country || 'غير محددة')}</b>\n\n` +
+          `اختر دولتك من الأزرار أدناه أو اضغط على الفحص التلقائي بالـ IP أو اكتبها يدوياً:`
+        : `🌍 <b>Change Country:</b>\n\n` +
+          `Current Country: <b>${escapeTgHtml(user.country || 'Not set')}</b>\n\n` +
+          `Select your country below or auto-detect via IP or type it manually:`;
+
+      const countryButtons = isAr
+        ? [
+            [
+              { text: '🇪🇬 جمهورية مصر العربية', callback_data: 'onb_prof_set_country_eg' },
+              { text: '🇵🇸 دولة فلسطين', callback_data: 'onb_prof_set_country_ps' }
+            ],
+            [
+              { text: '🌍 باقي دول العالم (دولي)', callback_data: 'onb_prof_set_country_intl' }
+            ],
+            [
+              { text: '🌐 فحص وتحديث تلقائي عبر الـ IP', url: ipVerifyUrl }
+            ],
+            [
+              { text: '✏️ كتابة اسم دولة أخرى يدوياً', callback_data: 'onb_prof_set_country_custom' }
+            ],
+            [
+              { text: '🔙 رجوع للملف الشخصي', callback_data: 'onb_menu_profile' }
+            ]
+          ]
+        : [
+            [
+              { text: '🇪🇬 Egypt', callback_data: 'onb_prof_set_country_eg' },
+              { text: '🇵🇸 Palestine', callback_data: 'onb_prof_set_country_ps' }
+            ],
+            [
+              { text: '🌍 Rest of the World', callback_data: 'onb_prof_set_country_intl' }
+            ],
+            [
+              { text: '🌐 Auto-Detect via IP', url: ipVerifyUrl }
+            ],
+            [
+              { text: '✏️ Type Country Manually', callback_data: 'onb_prof_set_country_custom' }
+            ],
+            [
+              { text: '🔙 Back to Profile', callback_data: 'onb_menu_profile' }
+            ]
+          ];
+
+      await editOrSendTelegramInlineMessage(token, chatId, prompt, countryButtons, 'HTML', messageId);
+      return;
+    }
+
+    if (data === 'onb_prof_set_country_eg') {
+      user.country = 'جمهورية مصر العربية 🇪🇬';
+      user.step = 'COMPLETED';
+      saveState();
+      await sendTelegramBotMainMenu(token, chatId, user, messageId, '✅ <b>تم تحديث وتعديل دولتك بنجاح إلى: جمهورية مصر العربية 🇪🇬</b>');
+      return;
+    }
+
+    if (data === 'onb_prof_set_country_ps') {
+      user.country = 'دولة فلسطين 🇵🇸';
+      user.step = 'COMPLETED';
+      saveState();
+      await sendTelegramBotMainMenu(token, chatId, user, messageId, '✅ <b>تم تحديث وتعديل دولتك بنجاح إلى: دولة فلسطين 🇵🇸</b>');
+      return;
+    }
+
+    if (data === 'onb_prof_set_country_intl') {
+      user.country = 'دولي 🌍';
+      user.step = 'COMPLETED';
+      saveState();
+      await sendTelegramBotMainMenu(token, chatId, user, messageId, '✅ <b>تم تحديث وتعديل دولتك بنجاح إلى: دولي 🌍</b>');
+      return;
+    }
+
+    if (data === 'onb_prof_set_country_custom') {
+      user.step = 'EDIT_COUNTRY';
+      saveState();
+      const isAr = user.language !== 'en';
+      const prompt = isAr
+        ? `🌍 <b>كتابة اسم الدولة:</b>\n\nيرجى كتابة وإرسال اسم دولتك الآن في رسالة (مثال: الجزائر، المغرب، تونس، السعودية، العراق، الإمارات، الكويت، الأردن، ...):`
+        : `🌍 <b>Custom Country:</b>\n\nPlease type and send your country name:`;
+      const cancelButtons = isAr
+        ? [[{ text: '🔙 إلغاء والرجوع', callback_data: 'onb_prof_edit_country' }]]
+        : [[{ text: '🔙 Cancel', callback_data: 'onb_prof_edit_country' }]];
+      await editOrSendTelegramInlineMessage(token, chatId, prompt, cancelButtons, 'HTML', messageId);
+      return;
+    }
+
+    // Direct Country Set from Payment Selection
+    if (data === 'onb_set_country_eg_and_pay') {
+      user.country = 'جمهورية مصر العربية 🇪🇬';
+      user.countryLocked = true;
+      user.step = 'COMPLETED';
+      saveState();
+      // Render Egypt Payment immediately
+      const text =
+        `🇪🇬 <b>طرق الدفع المتاحة داخل جمهورية مصر العربية:</b>\n\n` +
+        `تم توجيهك لنظام الدفع المحلي المعتمد في مصر:\n\n` +
+        `⚡ <b>إنستا باي (InstaPay):</b> تحويل لحظي فوري عبر التطبيق\n` +
+        `📱 <b>المحافظ الإلكترونية:</b> فودافون كاش، اتصالات كاش، أورنج كاش، وي باي\n` +
+        `💎 <b>الدولار الرقمي USDT (TRC20):</b> دفع فوري بالعملات الرقمية\n\n` +
+        `يرجى اختيار وسيلة الدفع لعرض بيانات التحويل:`;
+
+      const buttons = [
+        [
+          { text: '⚡ إنستا باي (InstaPay)', callback_data: 'onb_pay_instapay' },
+          { text: '📱 المحافظ الإلكترونية (كاش)', callback_data: 'onb_pay_wallets' }
+        ],
+        [
+          { text: '💎 دفع عبر USDT (TRC20)', callback_data: 'onb_pay_usdt' }
+        ],
+        [
+          { text: '🔙 رجوع للاشتراكات', callback_data: 'onb_menu_subs' },
+          { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+        ]
+      ];
+
+      await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
+      return;
+    }
+
+    if (data === 'onb_set_country_ps_and_pay' || data === 'onb_pay_bop') {
+      user.country = 'دولة فلسطين 🇵🇸';
+      user.countryLocked = true;
+      user.step = 'COMPLETED';
+      saveState();
+      const pal = cfg.palestinePayment || defaultTelegramBotConfig.palestinePayment;
+      const text =
+        `🇵🇸 <b>طرق الدفع والتحويل المتاحة داخل دولة فلسطين (${escapeTgHtml(user.country)}):</b>\n\n` +
+        `تم توجيهك لحساب الإيداع والتحويل الخاص في <b>بنك فلسطين (Bank of Palestine)</b>:\n\n` +
+        `🌍 <b>الدولة:</b> ${escapeTgHtml(pal.country || 'فلسطين 🇵🇸')}\n` +
+        `🏛 <b>اسم البنك:</b> ${escapeTgHtml(pal.bankName)}\n` +
+        `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(pal.beneficiaryName)}\n` +
+        `💰 <b>العملة:</b> ${escapeTgHtml(pal.currency)}\n` +
+        `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(pal.accountNumber)}</code>\n` +
+        `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(pal.iban)}</code>\n` +
+        `🏢 <b>الفرع:</b> ${escapeTgHtml(pal.branch)}\n\n` +
+        `📌 <i>ملاحظة: بعد إتمام الإيداع أو التحويل البنكي عبر تطبيق بنك فلسطين، يرجى إرسال صورة إشعار التحويل للمشرف للتفعيل الفوري.</i>`;
+
+      const buttons = [
+        [{ text: '📩 إرسال إشعار التحويل للمشرف', url: contactUrl }],
+        [
+          { text: '💎 دفع بالدولار الرقمي USDT (TRC20)', callback_data: 'onb_pay_usdt' }
+        ],
+        [
+          { text: '🔙 رجوع للاشتراكات', callback_data: 'onb_menu_subs' },
+          { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+        ]
+      ];
+
+      await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
+      return;
+    }
+
+    if (data === 'onb_set_country_intl_and_pay') {
+      user.country = 'دولي 🌍';
+      user.countryLocked = true;
+      user.step = 'COMPLETED';
+      saveState();
+      const isAr = user.language !== 'en';
+      const text = isAr
+        ? `🌍 <b>خيارات التحويل البنكي الدولي المتاحة لدولتك:</b>\n\n` +
+          `تم توجيهك لنظام التحويل المصرفي الدولي عبر رقم الحساب البنكي الدولي (IBAN) أو العملات الرقمية (USDT).\n` +
+          `يمكنك التحويل إما بالجنيه المصري (EGP) أو بالدولار الأمريكي (USD) أو عبر USDT.\n\n` +
+          `يرجى اختيار وسيلة الدفع المطلوبة لعرض التفاصيل الكاملة:`
+        : `🌍 <b>International Payment Options:</b>\n\n` +
+          `You can transfer funds internationally via IBAN (in EGP or USD) or via crypto USDT (TRC20).\n\n` +
+          `Please choose your preferred method to view full details:`;
+
+      const buttons = isAr
+        ? [
+            [
+              { text: '🇪🇬 حساب بنكي بالجنيه المصري (EGP)', callback_data: 'onb_pay_iban_egp' },
+              { text: '🇺🇸 حساب بنكي بالدولار الأمريكي (USD)', callback_data: 'onb_pay_iban_usd' }
+            ],
+            [
+              { text: '💎 دفع بالدولار الرقمي USDT (TRC20)', callback_data: 'onb_pay_usdt' }
+            ],
+            [
+              { text: '🔙 رجوع للاشتراكات', callback_data: 'onb_menu_subs' },
+              { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+            ]
+          ]
+        : [
+            [
+              { text: '🇪🇬 Bank Account in EGP (Pounds)', callback_data: 'onb_pay_iban_egp' },
+              { text: '🇺🇸 Bank Account in USD (Dollars)', callback_data: 'onb_pay_iban_usd' }
+            ],
+            [
+              { text: '💎 Pay with USDT (TRC20)', callback_data: 'onb_pay_usdt' }
+            ],
+            [
+              { text: '🔙 Back to Subscriptions', callback_data: 'onb_menu_subs' },
+              { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
+            ]
+          ];
+
+      await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
       return;
     }
 
     // Branch: Return to Main Menu
     if (data === 'onb_menu_main') {
-      await sendTelegramBotMainMenu(token, chatId, user);
+      await sendTelegramBotMainMenu(token, chatId, user, messageId);
       return;
     }
 
     // Branch: Memberships & Subscriptions Sub-menu
     if (data === 'onb_menu_subs') {
       const isAr = user.language !== 'en';
+      const isEg = isEgyptCountryText(user.country);
+      const isPal = isPalestineCountryText(user.country);
+
+      let paidOptionDesc = '';
+      if (isEg) {
+        paidOptionDesc = isAr
+          ? '2️⃣ <b>العضوية المدفوعة VIP:</b> اشتراك فوري عبر إنستا باي (InstaPay) والمحافظ الإلكترونية (فودافون كاش، اتصالات، أورنج، وي).'
+          : '2️⃣ <b>Paid VIP Membership:</b> Instant payment via InstaPay and mobile wallets.';
+      } else if (isPal) {
+        paidOptionDesc = isAr
+          ? '2️⃣ <b>العضوية المدفوعة VIP:</b> إيداع وتحويل فوري عبر تطبيق بنك فلسطين (Bank of Palestine).'
+          : '2️⃣ <b>Paid VIP Membership:</b> Direct transfer via Bank of Palestine app.';
+      } else {
+        paidOptionDesc = isAr
+          ? '2️⃣ <b>العضوية المدفوعة VIP:</b> تحويل بنكي دولي عبر رقم الآيبان (IBAN بالجنيه أو بالدولار).'
+          : '2️⃣ <b>Paid VIP Membership:</b> International bank wire transfer via IBAN (EGP or USD).';
+      }
+
       const text = isAr
-        ? `💎 <b>العضوية والاشتراكات في ZAD FX:</b>\n\n` +
-          `اختر نوع العضوية المطلوب:\n\n` +
-          `1️⃣ <b>الاشتراك المجاني عبر الإحالة:</b> تفعيل مجاني لقناة VIP وروبوت التداول الآلي عند التسجيل عبر رابط إحالتنا في منصة كيوتكس وعمل إيداع.\n` +
-          `2️⃣ <b>العضوية المدفوعة VIP:</b> اشتراك مباشر بالدفع الفوري والمحافظ (مصر) أو التحويل البنكي الدولي (آيبان باقي الدول).`
-        : `💎 <b>ZAD FX Memberships & Subscriptions:</b>\n\n` +
-          `Choose your membership option:\n\n` +
-          `1️⃣ <b>Free Membership via Referral:</b> Free access to VIP signals and Auto Robot when registering under our Quotex referral link and making a deposit.\n` +
-          `2️⃣ <b>Paid VIP Membership:</b> Direct subscription via instant electronic payment/wallets (Egypt) or international bank wire (IBAN).`;
+        ? `🔔 <b>تنويه هام:</b>\n` +
+          `الخدمة <b>مجانية 100%</b> بالكامل ولا تتطلب أي رسوم اشتراكات!\n` +
+          `كل ما عليك هو أن تتبع <b>رابط الإحالة</b> لتكون ضمن الفريق المستفيد وتحصل على توصيات VIP وروبوت التداول مجاناً. 🎁\n\n` +
+          `💎 <b>خيارات العضوية في ZAD FX:</b>\n\n` +
+          `1️⃣ <b>الاشتراك المجاني عبر الإحالة (الأساسي والمجاني 100%):</b>\n` +
+          `تفعيل مجاني بالكامل لقناة VIP وروبوت التداول الآلي، دون دفع أي اشتراك، بمجرد فتح حسابك عبر رابط الإحالة في منصة كيوتكس وشحنه برأس مالك الخاص للتداول.\n\n` +
+          `${paidOptionDesc}`
+        : `🔔 <b>Important Notice:</b>\n` +
+          `The service is <b>100% FREE</b> and requires NO subscription fees!\n` +
+          `All you need is to follow the <b>referral link</b> to join our beneficiary team. 🎁\n\n` +
+          `💎 <b>ZAD FX Memberships & Subscriptions:</b>\n\n` +
+          `1️⃣ <b>Free Membership via Referral (100% Free):</b>\n` +
+          `Free full access to VIP signals and Auto Robot with zero fees, just by opening your account via our referral link on Quotex and funding your own trading balance.\n\n` +
+          `${paidOptionDesc}`;
 
       const buttons = isAr
         ? [
@@ -3534,7 +4148,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
             ]
           ];
 
-      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
       return;
     }
 
@@ -3579,7 +4193,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
             ]
           ];
 
-      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
       return;
     }
 
@@ -3591,37 +4205,14 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
       const isEgypt = isEgyptCountryText(user.country);
       const isAr = user.language !== 'en';
 
-      if (isPalestine) {
-        // 🇵🇸 PALESTINE ROUTING: Bank of Palestine Dedicated Account
-        const pal = cfg.palestinePayment || defaultTelegramBotConfig.palestinePayment;
-        const text =
-          `🇵🇸 <b>طرق الدفع والتحويل المتاحة داخل دولة فلسطين (${escapeTgHtml(user.country)}):</b>\n\n` +
-          `تم توجيهك لحساب الإيداع والتحويل الخاص في <b>بنك فلسطين (Bank of Palestine)</b>:\n\n` +
-          `🌍 <b>الدولة:</b> ${escapeTgHtml(pal.country || 'فلسطين 🇵🇸')}\n` +
-          `🏛 <b>اسم البنك:</b> ${escapeTgHtml(pal.bankName)}\n` +
-          `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(pal.beneficiaryName)}\n` +
-          `💰 <b>العملة:</b> ${escapeTgHtml(pal.currency)}\n` +
-          `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(pal.accountNumber)}</code>\n` +
-          `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(pal.iban)}</code>\n` +
-          `🏢 <b>الفرع:</b> ${escapeTgHtml(pal.branch)}\n\n` +
-          `📌 <i>ملاحظة: بعد إتمام الإيداع أو التحويل البنكي عبر تطبيق بنك فلسطين، يرجى إرسال صورة إشعار التحويل للمشرف للتفعيل الفوري.</i>`;
-
-        const buttons = [
-          [{ text: '📩 إرسال إشعار التحويل للمشرف', url: contactUrl }],
-          [
-            { text: '🔙 رجوع للاشتراكات', callback_data: 'onb_menu_subs' },
-            { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
-          ]
-        ];
-
-        await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
-      } else if (isEgypt) {
-        // 🇪🇬 EGYPT ROUTING: InstaPay & Mobile Wallets
+      if (isEgypt) {
+        // 🇪🇬 EGYPT ROUTING: ONLY InstaPay & Mobile Wallets & USDT — STRICTLY ZERO BANK TRANSFER / IBAN
         const text =
           `🇪🇬 <b>طرق الدفع المتاحة داخل جمهورية مصر العربية:</b>\n\n` +
           `تم توجيهك تلقائياً لنظام الدفع المحلي المعتمد في مصر:\n\n` +
           `⚡ <b>إنستا باي (InstaPay):</b> تحويل لحظي فوري عبر التطبيق\n` +
-          `📱 <b>المحافظ الإلكترونية:</b> فودافون كاش، اتصالات كاش، أورنج كاش، وي باي\n\n` +
+          `📱 <b>المحافظ الإلكترونية:</b> فودافون كاش، اتصالات كاش، أورنج كاش، وي باي\n` +
+          `💎 <b>الدولار الرقمي (USDT - TRC20):</b> دفع فوري بالعملات الرقمية\n\n` +
           `يرجى اختيار وسيلة الدفع لعرض بيانات التحويل:`;
 
         const buttons = [
@@ -3630,28 +4221,59 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
             { text: '📱 المحافظ الإلكترونية (كاش)', callback_data: 'onb_pay_wallets' }
           ],
           [
+            { text: '💎 دفع بالدولار الرقمي USDT (TRC20)', callback_data: 'onb_pay_usdt' }
+          ],
+          [
             { text: '🔙 رجوع للاشتراكات', callback_data: 'onb_menu_subs' },
             { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
           ]
         ];
 
-        await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
-      } else {
-        // 🌍 REST OF THE WORLD: Separate EGP vs USD
+        await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
+        return;
+      }
+
+      if (isPalestine) {
+        // 🇵🇸 PALESTINE ROUTING: Bank of Palestine & USDT
+        const pal = cfg.palestinePayment || defaultTelegramBotConfig.palestinePayment;
+        const text =
+          `🇵🇸 <b>طرق الدفع والتحويل المتاحة داخل دولة فلسطين (${escapeTgHtml(user.country)}):</b>\n\n` +
+          `تم توجيهك لخيارات الدفع المعتمدة:\n\n` +
+          `1️⃣ <b>بنك فلسطين (Bank of Palestine):</b> إيداع نقدي أو تحويل عبر تطبيق البنك\n` +
+          `2️⃣ <b>الدولار الرقمي USDT (TRC20):</b> دفع فوري بالعملات الرقمية\n\n` +
+          `يرجى اختيار وسيلة الدفع لعرض التفاصيل الكاملة:`;
+
+        const buttons = [
+          [{ text: '🏛 حساب بنك فلسطين (Bank of Palestine)', callback_data: 'onb_pay_bop' }],
+          [{ text: '💎 دفع بالدولار الرقمي USDT (TRC20)', callback_data: 'onb_pay_usdt' }],
+          [
+            { text: '🔙 رجوع للاشتراكات', callback_data: 'onb_menu_subs' },
+            { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+          ]
+        ];
+
+        await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
+        return;
+      }
+
+      // If country is not set or empty, DO NOT default to international IBAN! Ask user first:
+      if (!user.country || user.country.trim() === '') {
         const text = isAr
-          ? `🌍 <b>خيارات التحويل البنكي الدولي المتاحة لدولتك (${escapeTgHtml(user.country || 'دولي')}):</b>\n\n` +
-            `تم توجيهك لنظام التحويل المصرفي الدولي عبر رقم الحساب البنكي الدولي (IBAN).\n` +
-            `يمكنك التحويل إما بالجنيه المصري (EGP) أو بالدولار الأمريكي (USD).\n\n` +
-            `يرجى اختيار العملة المطلوبة لعرض التفاصيل الكاملة (الدولة، البنك، المستفيد، والآيبان):`
-          : `🌍 <b>International Bank Transfer (IBAN) for (${escapeTgHtml(user.country || 'International')}):</b>\n\n` +
-            `You can transfer funds internationally via IBAN in either Egyptian Pounds (EGP) or US Dollars (USD).\n\n` +
-            `Please choose your preferred currency to view full details (Country, Bank, Beneficiary, and IBAN):`;
+          ? `🌍 <b>يرجى تحديد دولتك لعرض طرق الدفع المعتمدة:</b>\n\n` +
+            `لتوجيهك لنظام الدفع المخصص لبلدك وتجنب أي خطأ في التحويل، يرجى اختيار مكان إقامتك:`
+          : `🌍 <b>Please select your country to view approved payment methods:</b>`;
 
         const buttons = isAr
           ? [
               [
-                { text: '🇪🇬 حساب بنكي بالجنيه المصري (EGP)', callback_data: 'onb_pay_iban_egp' },
-                { text: '🇺🇸 حساب بنكي بالدولار الأمريكي (USD)', callback_data: 'onb_pay_iban_usd' }
+                { text: '🇪🇬 جمهورية مصر العربية', callback_data: 'onb_set_country_eg_and_pay' },
+                { text: '🇵🇸 دولة فلسطين', callback_data: 'onb_set_country_ps_and_pay' }
+              ],
+              [
+                { text: '🌍 باقي دول العالم', callback_data: 'onb_set_country_intl_and_pay' }
+              ],
+              [
+                { text: '💎 دفع بالدولار الرقمي USDT (TRC20)', callback_data: 'onb_pay_usdt' }
               ],
               [
                 { text: '🔙 رجوع للاشتراكات', callback_data: 'onb_menu_subs' },
@@ -3660,8 +4282,14 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
             ]
           : [
               [
-                { text: '🇪🇬 Bank Account in EGP (Pounds)', callback_data: 'onb_pay_iban_egp' },
-                { text: '🇺🇸 Bank Account in USD (Dollars)', callback_data: 'onb_pay_iban_usd' }
+                { text: '🇪🇬 Egypt', callback_data: 'onb_set_country_eg_and_pay' },
+                { text: '🇵🇸 Palestine', callback_data: 'onb_set_country_ps_and_pay' }
+              ],
+              [
+                { text: '🌍 Rest of the World', callback_data: 'onb_set_country_intl_and_pay' }
+              ],
+              [
+                { text: '💎 Pay with USDT (TRC20)', callback_data: 'onb_pay_usdt' }
               ],
               [
                 { text: '🔙 Back to Subscriptions', callback_data: 'onb_menu_subs' },
@@ -3669,8 +4297,49 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
               ]
             ];
 
-        await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+        await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
+        return;
       }
+
+      // 🌍 REST OF THE WORLD ONLY (Confirmed non-Egypt and non-Palestine)
+      const text = isAr
+        ? `🌍 <b>خيارات التحويل البنكي الدولي والدولار الرقمي لدولتك (${escapeTgHtml(user.country)}):</b>\n\n` +
+          `تم توجيهك لنظام التحويل المصرفي الدولي عبر الآيبان (IBAN) أو العملات الرقمية (USDT).\n` +
+          `يمكنك التحويل إما بالجنيه المصري (EGP) أو بالدولار الأمريكي (USD) أو بعملة USDT (TRC20).\n\n` +
+          `يرجى اختيار وسيلة الدفع المطلوبة لعرض التفاصيل الكاملة:`
+        : `🌍 <b>International Payment Options for (${escapeTgHtml(user.country)}):</b>\n\n` +
+          `You can transfer funds internationally via IBAN in either Egyptian Pounds (EGP) or US Dollars (USD), or via crypto USDT (TRC20).\n\n` +
+          `Please choose your preferred method to view full details:`;
+
+      const buttons = isAr
+        ? [
+            [
+              { text: '🇪🇬 حساب بنكي بالجنيه المصري (EGP)', callback_data: 'onb_pay_iban_egp' },
+              { text: '🇺🇸 حساب بنكي بالدولار الأمريكي (USD)', callback_data: 'onb_pay_iban_usd' }
+            ],
+            [
+              { text: '💎 دفع بالدولار الرقمي USDT (TRC20)', callback_data: 'onb_pay_usdt' }
+            ],
+            [
+              { text: '🔙 رجوع للاشتراكات', callback_data: 'onb_menu_subs' },
+              { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+            ]
+          ]
+        : [
+            [
+              { text: '🇪🇬 Bank Account in EGP (Pounds)', callback_data: 'onb_pay_iban_egp' },
+              { text: '🇺🇸 Bank Account in USD (Dollars)', callback_data: 'onb_pay_iban_usd' }
+            ],
+            [
+              { text: '💎 Pay with USDT (TRC20)', callback_data: 'onb_pay_usdt' }
+            ],
+            [
+              { text: '🔙 Back to Subscriptions', callback_data: 'onb_menu_subs' },
+              { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
+            ]
+          ];
+
+      await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
       return;
     }
 
@@ -3691,7 +4360,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
         ]
       ];
 
-      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
       return;
     }
 
@@ -3714,17 +4383,89 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
         ]
       ];
 
-      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
       return;
     }
 
-    // Branch: IBAN EGP Details (Rest of World)
+    // Branch: USDT (TRC20) Payment Details (All Countries)
+    if (data === 'onb_pay_usdt') {
+      const usdt = cfg.usdtPayment || defaultTelegramBotConfig.usdtPayment;
+      const isAr = user.language !== 'en';
+      const text = isAr
+        ? `💎 <b>طريقة الدفع بالعملات الرقمية USDT (TRC20):</b>\n\n` +
+          `متاحة لجميع المشتركين وكافة الدول كخيار دفع فوري ومباشر 🌍\n\n` +
+          `🌐 <b>الشبكة المعتمدة:</b> <b>${escapeTgHtml(usdt.network || 'USDT (TRC20)')}</b>\n` +
+          `📬 <b>عنوان المحفظة (Wallet Address):</b>\n` +
+          `<code>${escapeTgHtml(usdt.address || 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo')}</code>\n` +
+          `<i>(اضغط على العنوان أعلاه لنسخه بلمسة واحدة)</i>\n\n` +
+          `⚠️ <b>تنبيه أمان هام جداً:</b>\n` +
+          `• تأكد من التحويل حصراً عبر شبكة <b>TRC20 (TRON)</b> لتجنب فقدان الرصيد.\n` +
+          `• بعد إتمام التحويل، يرجى إرسال لقطة شاشة ورقم المعاملة (TXID / Hash) إلى المشرف لتفعيل اشتراكك وروبوت التداول فوراً.`
+        : `💎 <b>Crypto Payment (USDT - TRC20):</b>\n\n` +
+          `Available worldwide for all members 🌍\n\n` +
+          `🌐 <b>Network:</b> <b>${escapeTgHtml(usdt.network || 'USDT (TRC20)')}</b>\n` +
+          `📬 <b>Wallet Address:</b>\n` +
+          `<code>${escapeTgHtml(usdt.address || 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo')}</code>\n` +
+          `<i>(Tap address above to copy)</i>\n\n` +
+          `⚠️ <b>Important Note:</b>\n` +
+          `• Transfer strictly via <b>TRC20 (TRON)</b> network.\n` +
+          `• After payment, send TXID and screenshot to admin for instant activation.`;
+
+      const buttons = isAr
+        ? [
+            [{ text: '📩 إرسال إشعار الدفع ورقم المعاملة (TXID) للمشرف', url: contactUrl }],
+            [
+              { text: '🔙 رجوع لخيارات الدفع', callback_data: 'onb_sub_paid' },
+              { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+            ]
+          ]
+        : [
+            [{ text: '📩 Send Proof & TXID to Admin', url: contactUrl }],
+            [
+              { text: '🔙 Back to Payment Options', callback_data: 'onb_sub_paid' },
+              { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
+            ]
+          ];
+
+      const qrPath = usdt.qrImageUrl || '/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg';
+      let photoSent = false;
+      try {
+        const pRes = await sendTelegramPhoto(token, chatId, qrPath, text, undefined, buttons);
+        if (pRes?.ok) {
+          photoSent = true;
+        }
+      } catch (_e) {}
+
+      if (!photoSent) {
+        await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
+      }
+      return;
+    }
+
+    // Branch: IBAN EGP Details (Rest of World Only)
     if (data === 'onb_pay_iban_egp') {
+      if (isEgyptCountryText(user.country)) {
+        // STRICT GUARD: Egypt users must never see IBAN details
+        const text =
+          `🇪🇬 <b>تنبيه خاص بالمشتركين داخل مصر:</b>\n\n` +
+          `طرق الدفع المعتمدة لمصر هي <b>إنستا باي (InstaPay)</b> و<b>المحافظ الإلكترونية</b> فقط.\n` +
+          `تم توجيهك لوسائل الدفع المعتمدة:`;
+        const buttons = [
+          [
+            { text: '⚡ إنستا باي (InstaPay)', callback_data: 'onb_pay_instapay' },
+            { text: '📱 المحافظ الإلكترونية (كاش)', callback_data: 'onb_pay_wallets' }
+          ],
+          [{ text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }]
+        ];
+        await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
+        return;
+      }
+
       const ibanEgp = cfg.internationalPayment?.ibanEgp || defaultTelegramBotConfig.internationalPayment.ibanEgp;
       const isAr = user.language !== 'en';
       const text = isAr
         ? `🏦 <b>تفاصيل الحساب البنكي والآيبان (بالجنيه المصري EGP):</b>\n\n` +
-          `🌍 <b>الدولة:</b> ${escapeTgHtml(ibanEgp.country || 'جمهورية مصر العربية 🇪🇬')}\n` +
+          `🌍 <b>الدولة:</b> ${escapeTgHtml(ibanEgp.country || 'دولي 🌍')}\n` +
           `🏛 <b>اسم البنك:</b> ${escapeTgHtml(ibanEgp.bankName)}\n` +
           `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(ibanEgp.beneficiaryName || (ibanEgp as any).accountName || 'ثريا نبيل / ZAD FX')}\n` +
           `💰 <b>العملة:</b> ${escapeTgHtml(ibanEgp.currency || 'الجنيه المصري EGP')}\n` +
@@ -3733,7 +4474,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
           `⚡ <b>سويفت كود (SWIFT/BIC):</b> <code>${escapeTgHtml(ibanEgp.swiftCode || 'NBEGEGCX')}</code>\n\n` +
           `📌 <i>بعد إتمام الحوالة البنكية، يرجى إرسال صورة إشعار التحويل للمشرف لتفعيل اشتراكك وروبوت التداول فوراً.</i>`
         : `🏦 <b>Bank Account & IBAN Details (in Egyptian Pounds EGP):</b>\n\n` +
-          `🌍 <b>Country:</b> ${escapeTgHtml(ibanEgp.country || 'Egypt 🇪🇬')}\n` +
+          `🌍 <b>Country:</b> ${escapeTgHtml(ibanEgp.country || 'International 🌍')}\n` +
           `🏛 <b>Bank Name:</b> ${escapeTgHtml(ibanEgp.bankName)}\n` +
           `👤 <b>Beneficiary Name:</b> ${escapeTgHtml(ibanEgp.beneficiaryName || (ibanEgp as any).accountName || 'Thraya Nabil / ZAD FX')}\n` +
           `💰 <b>Currency:</b> ${escapeTgHtml(ibanEgp.currency || 'EGP (Egyptian Pounds)')}\n` +
@@ -3758,12 +4499,29 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
             ]
           ];
 
-      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
       return;
     }
 
-    // Branch: IBAN USD Details (Rest of World)
+    // Branch: IBAN USD Details (Rest of World Only)
     if (data === 'onb_pay_iban_usd') {
+      if (isEgyptCountryText(user.country)) {
+        // STRICT GUARD: Egypt users must never see IBAN details
+        const text =
+          `🇪🇬 <b>تنبيه خاص بالمشتركين داخل مصر:</b>\n\n` +
+          `طرق الدفع المعتمدة لمصر هي <b>إنستا باي (InstaPay)</b> و<b>المحافظ الإلكترونية</b> فقط.\n` +
+          `تم توجيهك لوسائل الدفع المعتمدة:`;
+        const buttons = [
+          [
+            { text: '⚡ إنستا باي (InstaPay)', callback_data: 'onb_pay_instapay' },
+            { text: '📱 المحافظ الإلكترونية (كاش)', callback_data: 'onb_pay_wallets' }
+          ],
+          [{ text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }]
+        ];
+        await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
+        return;
+      }
+
       const ibanUsd = cfg.internationalPayment?.ibanUsd || defaultTelegramBotConfig.internationalPayment.ibanUsd;
       const isAr = user.language !== 'en';
       const text = isAr
@@ -3802,7 +4560,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
             ]
           ];
 
-      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
       return;
     }
 
@@ -3856,7 +4614,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
             ]
           ];
 
-      await sendTelegramInlineMessage(token, chatId, text, buttons, 'HTML');
+      await editOrSendTelegramInlineMessage(token, chatId, text, buttons, 'HTML', messageId);
       return;
     }
   }
@@ -3866,6 +4624,16 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
     const msg = update.message;
     const chatId = String(msg.chat.id);
     const text = String(msg.text || '').trim();
+    const msgKey = `${chatId}:${msg.message_id}`;
+    if (processedTelegramMessageKeys.has(msgKey)) {
+      return;
+    }
+    processedTelegramMessageKeys.add(msgKey);
+    if (processedTelegramMessageKeys.size > 2000) {
+      const f = processedTelegramMessageKeys.values().next().value;
+      if (f !== undefined) processedTelegramMessageKeys.delete(f);
+    }
+
     const tgUsername = msg.chat.username ? `@${msg.chat.username}` : '';
     const firstName = msg.chat.first_name || '';
     const lastName = msg.chat.last_name || '';
@@ -3913,8 +4681,11 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
       user.step = 'START';
       saveState();
       const welcome =
-        `مرحباً بك في بوت أكاديمية وروبوت ZAD FX للتداول الآلي 🚀\n` +
-        `<i>Welcome to ZAD FX Automated Trading Bot 🚀</i>\n\n` +
+        `مرحباً بك في بوت أكاديمية وروبوت ZAD FX للتداول الآلي 🚀\n\n` +
+        `🔔 <b>تنويه هام:</b>\n` +
+        `الخدمة <b>مجانية 100%</b> بالكامل ولا تتطلب أي رسوم اشتراكات!\n` +
+        `كل ما عليك هو أن تتبع <b>رابط الإحالة</b> لتكون ضمن الفريق المستفيد. 🎁\n\n` +
+        `<i>Welcome to ZAD FX Automated Trading Bot 🚀\nNotice: The service is 100% FREE with zero subscription fees, just follow our referral link to join our team.</i>\n\n` +
         `يرجى اختيار لغة المتابعة / Please choose your preferred language:`;
 
       const langButtons = [
@@ -3935,41 +4706,180 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
       saveState();
 
       const isAr = user.language !== 'en';
+      const ipVerifyUrl = `${webUrl}/api/verify-country?chatId=${user.telegramChatId}`;
       const promptCountry = isAr
         ? `أهلاً بك يا <b>${escapeTgHtml(user.name)}</b>! 🌍\n\n` +
-          `يرجى الآن كتابة <b>الدولة التي تقيم فيها حالياً</b> (لتحديد وسائل الدفع المناسبة لك):`
+          `يرجى الآن تحديد <b>الدولة التي تقيم فيها حالياً</b> (لتثبيت وسائل الدفع المناسبة لك):\n\n` +
+          `💡 <i>يمكنك الضغط على زر (التحقق التلقائي عبر الـ IP) لتثبيت دولتك بنقرة واحدة مباشرة، أو اختيار دولتك من الأزرار:</i>`
         : `Welcome <b>${escapeTgHtml(user.name)}</b>! 🌍\n\n` +
-          `Please now enter the <b>Country where you currently reside</b> (to determine suitable payment methods):`;
+          `Please set the <b>Country where you currently reside</b> (to enable your approved payment methods):\n\n` +
+          `💡 <i>You can tap (Verify via IP) to auto-detect and lock your country, or choose below:</i>`;
 
-      await sendTelegramInlineMessage(token, chatId, promptCountry, undefined, 'HTML');
+      const countryButtons = isAr
+        ? [
+            [
+              { text: '🌐 تحديد وتثبيت الدولة تلقائياً عبر الـ IP', url: ipVerifyUrl }
+            ],
+            [
+              { text: '🇪🇬 جمهورية مصر العربية', callback_data: 'onb_set_country_eg' },
+              { text: '🇵🇸 دولة فلسطين', callback_data: 'onb_set_country_ps' }
+            ],
+            [
+              { text: '🌍 دولة أخرى (دولي)', callback_data: 'onb_set_country_intl' }
+            ]
+          ]
+        : [
+            [
+              { text: '🌐 Auto-Verify Country via IP', url: ipVerifyUrl }
+            ],
+            [
+              { text: '🇪🇬 Egypt', callback_data: 'onb_set_country_eg' },
+              { text: '🇵🇸 Palestine', callback_data: 'onb_set_country_ps' }
+            ],
+            [
+              { text: '🌍 Other Countries (International)', callback_data: 'onb_set_country_intl' }
+            ]
+          ];
+
+      await sendTelegramInlineMessage(token, chatId, promptCountry, countryButtons, 'HTML');
       return;
     }
 
-    // If awaiting Country
+    // If awaiting Country during Onboarding
     if (user.step === 'AWAITING_COUNTRY') {
-      user.country = text;
+      let finalCountry = text.trim();
+      if (isEgyptCountryText(finalCountry)) {
+        finalCountry = 'جمهورية مصر العربية 🇪🇬';
+      } else if (isPalestineCountryText(finalCountry)) {
+        finalCountry = 'دولة فلسطين 🇵🇸';
+      }
+      user.country = finalCountry;
       user.step = 'COMPLETED';
       saveState();
 
       const isAr = user.language !== 'en';
-      const confirmText = isAr
-        ? `✅ <b>تم تجهيز وتفعيل ملف عضويتك بنجاح!</b>\n\n` +
-          `👤 <b>الاسم:</b> ${escapeTgHtml(user.name)}\n` +
-          `🌍 <b>الدولة:</b> ${escapeTgHtml(user.country)}\n` +
-          `🆔 <b>معرف العضوية:</b> <code>${user.telegramChatId}</code>\n\n` +
-          `اختر ما ترغب به من القائمة الرئيسية أدناه:`
-        : `✅ <b>Your membership profile has been successfully prepared!</b>\n\n` +
-          `👤 <b>Name:</b> ${escapeTgHtml(user.name)}\n` +
-          `🌍 <b>Country:</b> ${escapeTgHtml(user.country)}\n` +
-          `🆔 <b>Member ID:</b> <code>${user.telegramChatId}</code>\n\n` +
-          `Choose an option from the main menu below:`;
+      const welcomeNotice = isAr
+        ? `✅ <b>تم حفظ وتحديد دولتك: ${escapeTgHtml(user.country)}</b> <i>(متاحة للتعديل بأي وقت من خيار الملف الشخصي)</i>`
+        : `✅ <b>Country set: ${escapeTgHtml(user.country)}</b> <i>(Editable anytime from Profile)</i>`;
 
-      await sendTelegramInlineMessage(token, chatId, confirmText, undefined, 'HTML');
-      await sendTelegramBotMainMenu(token, chatId, user);
+      await sendTelegramBotMainMenu(token, chatId, user, undefined, welcomeNotice);
       return;
     }
 
-    // If already completed and sent /menu
+    // If member is updating Name from Profile
+    if (user.step === 'EDIT_NAME') {
+      user.name = text.trim() || user.name;
+      user.step = 'COMPLETED';
+      saveState();
+      const isAr = user.language !== 'en';
+      const notice = isAr
+        ? `✅ <b>تم تعديل وتحديث اسمك بنجاح إلى:</b> <b>${escapeTgHtml(user.name)}</b>`
+        : `✅ <b>Name updated successfully to:</b> <b>${escapeTgHtml(user.name)}</b>`;
+      await sendTelegramBotMainMenu(token, chatId, user, undefined, notice);
+      return;
+    }
+
+    // If member is adding/updating Email from Profile
+    if (user.step === 'EDIT_EMAIL') {
+      user.email = text.trim();
+      user.step = 'COMPLETED';
+      saveState();
+      const isAr = user.language !== 'en';
+      const notice = isAr
+        ? `✅ <b>تم حفظ وتحديث بريدك الإلكتروني بنجاح:</b> <code>${escapeTgHtml(user.email)}</code>`
+        : `✅ <b>Email saved successfully:</b> <code>${escapeTgHtml(user.email)}</code>`;
+      await sendTelegramBotMainMenu(token, chatId, user, undefined, notice);
+      return;
+    }
+
+    // If member is typing custom Country from Profile
+    if (user.step === 'EDIT_COUNTRY') {
+      let finalCountry = text.trim();
+      if (isEgyptCountryText(finalCountry)) {
+        finalCountry = 'جمهورية مصر العربية 🇪🇬';
+      } else if (isPalestineCountryText(finalCountry)) {
+        finalCountry = 'دولة فلسطين 🇵🇸';
+      }
+      user.country = finalCountry;
+      user.step = 'COMPLETED';
+      saveState();
+      const isAr = user.language !== 'en';
+      const notice = isAr
+        ? `✅ <b>تم تعديل وتحديث دولتك بنجاح إلى:</b> <b>${escapeTgHtml(user.country)}</b>`
+        : `✅ <b>Country updated successfully to:</b> <b>${escapeTgHtml(user.country)}</b>`;
+      await sendTelegramBotMainMenu(token, chatId, user, undefined, notice);
+      return;
+    }
+
+    // Quick Command or Keyword: Profile / البروفايل / الملف الشخصي
+    const lowerText = text.toLowerCase();
+    if (
+      lowerText === '/profile' ||
+      lowerText.includes('الملف الشخصي') ||
+      lowerText.includes('البروفايل') ||
+      lowerText.includes('بروفايل') ||
+      lowerText.includes('my profile')
+    ) {
+      const isAr = user.language !== 'en';
+      const profText = isAr
+        ? `👤 <b>الملف الشخصي للعضو — أكاديمية ZAD FX 🚀</b>\n\n` +
+          `🏷️ <b>الاسم:</b> ${escapeTgHtml(user.name)}\n` +
+          `📧 <b>البريد الإلكتروني:</b> ${escapeTgHtml(user.email || 'لم يتم الإضافة بعد')}\n` +
+          `🌍 <b>الدولة الحالية:</b> ${escapeTgHtml(user.country || 'غير محددة')} <i>(متاحة للتعديل)</i>\n` +
+          `🆔 <b>معرف التليجرام (Chat ID):</b> <code>${user.telegramChatId}</code>\n` +
+          `💎 <b>نوع العضوية:</b> ${user.membershipType === 'PAID_VIP' ? 'عضوية مدفوعة VIP 👑' : user.membershipType === 'FREE_REFERRAL' ? 'اشتراك مجاني عبر الإحالة 🎁' : 'عضو مسجل (عادي)'}\n\n` +
+          `💡 <i>يمكنك تعديل أي من بياناتك أو تغيير دولتك بحرية في أي وقت:</i>`
+        : `👤 <b>User Profile — ZAD FX Academy 🚀</b>\n\n` +
+          `🏷️ <b>Name:</b> ${escapeTgHtml(user.name)}\n` +
+          `📧 <b>Email:</b> ${escapeTgHtml(user.email || 'Not added')}\n` +
+          `🌍 <b>Current Country:</b> ${escapeTgHtml(user.country || 'Not set')} <i>(Editable)</i>\n` +
+          `🆔 <b>Telegram ID:</b> <code>${user.telegramChatId}</code>\n` +
+          `💎 <b>Membership:</b> ${user.membershipType}\n\n` +
+          `💡 <i>You can edit your personal details or country anytime:</i>`;
+
+      const profButtons = isAr
+        ? [
+            [
+              { text: '✏️ تعديل الاسم', callback_data: 'onb_prof_edit_name' },
+              { text: '📧 إضافة / تعديل البريد', callback_data: 'onb_prof_edit_email' }
+            ],
+            [
+              { text: '🌍 تغيير وتعديل الدولة', callback_data: 'onb_prof_edit_country' }
+            ],
+            [
+              { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
+            ]
+          ]
+        : [
+            [
+              { text: '✏️ Edit Name', callback_data: 'onb_prof_edit_name' },
+              { text: '📧 Add / Edit Email', callback_data: 'onb_prof_edit_email' }
+            ],
+            [
+              { text: '🌍 Change Country', callback_data: 'onb_prof_edit_country' }
+            ],
+            [
+              { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
+            ]
+          ];
+
+      await sendTelegramInlineMessage(token, chatId, profText, profButtons, 'HTML');
+      return;
+    }
+
+    // Quick Country Change Command
+    if (lowerText.includes('تغيير الدولة') || lowerText.includes('تعديل الدولة') || lowerText.includes('change country')) {
+      user.step = 'EDIT_COUNTRY';
+      saveState();
+      const isAr = user.language !== 'en';
+      const prompt = isAr
+        ? `🌍 <b>تعديل الدولة:</b>\n\nيرجى كتابة وإرسال اسم دولتك الآن (مثال: مصر، فلسطين، الجزائر، المغرب، السعودية، العراق، ...):`
+        : `🌍 <b>Change Country:</b>\n\nPlease type and send your country name:`;
+      await sendTelegramInlineMessage(token, chatId, prompt, undefined, 'HTML');
+      return;
+    }
+
+    // If already completed and sent /menu or /start
     if (text.startsWith('/menu') || text === 'القائمة') {
       await sendTelegramBotMainMenu(token, chatId, user);
       return;
@@ -3994,10 +4904,26 @@ async function pollOnboardingTelegramBotUpdates() {
     const url = `https://api.telegram.org/bot${token}/getUpdates?offset=${lastOnboardingBotUpdateId + 1}&timeout=1`;
     const res = await fetch(url);
     const data = (await res.json()) as any;
-    if (data.ok && Array.isArray(data.result)) {
+    if (data.ok && Array.isArray(data.result) && data.result.length > 0) {
+      let stateChanged = false;
       for (const update of data.result) {
-        lastOnboardingBotUpdateId = Math.max(lastOnboardingBotUpdateId, update.update_id);
+        const uid = update.update_id;
+        if (typeof uid === 'number') {
+          if (uid <= lastOnboardingBotUpdateId || processedOnboardingUpdateIds.has(uid)) {
+            continue;
+          }
+          lastOnboardingBotUpdateId = Math.max(lastOnboardingBotUpdateId, uid);
+          processedOnboardingUpdateIds.add(uid);
+          stateChanged = true;
+          if (processedOnboardingUpdateIds.size > 2000) {
+            const firstVal = processedOnboardingUpdateIds.values().next().value;
+            if (firstVal !== undefined) processedOnboardingUpdateIds.delete(firstVal);
+          }
+        }
         await processInteractiveTelegramBotUpdate(update, token);
+      }
+      if (stateChanged) {
+        saveState();
       }
     }
   } catch (_e) {
@@ -4026,7 +4952,7 @@ async function updateSingleTelegramDestination(
   let success = false;
   let newReplyId = existingReplyMessageId;
 
-  // 1. Edit original signal message in-place (does not create a new notification)
+  // 1. Edit original signal message in-place (synchronizes the formatted message text with WIN/LOSS)
   if (originalMessageId) {
     try {
       const editRes = await fetch(`https://api.telegram.org/bot${botToken.trim()}/editMessageText`, {
@@ -4045,36 +4971,28 @@ async function updateSingleTelegramDestination(
     }
   }
 
-  // 2. Send or edit the SINGLE concise reply notification (Photo if uploaded, otherwise Text)
-  try {
-    if (existingReplyMessageId) {
-      // Try editing caption first (in case previous reply was a photo) or text
-      const editTextRes = await fetch(`https://api.telegram.org/bot${botToken.trim()}/editMessageText`, {
+  // 2. If there was a previous reply message (e.g. an earlier ❌ photo or message),
+  // delete it first so there is NEVER a contradictory ❌ photo under an updated WIN trade!
+  if (existingReplyMessageId) {
+    try {
+      await fetch(`https://api.telegram.org/bot${botToken.trim()}/deleteMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId.trim(),
-          message_id: existingReplyMessageId,
-          text: conciseResultMsg
+          message_id: existingReplyMessageId
         })
       });
-      const editTextData = (await editTextRes.json()) as any;
-      if (editTextData.ok) {
-        success = true;
-      } else {
-        const editCapRes = await fetch(`https://api.telegram.org/bot${botToken.trim()}/editMessageCaption`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chatId.trim(),
-            message_id: existingReplyMessageId,
-            caption: conciseResultMsg
-          })
-        });
-        const editCapData = (await editCapRes.json()) as any;
-        if (editCapData.ok) success = true;
-      }
-    } else if (originalMessageId) {
+    } catch (_delErr) {
+      // Ignore delete error
+    }
+    existingReplyMessageId = undefined;
+    newReplyId = undefined;
+  }
+
+  // 3. Dispatch the new accurate result notification (Photo if uploaded and valid, otherwise clean text/emoji)
+  if (originalMessageId) {
+    try {
       const isEmojiSize = autoPilot.resultNotificationStyle !== 'photo';
       if (!isEmojiSize && resultImageUrl && resultImageUrl.trim()) {
         const photoData = await sendTelegramPhoto(
@@ -4101,7 +5019,7 @@ async function updateSingleTelegramDestination(
           }
         }
       } else {
-        // Send clean compact native emoji-sized notification (✅ or ❌)
+        // Send clean compact native emoji-sized notification (e.g. 👑✅ ربح VIP or ❌)
         const replyData = await sendTelegramMessage(
           botToken,
           chatId,
@@ -4113,9 +5031,9 @@ async function updateSingleTelegramDestination(
           success = true;
         }
       }
+    } catch (_e) {
+      // Ignore reply error
     }
-  } catch (_e) {
-    // Ignore reply error
   }
 
   return { ok: success, replyMessageId: newReplyId };
@@ -4261,9 +5179,10 @@ async function evaluateCompletedM1Candle(
   targetEpochSeconds: number,
   entryPriceNumeric?: number
 ): Promise<'WIN' | 'LOSS' | 'DRAW'> {
-  const yahooSymbol = `${asset.replace('/', '')}=X`;
+  const cleanAsset = asset.replace('/', '').toUpperCase();
+  const yahooSymbol = `${cleanAsset}=X`;
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= 4; attempt++) {
     try {
       const res = await fetch(
         `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1m&range=1d`,
@@ -4275,26 +5194,29 @@ async function evaluateCompletedM1Candle(
       );
       const data = (await res.json()) as any;
       const result = data?.chart?.result?.[0];
-      const liveMetaPrice: number | undefined = result?.meta?.regularMarketPrice;
       const timestamps: number[] = result?.timestamp || [];
       const quote = result?.indicators?.quote?.[0] || {};
       const opens: (number | null)[] = quote.open || [];
       const closes: (number | null)[] = quote.close || [];
-      const highs: (number | null)[] = quote.high || [];
-      const lows: (number | null)[] = quote.low || [];
 
       let matchedIndex = -1;
-      const targetMinute = new Date(targetEpochSeconds * 1000).getUTCMinutes();
-      const targetHour = new Date(targetEpochSeconds * 1000).getUTCHours();
+      const targetDate = new Date(targetEpochSeconds * 1000);
+      const targetMinute = targetDate.getUTCMinutes();
+      const targetHour = targetDate.getUTCHours();
 
       for (let i = timestamps.length - 1; i >= 0; i--) {
         const ts = timestamps[i];
         const d = new Date(ts * 1000);
+        const isTimeMatch =
+          Math.abs(ts - targetEpochSeconds) <= 30 ||
+          (d.getUTCMinutes() === targetMinute && d.getUTCHours() === targetHour);
+
         if (
-          (Math.abs(ts - targetEpochSeconds) <= 30 ||
-            (d.getUTCMinutes() === targetMinute && d.getUTCHours() === targetHour)) &&
+          isTimeMatch &&
           typeof opens[i] === 'number' &&
-          typeof closes[i] === 'number'
+          typeof closes[i] === 'number' &&
+          opens[i] !== null &&
+          closes[i] !== null
         ) {
           matchedIndex = i;
           break;
@@ -4304,48 +5226,51 @@ async function evaluateCompletedM1Candle(
       if (matchedIndex !== -1) {
         const cOpen = opens[matchedIndex] as number;
         const cClose = closes[matchedIndex] as number;
-        const cHigh = highs[matchedIndex] ?? Math.max(cOpen, cClose);
-        const cLow = lows[matchedIndex] ?? Math.min(cOpen, cClose);
 
-        const hasEntryPrice = typeof entryPriceNumeric === 'number' && entryPriceNumeric > 0;
-        const strikePrice = hasEntryPrice ? entryPriceNumeric! : cOpen;
+        // In 1-Minute Binary Options (Quotex / PocketOption):
+        // The strike price is the candle's OPEN at :00 seconds.
+        // If candle closes in the trade's direction, the trade is a pure WIN!
+        const diff = cClose - cOpen;
 
-        const isJpyPair = asset.toUpperCase().includes('JPY');
-        const drawTolerance = isJpyPair ? 0.005 : 0.00002;
-        const priceDiff = cClose - strikePrice;
-        const absDiff = Math.abs(priceDiff);
-
-        // Quotex / Binary Options DRAW condition: price close equals strike price (100% capital refund)
-        if (absDiff <= drawTolerance) {
+        if (Math.abs(diff) < 0.000001) {
+          // Exactly flat candle: check against entry price if available
+          if (typeof entryPriceNumeric === 'number' && entryPriceNumeric > 0) {
+            const entryDiff = cClose - entryPriceNumeric;
+            if (direction === 'CALL') {
+              return entryDiff > 0.000001 ? 'WIN' : entryDiff < -0.000001 ? 'LOSS' : 'DRAW';
+            } else {
+              return entryDiff < -0.000001 ? 'WIN' : entryDiff > 0.000001 ? 'LOSS' : 'DRAW';
+            }
+          }
           return 'DRAW';
         }
 
         if (direction === 'CALL') {
-          if (priceDiff > drawTolerance) {
-            return 'WIN';
-          }
-          return 'LOSS';
+          return diff > 0 ? 'WIN' : 'LOSS';
         } else {
-          // PUT Wins if price closed lower than strike
-          if (priceDiff < -drawTolerance) {
-            return 'WIN';
-          }
-          return 'LOSS';
-        }
-      } else if (typeof entryPriceNumeric === 'number' && typeof liveMetaPrice === 'number') {
-        const strikePrice = entryPriceNumeric;
-        if (direction === 'CALL') {
-          return liveMetaPrice >= strikePrice - 0.00001 ? 'WIN' : 'LOSS';
-        } else {
-          return liveMetaPrice <= strikePrice + 0.00001 ? 'WIN' : 'LOSS';
+          // PUT wins when candle closes below open (Red candle)
+          return diff < 0 ? 'WIN' : 'LOSS';
         }
       }
     } catch (_e) {
       // Retry
     }
 
-    if (attempt < 3) {
-      await new Promise(r => setTimeout(r, 3000));
+    if (attempt < 4) {
+      await new Promise(r => setTimeout(r, 4000));
+    }
+  }
+
+  // Secondary Fallback: Check liveMarketSnapshots if available
+  const snap = liveMarketSnapshots.find(
+    s => s.pair.replace('/', '').toUpperCase() === cleanAsset
+  );
+  if (snap && typeof entryPriceNumeric === 'number' && entryPriceNumeric > 0) {
+    const liveDiff = snap.price - entryPriceNumeric;
+    if (direction === 'CALL') {
+      return liveDiff >= 0 ? 'WIN' : 'LOSS';
+    } else {
+      return liveDiff <= 0 ? 'WIN' : 'LOSS';
     }
   }
 
@@ -5034,20 +5959,49 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
     const now = new Date();
     const sec = now.getSeconds();
 
-    // 5-second confirmation window before candle close: strictly between :53 and :56 of the minute
-    // At this point, the candle is 92% complete so CALL / PUT direction is confirmed with highest accuracy!
-    if (sec < 53 || sec > 56) return;
+    // High-accuracy confirmation window before candle close: between :48 and :58 of the minute
+    // Gives 2 to 12 seconds head start so signal is dispatched and executed smoothly at :00 candle open!
+    if (sec < 48 || sec > 58) return;
 
     // Prevent duplicate firing in the exact same minute
     const currentMinuteKey = `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}-${now.getUTCHours()}:${now.getUTCMinutes()}`;
     if (lastVipDispatchedMinute === currentMinuteKey) return;
 
-    // Robot trade overlap guard: only pause during the active 50s candle execution so next minute is immediately available!
-    const pendingActiveTrade = signalsStore.find(
-      s => s.status === 'PENDING' && s.instantExecution5s &&
-           Date.now() - new Date(s.createdAt).getTime() < 50 * 1000
+    // 1. High-Impact Economic News Pause:
+    // Allows the robot to pause during high-impact news events (+/- 10 minutes around target time)
+    const newsPause = isHighImpactNewsPauseActiveNow();
+    if (newsPause.isPaused) {
+      return;
+    }
+
+    // 2. Strict Post-Trade Cooldown Guard:
+    // Must wait at least 2 full minutes (120 seconds) AFTER the currently open trade has closed!
+    // Prevents consecutive minute 2, 3, 4 signal spamming.
+    const lastSignal = signalsStore[0];
+    if (lastSignal) {
+      // 1-minute expiration: trade candle closes 60 seconds after entry
+      const tradeCloseTimeMs = lastSignal.targetEntryTimestamp
+        ? (lastSignal.targetEntryTimestamp + 60) * 1000
+        : (lastSignal.createdAt ? new Date(lastSignal.createdAt).getTime() + 60 * 1000 : 0);
+
+      // If the trade candle is still open, never dispatch another signal
+      if (Date.now() < tradeCloseTimeMs) {
+        return;
+      }
+
+      // Must wait at least 2 full minutes (120,000 ms) AFTER the trade candle closed
+      const elapsedSinceTradeClosedMs = Date.now() - tradeCloseTimeMs;
+      const minRequiredCooldownMs = 120 * 1000; // Strictly 2 minutes (120s) post-trade-close cooldown as requested
+      if (elapsedSinceTradeClosedMs < minRequiredCooldownMs) {
+        return; // Wait at least 2 full minutes after trade close
+      }
+    }
+
+    // Pending trade guard: Never dispatch a new trade while any active trade is pending or executing
+    const hasPendingTrade = signalsStore.some(
+      s => s.status === 'PENDING' && Date.now() - new Date(s.createdAt).getTime() < 80 * 1000
     );
-    if (pendingActiveTrade) return;
+    if (hasPendingTrade) return;
 
     // Scan all 6 major pairs in one unified batch
     const { snapshots } = await scanRealGlobalForexMarket(false);
@@ -5060,85 +6014,63 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
       allowed.some(p => p === s.pair || p.replace('/', '') === s.pair.replace('/', ''))
     );
 
-    // Filter snapshots that meet the 4-indicator confluence rules
+    // Filter snapshots that strictly meet the 4-indicator confluence rules (at least 3 supporting indicators)
     const qualifyingSnapshots = allowedSnapshots.filter(s => {
       const conf = s.fourIndicatorConfluence;
-      return conf && conf.isSignalTriggered && conf.candidateDirection;
+      return (
+        conf &&
+        conf.isSignalTriggered &&
+        conf.candidateDirection &&
+        (conf.supportingCount || 0) >= 3
+      );
     });
+
+    // Real Technical Scanning: If no genuine 3-indicator confluence exists, DO NOT send random or forced signals!
+    if (qualifyingSnapshots.length === 0) {
+      return;
+    }
 
     let selectedCandidate: LivePairSnapshot | null = null;
     let chosenVariant: 'WITH_MPB' | 'WITHOUT_MPB' = 'WITH_MPB';
     let targetDir: 'CALL' | 'PUT' = 'CALL';
     let confPayload: any = null;
 
-    // Last dispatched assets to encourage natural rotation across all 6 pairs instead of sticking to EUR/JPY
+    // Last dispatched assets to encourage natural rotation across all 6 pairs instead of sticking to one pair
     const recentDispatched = signalsStore.slice(0, 4).map(s => s.asset);
     const lastDispatchedAsset = signalsStore[0]?.asset || '';
 
-    if (qualifyingSnapshots.length > 0) {
-      // Sort by supporting indicator count then quality score
-      const sorted = qualifyingSnapshots.sort((a, b) => {
-        const countA = a.fourIndicatorConfluence?.supportingCount || 0;
-        const countB = b.fourIndicatorConfluence?.supportingCount || 0;
-        if (countB !== countA) return countB - countA;
-        return (b.qualityScore || 0) - (a.qualityScore || 0);
-      });
+    // Sort by supporting indicator count then quality score
+    const sorted = qualifyingSnapshots.sort((a, b) => {
+      const countA = a.fourIndicatorConfluence?.supportingCount || 0;
+      const countB = b.fourIndicatorConfluence?.supportingCount || 0;
+      if (countB !== countA) return countB - countA;
+      return (b.qualityScore || 0) - (a.qualityScore || 0);
+    });
 
-      // Pair rotation: pick pair not used recently among the 6 pairs
-      const freshPairCandidate = sorted.find(s => !recentDispatched.includes(s.pair));
-      const alternate = sorted.find(s => s.pair !== lastDispatchedAsset);
-      selectedCandidate = freshPairCandidate || alternate || sorted[0];
+    // Pair rotation: pick pair not used recently among the 6 pairs
+    const freshPairCandidate = sorted.find(s => !recentDispatched.includes(s.pair));
+    const alternate = sorted.find(s => s.pair !== lastDispatchedAsset);
+    selectedCandidate = freshPairCandidate || alternate || sorted[0];
 
-      const conf = selectedCandidate.fourIndicatorConfluence!;
-      targetDir = conf.candidateDirection!;
-      const hasMpb = Boolean(conf.momentumPauseMatched && selectedCandidate.momentumPauseBreakout?.isDetected);
-      chosenVariant = hasMpb ? 'WITH_MPB' : 'WITHOUT_MPB';
+    const conf = selectedCandidate.fourIndicatorConfluence!;
+    targetDir = conf.candidateDirection!;
+    const hasMpb = Boolean(conf.momentumPauseMatched && selectedCandidate.momentumPauseBreakout?.isDetected);
+    chosenVariant = hasMpb ? 'WITH_MPB' : 'WITHOUT_MPB';
 
-      confPayload = {
-        momentumPause: selectedCandidate.momentumPauseBreakout as any,
-        atrValue: selectedCandidate.momentumPauseBreakout?.atr || 0.0002,
-        atrMatched: conf.atrMatched,
-        rsiValue: selectedCandidate.rsi,
-        rsiMatched: conf.rsiMatched,
-        superTrendMatched: conf.superTrendMatched,
-        superTrendDirection: selectedCandidate.superTrend?.trend || 'BULLISH',
-        supportingCount: conf.supportingCount,
-        candidateDirection: targetDir,
-        isSignalTriggered: true,
-        matchedList: conf.matchedList,
-        summary: conf.summary
-      };
-    } else if (allowedSnapshots.length > 0) {
-      // Continuous Robot Mode: If no 3-indicator exact match, choose the strongest directional trend among the 6 pairs
-      const sorted = [...allowedSnapshots].sort((a, b) => {
-        const diffA = Math.abs(50 - a.rsi);
-        const diffB = Math.abs(50 - b.rsi);
-        return diffB - diffA;
-      });
-      const alternate = sorted.find(s => s.pair !== lastDispatchedAsset);
-      selectedCandidate = (alternate && sorted.length > 1) ? alternate : sorted[0];
-
-      targetDir = selectedCandidate.rsi <= 50 ? 'CALL' : 'PUT';
-      chosenVariant = 'WITHOUT_MPB';
-      confPayload = {
-        momentumPause: selectedCandidate.momentumPauseBreakout as any,
-        atrValue: selectedCandidate.momentumPauseBreakout?.atr || 0.0002,
-        atrMatched: true,
-        rsiValue: selectedCandidate.rsi,
-        rsiMatched: true,
-        superTrendMatched: true,
-        superTrendDirection: targetDir === 'CALL' ? 'BULLISH' : 'BEARISH',
-        supportingCount: 3,
-        candidateDirection: targetDir,
-        isSignalTriggered: true,
-        matchedList: [
-          `مؤشر RSI (${selectedCandidate.rsi} ميل ${targetDir === 'CALL' ? 'صعودي' : 'هبوطي'})`,
-          `مؤشر Supertrend (${targetDir === 'CALL' ? 'صاعد أخضر 🟢' : 'هابط أحمر 🔴'})`,
-          `مؤشر ATR (سيولة نشطة)`
-        ],
-        summary: `توافق 3 مؤشرات فنية لتأكيد الاتجاه قبل 5 ثوانٍ من الافتتاح`
-      };
-    }
+    confPayload = {
+      momentumPause: selectedCandidate.momentumPauseBreakout as any,
+      atrValue: selectedCandidate.momentumPauseBreakout?.atr || 0.0002,
+      atrMatched: conf.atrMatched,
+      rsiValue: selectedCandidate.rsi,
+      rsiMatched: conf.rsiMatched,
+      superTrendMatched: conf.superTrendMatched,
+      superTrendDirection: selectedCandidate.superTrend?.trend || 'BULLISH',
+      supportingCount: conf.supportingCount,
+      candidateDirection: targetDir,
+      isSignalTriggered: true,
+      matchedList: conf.matchedList,
+      summary: conf.summary
+    };
 
     if (selectedCandidate && confPayload) {
       console.log(`[VIP MPB Engine ⚡] Confirmed 5s signal on ${selectedCandidate.pair} (${targetDir}) [${chosenVariant}] at second :${sec}. Dispatching for :00 open...`);
@@ -5187,24 +6119,10 @@ async function handleFreeBotTradeOutcome(sig: SignalItem, status: 'WIN' | 'WIN_G
   if (isWin) {
     autoPilot.freeBotConsecutiveLosses = 0;
   } else if (status === 'LOSS') {
-    autoPilot.freeBotConsecutiveLosses = (autoPilot.freeBotConsecutiveLosses || 0) + 1;
-    if (autoPilot.freeBotConsecutiveLosses >= 3) {
-      autoPilot.freeBotCooldownUntil = Date.now() + 30 * 60 * 1000; // 30 minutes pause
-      autoPilot.freeBotConsecutiveLosses = 0;
-      const freeToken = (autoPilot.botToken || '').trim();
-      const freeChat = (autoPilot.chatId || '').trim();
-      if (freeToken && freeChat) {
-        const cooldownNotice = [
-          '⚠️ تنبيه مؤقت من المشرف ZAD FX ⚠️',
-          '━━━━━━━━━━━━━━━━━━━',
-          'نظراً لتقلبات مفاجئة في حركة السوق وتسجيل 3 صفقات غير موفقة، نتوقف مؤقتاً لمدة 30 دقيقة لإعادة قراءة السيولة ومسح السوق بدقة حرصاً على إدارة رأس المال.',
-          'سنعود لمواصلة الصفقات فور استقرار المؤشرات حتى الساعة 12:00 ظهراً أو تحقيق هدف 70%-75% بإذن الله ⏱️🛡️',
-          '━━━━━━━━━━━━━━━━━━━',
-          'تذكر دائماً: حماية رأس المال أهم من التداول أثناء التقلبات العنيفة.'
-        ].join('\n');
-        sendTelegramMessage(freeToken, freeChat, cooldownNotice).catch(() => {});
-      }
-    }
+    // User instruction: NEVER stop or pause for losses or volatile market!
+    // The robot continues scanning smoothly without halting or sending stoppage warnings.
+    autoPilot.freeBotConsecutiveLosses = 0;
+    autoPilot.freeBotCooldownUntil = undefined;
   }
   await saveState();
 }
@@ -5223,24 +6141,10 @@ async function handleVipBotTradeOutcome(sig: SignalItem, status: 'WIN' | 'WIN_GA
   if (isWin) {
     autoPilot.vipBotConsecutiveLosses = 0;
   } else if (status === 'LOSS') {
-    autoPilot.vipBotConsecutiveLosses = (autoPilot.vipBotConsecutiveLosses || 0) + 1;
-    if (autoPilot.vipBotConsecutiveLosses >= 3) {
-      autoPilot.vipBotCooldownUntil = Date.now() + 30 * 60 * 1000; // 30 minutes pause
-      autoPilot.vipBotConsecutiveLosses = 0;
-      const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
-      const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
-      if (vipToken && vipChat) {
-        const vipCooldownNotice = [
-          '⚠️ تنبيه مؤقت لمشتركي VIP ⚠️',
-          '━━━━━━━━━━━━━━━━━━━',
-          'نظراً لتقلبات مفاجئة في حركة السوق وتسجيل 3 صفقات غير موفقة، نتوقف مؤقتاً لمدة 30 دقيقة لإعادة قراءة السيولة ومسح السوق بدقة حرصاً على إدارة رأس المال.',
-          'سنعود لمواصلة الصفقات فور استقرار المؤشرات واستئناف البث حتى الساعة 03:00 عصراً بإذن الله ⏱️🛡️',
-          '━━━━━━━━━━━━━━━━━━━',
-          'تذكر دائماً: حماية رأس المال والتداول الصارم بإدارة 1% هما سر النجاح أثناء تقلبات السوق.'
-        ].join('\n');
-        sendTelegramMessage(vipToken, vipChat, vipCooldownNotice).catch(() => {});
-      }
-    }
+    // User instruction: NEVER stop or pause for losses or volatile market!
+    // The robot continues scanning smoothly without halting or sending stoppage warnings.
+    autoPilot.vipBotConsecutiveLosses = 0;
+    autoPilot.vipBotCooldownUntil = undefined;
   }
   await saveState();
 }
@@ -6396,6 +7300,12 @@ async function checkFocusedGlobalMarketAutoPilot() {
 async function pollTelegramBotIncomingForwards() {
   if (!isGlobalForexMarketOpen()) return;
   if (!autoPilot.enabled || !autoPilot.botToken.trim() || !autoPilot.chatId.trim()) return;
+
+  // CRITICAL: Prevent duplicate getUpdates conflict if autoPilot uses the same bot token as the interactive bot!
+  const onbToken = (telegramBotConfigStore.botToken || '').trim() || DEFAULT_FREE_BOT_TOKEN;
+  if (telegramBotConfigStore.isEnabled && autoPilot.botToken.trim() === onbToken) {
+    return;
+  }
 
   try {
     const url = `https://api.telegram.org/bot${autoPilot.botToken.trim()}/getUpdates?offset=${lastTelegramUpdateId + 1}&timeout=1`;
@@ -9492,6 +10402,7 @@ async function startServer() {
         telegramChatId: String(b.telegramChatId || '').trim(),
         username: b.username ? String(b.username).trim() : '',
         name: String(b.name || 'عضو جديد').trim(),
+        email: b.email ? String(b.email).trim() : undefined,
         country: String(b.country || 'مصر 🇪🇬').trim(),
         language: b.language === 'en' ? 'en' : 'ar',
         step: 'COMPLETED',
@@ -9622,6 +10533,99 @@ async function startServer() {
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'Connection test failed' });
     }
+  });
+
+  // Automated IP-based Country Verification & Locking Endpoint
+  app.get('/api/verify-country', async (req, res) => {
+    const chatId = String(req.query.chatId || '').trim();
+    const forwarded = req.headers['x-forwarded-for'];
+    let clientIp = typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : (req.socket.remoteAddress || '');
+    if (clientIp.startsWith('::ffff:')) clientIp = clientIp.replace('::ffff:', '');
+
+    let detectedCountry = 'دولي 🌍';
+    let countryCode = '';
+
+    // Check Cloudflare / CDN geo headers first if present
+    const cfCountry = req.headers['cf-ipcountry'];
+    if (typeof cfCountry === 'string' && cfCountry.length === 2) {
+      countryCode = cfCountry.toUpperCase();
+    }
+
+    if (!countryCode && clientIp && !clientIp.startsWith('127.') && !clientIp.startsWith('10.') && !clientIp.startsWith('192.168.') && clientIp !== '::1') {
+      try {
+        const geoRes = await fetch(`http://ip-api.com/json/${clientIp}?fields=status,country,countryCode`);
+        const geoData = await geoRes.json();
+        if (geoData?.status === 'success') {
+          countryCode = (geoData.countryCode || '').toUpperCase();
+          if (countryCode === 'EG' || geoData.country?.toLowerCase().includes('egypt')) {
+            detectedCountry = 'جمهورية مصر العربية 🇪🇬';
+          } else if (countryCode === 'PS' || geoData.country?.toLowerCase().includes('palestine')) {
+            detectedCountry = 'دولة فلسطين 🇵🇸';
+          } else {
+            detectedCountry = `${geoData.country} 🌍`;
+          }
+        }
+      } catch (_e) {}
+    } else if (countryCode === 'EG') {
+      detectedCountry = 'جمهورية مصر العربية 🇪🇬';
+    } else if (countryCode === 'PS') {
+      detectedCountry = 'دولة فلسطين 🇵🇸';
+    }
+
+    if (chatId) {
+      let user = telegramBotUsersStore.find(u => u.telegramChatId === chatId);
+      if (user) {
+        user.country = detectedCountry;
+        user.step = 'COMPLETED';
+        user.lastInteractionAt = new Date().toISOString();
+      } else {
+        user = {
+          id: `tgu-${chatId}`,
+          telegramChatId: chatId,
+          name: 'عضو جديد',
+          country: detectedCountry,
+          language: 'ar',
+          step: 'COMPLETED',
+          status: 'ACTIVE',
+          membershipType: 'NONE',
+          registeredAt: new Date().toISOString(),
+          lastInteractionAt: new Date().toISOString()
+        };
+        telegramBotUsersStore.unshift(user);
+      }
+      await saveState();
+
+      const token = telegramBotConfigStore.botToken.trim() || autoPilot.botToken.trim() || DEFAULT_FREE_BOT_TOKEN;
+      const confirmNotice = `✅ <b>تم التحقق وتحديث دولتك تلقائياً عبر الـ IP:</b> <b>${escapeTgHtml(user.country)}</b> <i>(يمكنك تعديلها في أي وقت من الملف الشخصي)</i>`;
+      await sendTelegramBotMainMenu(token, chatId, user, undefined, confirmNotice);
+    }
+
+    res.send(`<!DOCTYPE html>
+<html dir="rtl" lang="ar">
+<head>
+  <meta charset="utf-8">
+  <title>تم تأكيد وتثبيت الدولة بنجاح - ZAD FX</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-white min-h-screen flex items-center justify-center p-4 font-sans">
+  <div class="bg-slate-900 border border-emerald-500/30 rounded-3xl p-8 max-w-md w-full text-center space-y-6 shadow-2xl">
+    <div class="w-16 h-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto text-3xl font-bold">✓</div>
+    <div class="space-y-2">
+      <h1 class="text-2xl font-black text-white">تم التحقق وتثبيت دولتك بنجاح!</h1>
+      <p class="text-emerald-400 text-xl font-extrabold tracking-wide">${detectedCountry}</p>
+    </div>
+    <div class="bg-slate-800/80 rounded-2xl p-4 text-xs text-slate-300 space-y-2 border border-slate-700/50">
+      <p>🔒 <b>تم قفل وتثبيت الدولة في ملفك الشخصي:</b></p>
+      <p class="text-slate-400 leading-relaxed">تم ضبط واختيار وسائل الدفع الرسمية المناسبة لدولتك في بوت التليجرام. بناءً على سياسة الإدارة لا يمكن تغيير الدولة إلا بواسطة المشرف.</p>
+    </div>
+    <a href="https://t.me/Zadfx_bot" class="inline-flex items-center justify-center gap-2 w-full py-4 px-6 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black shadow-lg shadow-emerald-500/20 transition-all text-base">
+      <span>العودة إلى بوت التليجرام الآن</span>
+      <span>🚀</span>
+    </a>
+  </div>
+</body>
+</html>`);
   });
 
   const httpServer = http.createServer(app);

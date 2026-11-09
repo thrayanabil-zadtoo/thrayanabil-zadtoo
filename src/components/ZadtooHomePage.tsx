@@ -514,6 +514,68 @@ export const ZadtooHomePage: React.FC<ZadtooHomePageProps> = ({
               </div>
             </div>
           )}
+
+          {/* Official Telegram Interactive Bot Showcase Section */}
+          <div className="mt-12 bg-linear-to-br from-indigo-950 via-slate-900 to-indigo-900 rounded-3xl p-6 sm:p-10 text-white shadow-2xl border-2 border-indigo-500/30 relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-80 h-80 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
+            <div className="absolute bottom-0 left-0 w-80 h-80 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+
+            <div className="relative z-10 flex flex-col lg:flex-row items-center justify-between gap-8">
+              <div className="space-y-4 max-w-2xl text-center lg:text-right">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/20 border border-indigo-400/30 text-indigo-300 text-xs font-black">
+                  <Send className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>بوت التليجرام التفاعلي الرسمي 🤖</span>
+                  <span className="bg-emerald-500 text-slate-950 text-[10px] px-2 py-0.5 rounded-full font-black animate-pulse">
+                    متاح 24/7
+                  </span>
+                </div>
+
+                <h3 className="text-2xl sm:text-3xl font-black text-white leading-tight">
+                  سجل عضويتك وتداول فوراً عبر بوت التليجرام الآلي <span className="text-indigo-400">@Zadfx_bot</span>
+                </h3>
+
+                <p className="text-slate-300 text-sm sm:text-base leading-relaxed">
+                  نظام ذكي متكامل يبدأ بالترحيب بك، وتحديد دولتك تلقائياً وتثبيتها، ثم توجيهك لوسائل الدفع المعتمدة (إنستا باي والمحافظ داخل مصر، بنك فلسطين، الآيبان الدولي، وعملة USDT الرقمية لجميع الدول)، مع تفعيل فوري لقناة VIP وروبوت التداول.
+                </p>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-2 text-xs">
+                  <div className="bg-slate-800/70 border border-slate-700/60 rounded-xl p-3 text-center space-y-1">
+                    <div className="text-indigo-400 font-black">🌐 تحديد الدولة بالـ IP</div>
+                    <div className="text-slate-400 text-[11px]">تثبيت نظام الدفع المناسب لدولتك</div>
+                  </div>
+                  <div className="bg-slate-800/70 border border-slate-700/60 rounded-xl p-3 text-center space-y-1">
+                    <div className="text-emerald-400 font-black">🎁 اشتراك إحالة مجاني</div>
+                    <div className="text-slate-400 text-[11px]">تفعيل فوري مع حساب كيوتكس</div>
+                  </div>
+                  <div className="bg-slate-800/70 border border-slate-700/60 rounded-xl p-3 text-center space-y-1 col-span-2 sm:col-span-1">
+                    <div className="text-amber-400 font-black">💎 دفع عبر USDT (TRC20)</div>
+                    <div className="text-slate-400 text-[11px]">متاح لجميع الدول والمشتركين</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row lg:flex-col gap-3 shrink-0 w-full sm:w-auto">
+                <a
+                  href="https://t.me/Zadfx_bot"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-8 py-4 text-center text-base font-black text-white bg-linear-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 active:scale-98 rounded-2xl shadow-xl shadow-indigo-600/30 transition-all flex items-center justify-center gap-3 cursor-pointer group"
+                >
+                  <Send className="w-5 h-5 text-white group-hover:translate-x-1 transition-transform" />
+                  <span>ابدأ مع البوت الآن (@Zadfx_bot)</span>
+                </a>
+
+                <a
+                  href="https://t.me/thrayanabil"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-6 py-3 text-center text-xs font-bold text-slate-300 hover:text-white bg-slate-800/80 hover:bg-slate-800 border border-slate-700 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <span>💬 تواصل مباشر مع المشرف للإشراف والتفعيل</span>
+                </a>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
