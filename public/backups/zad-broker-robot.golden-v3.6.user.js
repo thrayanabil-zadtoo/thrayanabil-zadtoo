@@ -331,7 +331,7 @@
     </div>
 
     <div style="font-size:8.5px;color:#94a3b8;margin-bottom:4px;text-align:center;" id="zad-conn-badge">
-      <span style="color:#34d399">🟢 متصل سحابياً بالسيرفر (Google Firestore Cloud)</span>
+      <span style="color:#34d399">🟢 متصل بسيرفر أبوسليم</span>
     </div>
 
     <!-- أزرار تبديل وضع التداول: اليدوي مفعل افتراضياً بمجرد التثبيت -->
@@ -2066,7 +2066,7 @@
     const remainingSec = currentTargetEntryEpoch - currentNowSec;
 
     // إذا انتهت صلاحية الإشارة أو تأخرت كثيراً:
-    if (remainingSec < -1.5 || remainingSec > 85) {
+    if (remainingSec < -3.5 || remainingSec > 85) {
       activeSignalObj = null;
       currentActiveSignalId = null;
       currentTargetEntryEpoch = null;
@@ -2075,25 +2075,10 @@
       return;
     }
 
-    // الالتزام الصارم بثانية :00.00 لافتتاح الشمعة بالمنصة:
-    // اللحظة الحقيقية الدقيقة: نافذة الملي ثانية بين 59.850 ثانية حتى 00.200 ثانية
-    const isStrict00Moment = (currentSec === 59 && currentMs >= 850) || (currentSec === 0 && currentMs <= 200);
+    // لحظة افتتاح الشمعة عند ثانية :00.00 بدقة (نافذة تمتد من 0.35s قبل الافتتاح حتى 3s لتلافي أي تأخير بالمتصفح)
+    const isEntryWindow = (remainingSec <= 0.35 && remainingSec >= -3.0);
 
-    if (isStrict00Moment && remainingSec <= 0.4 && remainingSec >= -1.0) {
-      // فحص أخير طارئ قبل النقر: هل عكست الشمعة اتجاهها؟
-      const livePriceNow = detectBrokerLivePrice();
-      const signalBasePrice = parseFloat(activeSignalObj.livePrice) || activeSignalObj.entryPriceNumeric;
-      if (livePriceNow && signalBasePrice) {
-        const pDiff = livePriceNow - signalBasePrice;
-        const isReversed =
-          (activeSignalObj.direction === "CALL" && pDiff < -0.00012) ||
-          (activeSignalObj.direction === "PUT" && pDiff > 0.00012);
-        if (isReversed) {
-          abortEmergencyCandleReversal("انعكاس مفاجئ للشمعة في ثانية الافتتاح :00.00");
-          return;
-        }
-      }
-
+    if (isEntryWindow) {
       if (cdVal) cdVal.textContent = "🚀 ادخل الآن (:00.00)!";
       if (cdLabel) cdLabel.textContent = "نقطة الدخول الفورية:";
 
@@ -2184,14 +2169,14 @@
         if (isLive) {
           if (connBadge.dataset.live !== "1") {
             connBadge.dataset.live = "1";
-            connBadge.innerHTML = '<span style="color:#34d399">🟢 متصل ومتزامن بالسيرفر</span>';
+            connBadge.innerHTML = '<span style="color:#34d399">🟢 متصل بسيرفر أبوسليم</span>';
             statusDot.style.background = '#10b981';
             statusDot.style.boxShadow = '0 0 8px #10b981';
           }
         } else {
           if (connBadge.dataset.live !== "0") {
             connBadge.dataset.live = "0";
-            connBadge.innerHTML = '<span style="color:#fbbf24">🟡 جاري الاتصال بالسيرفر...</span>';
+            connBadge.innerHTML = '<span style="color:#fbbf24">🟡 جاري الاتصال بسيرفر أبوسليم...</span>';
             statusDot.style.background = '#fbbf24';
             statusDot.style.boxShadow = '0 0 8px #fbbf24';
           }
@@ -2204,6 +2189,12 @@
   function processRobotPayload(data, sourceLabel) {
     if (!data || !data.ok) return;
     lastDataReceivedTime = Date.now();
+    const sig = data.activeSignal || data.signal || null;
+
+    if (data.serverEpochSeconds && typeof data.serverEpochSeconds === 'number') {
+      const localEpoch = Math.floor(Date.now() / 1000);
+      serverClockOffsetSec = data.serverEpochSeconds - localEpoch;
+    }
 
     if (data.marketOpen !== undefined || data.isMarketOpen !== undefined) {
       serverMarketOpen = data.marketOpen !== undefined ? Boolean(data.marketOpen) : Boolean(data.isMarketOpen);
@@ -2255,7 +2246,8 @@
     const isMpbSelected = (ROBOT_STRATEGY_MODE !== "PUBLIC_CLASSIC");
     const cairoNow = new Date(Date.now() + 2 * 60 * 60 * 1000); // Egypt UTC+2
     const cairoHour = cairoNow.getUTCHours();
-    const isMpbTimeOpen = cairoHour >= 9 && cairoHour < 21;
+    const serverSaysTradingHours = data.isTradingHours === true || data.isLockedOutsideHours === false;
+    const isMpbTimeOpen = serverSaysTradingHours || (cairoHour >= 9 && cairoHour < 21);
 
     let shouldLock = false;
     if (!isMpbSelected) {
@@ -2276,26 +2268,13 @@
 
     // 3. عزل الاستراتيجيات 100%:
     // عند اختيار الاستراتيجية الثانية (MPB): يتم إلغاء ومنع أي إشارة تخص الاستراتيجية العامة نهائياً
-    const sig = data.activeSignal;
     if (sig) {
-      if (isMpbSelected) {
-        // استراتيجية MPB ترفض إشارات القناة العامة
-        if (!sig.instantExecution5s && sig.strategyType !== 'MOMENTUM_PAUSE_BREAKOUT') {
-          activeSignalObj = null;
-          currentActiveSignalId = null;
-          currentTargetEntryEpoch = null;
-          renderWaitingState();
-          return;
-        }
-      } else {
-        // استراتيجية القناة العامة ترفض إشارات MPB الفورية
-        if (sig.instantExecution5s || sig.strategyType === 'MOMENTUM_PAUSE_BREAKOUT') {
-          activeSignalObj = null;
-          currentActiveSignalId = null;
-          currentTargetEntryEpoch = null;
-          renderWaitingState();
-          return;
-        }
+      // إشارات الروبوت المعتمدة كلها تنتمي إلى محرك MPB / VIP المباشر
+      if (sig.instantExecution5s === undefined) {
+        sig.instantExecution5s = true;
+      }
+      if (!sig.strategyType) {
+        sig.strategyType = 'MOMENTUM_PAUSE_BREAKOUT';
       }
     }
 
@@ -2379,30 +2358,19 @@
       }
 
       // فحص أمان صارم: حساب الثواني المتبقية حتى افتتاح الشمعة عند ثانية :00.00
-      const nowEpochSec = Math.floor(Date.now() / 1000);
+      const nowEpochSec = Math.floor(Date.now() / 1000) + serverClockOffsetSec;
       const diffSec = currentTargetEntryEpoch - nowEpochSec;
 
-      // إذا وصلت الإشارة متأخرة بعد بداية الشمعة (diffSec < 0):
-      // يمنع منعاً باتاً فتح أي صفقة في منتصف الشمعة! الالتزام حصرياً بـ :00.00 افتتاح الشمعة
-      if (diffSec < 0) {
+      // إذا انتهت شمعة الدخول تماماً (مر أكثر من 10 ثوانٍ بعد بداية الشمعة):
+      if (diffSec < -10) {
         activeSignalObj = null;
         currentTargetEntryEpoch = null;
         renderWaitingState();
         return;
       }
 
-      // في استراتيجية MPB: الالتزام الصارم بنافذة التأكيد الفوري (قبل 5 إلى 15 ثانية فقط عند اكتمال الشمعة)
-      const isMpbSelected = (ROBOT_STRATEGY_MODE !== 'PUBLIC_CLASSIC');
-      if (isMpbSelected && diffSec > 16) {
-        // لا تعرض الإشارة قبل أوانها — انتظر حتى ثانية :55 للتأكيد الاحترافي للاتجاه
-        activeSignalObj = null;
-        currentTargetEntryEpoch = null;
-        renderWaitingState();
-        return;
-      }
-
-      // إذا كانت الإشارة بعيدة جداً (أكثر من 85 ثانية) في الاستراتيجية العامة:
-      if (diffSec > 85) {
+      // إتاحة استقبال وعرض الإشارة مسبقاً (حتى 75 ثانية لتبديل الزوج وتجهيز الدخول بدقة عند ثانية :00):
+      if (diffSec > 75) {
         activeSignalObj = null;
         currentTargetEntryEpoch = null;
         renderWaitingState();

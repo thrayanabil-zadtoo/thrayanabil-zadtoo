@@ -700,18 +700,7 @@ function getCurrentEgyptMinute(): number {
  * 2) Or during the first 10 minutes after the engine / autopilot has been started.
  */
 function getWarmupStatus(): { isWarmup: boolean; minutesRemaining: number; reason: string } {
-  const cairoHour = getCurrentEgyptHour();
-  const cairoMinute = getCurrentEgyptMinute();
-
-  // Daily 09:00 AM session warmup (09:00 to 09:10 AM Cairo Time)
-  if (cairoHour === 9 && cairoMinute < 10) {
-    return {
-      isWarmup: true,
-      minutesRemaining: 10 - cairoMinute,
-      reason: `فترة الإحماء الصباحية ومسح سيولة السوق الشامل (09:00 - 09:10 ص بتوقيت القاهرة)`
-    };
-  }
-
+  // Continuous operation without morning warmup delays (09:00 AM to 09:00 PM uninterrupted)
   return { isWarmup: false, minutesRemaining: 0, reason: '' };
 }
 
@@ -1732,7 +1721,8 @@ function getLiveRobotActiveSignal(overrideMode?: RobotStrategyEngineMode): Signa
     // NEVER fall back to Strategy 1 (Public Classic / general VIP channel signals)
     candidate = signalsStore.find(s =>
       s.status === 'PENDING' &&
-      (Boolean(s.instantExecution5s) || s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.isLiveBroadcast)
+      (Boolean(s.instantExecution5s) || s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.isLiveBroadcast) &&
+      (s.vipTelegramMessageId != null || s.isLiveBroadcast)
     ) || null;
   }
 
@@ -1975,7 +1965,14 @@ async function saveState(): Promise<boolean> {
               : 0,
             status: activeSig.status === 'WIN' ? 'WIN' : (activeSig.status === 'WIN_GALE1' || activeSig.status === 'LOSS') ? 'LOSS' : activeSig.status,
             livePrice: activeSig.livePrice,
-            rsiValue: activeSig.rsiValue
+            rsiValue: activeSig.rsiValue,
+            instantExecution5s: true,
+            strategyType: activeSig.strategyType || 'MOMENTUM_PAUSE_BREAKOUT',
+            strategyEngineMode: 'VIP_WITH_MPB',
+            strategyVariant: activeSig.strategyVariant || 'WITH_MPB',
+            successRateText: activeSig.successRateText || '94%',
+            entryPriceNumeric: activeSig.entryPriceNumeric,
+            qualityScore: activeSig.qualityScore || 92
           } : null,
           authorizedKeys: authorizedKeysMap,
           targetPair: autoPilot.pairSelectionMode === 'fixed_single' ? (autoPilot.primaryFixedPair || 'EUR/JPY') : (autoPilot.allowedPairs?.[0] || 'EUR/JPY'),
@@ -5866,32 +5863,45 @@ async function dispatchVipMomentumPauseSignal(
     autoSent: isAuto
   };
 
+  let vipTelegramMessageId: number | undefined;
+  let telegramError: string | undefined;
+
+  // 1. Deliver to VIP Telegram Channel first with auto-retry
+  if (activeVipToken && activeVipChat) {
+    try {
+      let res = await sendTelegramMessage(activeVipToken, activeVipChat, formattedMessage);
+      if (!res.ok) {
+        // Quick retry in case of transient Telegram network hiccup
+        await new Promise(r => setTimeout(r, 500));
+        res = await sendTelegramMessage(activeVipToken, activeVipChat, formattedMessage);
+      }
+      if (res.ok) {
+        vipTelegramMessageId = res.result?.message_id;
+      } else {
+        telegramError = res.description || 'فشل إرسال إشارة VIP إلى تيليجرام';
+        console.warn('[VIP Telegram Error]', telegramError);
+      }
+    } catch (err: any) {
+      telegramError = err?.message || 'خطأ اتصال تيليجرام VIP';
+      console.warn('[VIP Telegram Exception]', telegramError);
+    }
+  }
+
+  // 2. Strict Synchrony: Do NOT publish an orphan signal to the floating robot if Telegram failed
+  if (!vipTelegramMessageId) {
+    console.warn('[VIP MPB Engine] Aborting signal delivery: VIP Telegram channel delivery failed:', telegramError);
+    return { ok: false, error: telegramError || 'فشل إرسال الإشارة إلى قناة VIP' };
+  }
+
+  newSignal.vipTelegramMessageId = vipTelegramMessageId;
+  newSignal.telegramMessageId = undefined;
+
+  // 3. Add to signal store and sync to Quotex Floating Robot feed
   signalsStore = [
     newSignal,
     ...signalsStore.filter(s => s.id !== newSignal.id && s.targetEntryTimestamp !== targetEntryTimestamp)
   ].slice(0, 50);
 
-  let vipTelegramMessageId: number | undefined;
-  let telegramError: string | undefined;
-
-  // Broadcast signals to both VIP Telegram Channel and Quotex Robot together without stopping:
-  const canSendVip = autoPilot.vipEnabled !== false && isVipBotActiveNow();
-
-  if (canSendVip && activeVipToken && activeVipChat) {
-    try {
-      const res = await sendTelegramMessage(activeVipToken, activeVipChat, formattedMessage);
-      if (res.ok) {
-        vipTelegramMessageId = res.result?.message_id;
-      } else {
-        telegramError = res.description || 'فشل إرسال إشارة VIP إلى تيليجرام';
-      }
-    } catch (err: any) {
-      telegramError = err?.message || 'خطأ اتصال تيليجرام VIP';
-    }
-  }
-
-  newSignal.vipTelegramMessageId = vipTelegramMessageId;
-  newSignal.telegramMessageId = undefined;
   await saveState();
 
   // Evaluate trade outcome after candle finishes (68 seconds)

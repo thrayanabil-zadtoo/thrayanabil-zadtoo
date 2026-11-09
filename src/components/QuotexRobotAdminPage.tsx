@@ -2266,7 +2266,7 @@ export default function QuotexRobotAdminPage({
               </div>
               <ul className="list-disc list-inside space-y-1 text-slate-300">
                 <li><strong className="text-white">استقلالية كاملة 100%:</strong> يعمل الروبوت مباشرة على منصة كيوتكس (Quotex) دون الحاجة لفتح موقعك أو أي تبويب إضافي على الإطلاق.</li>
-                <li><strong className="text-amber-300">محرك سحابي عالمي (Firestore Cloud):</strong> يتصل مباشرة بقاعدة البيانات السحابية بالثانية دون أي قيود حظر أو ملفات تعريف ارتباط.</li>
+                <li><strong className="text-amber-300">محرك سيرفر أبوسليم السحابي:</strong> يتصل مباشرة بسيرفر أبوسليم بالثانية دون أي قيود حظر أو ملفات تعريف ارتباط.</li>
                 <li><strong className="text-sky-300">زر إدخال وتعديل رقم الحساب (🔑 ID):</strong> يمكن للعضو إدخال رقم حسابه في كيوتكس أو مفتاحه مباشرة من النافذة العائمة.</li>
                 <li><strong className="text-emerald-300">نغمة صوتية عالية النقاء:</strong> تنبيه صوتي فوري مع وميض الصندوق باللون الأخضر أو الأحمر.</li>
               </ul>
