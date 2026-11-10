@@ -1745,9 +1745,9 @@ function getLiveRobotActiveSignal(overrideMode?: RobotStrategyEngineMode): Signa
   // If signal is PENDING:
   if (candidate.status === 'PENDING') {
     if (mode === 'VIP_WITH_MPB') {
-      // In MPB mode: Deliver the signal as soon as dispatched (within 75s of candle entry)
+      // In MPB mode: Deliver the signal as soon as dispatched (within 180s of candle entry)
       // and while the 60s candle trade is actively in progress (diffUntilEntry between 0 and -65s)
-      if (diffUntilEntry >= -65 && diffUntilEntry <= 75 && sigAgeSec <= 120) {
+      if (diffUntilEntry >= -65 && diffUntilEntry <= 180 && sigAgeSec <= 180) {
         return candidate;
       }
       return null;
@@ -5755,6 +5755,8 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
  * 3. Channel: Dedicated strictly to VIP Channel (-1004323890544) and Quotex Robot feed (Instant 5s Execution)
  * 4. Free channel is NOT notified of this signal
  */
+let lastVipSignalDispatchedAtMs = 0;
+
 async function dispatchVipMomentumPauseSignal(
   candidate: LivePairSnapshot,
   direction: 'CALL' | 'PUT',
@@ -5765,6 +5767,17 @@ async function dispatchVipMomentumPauseSignal(
   if (!isGlobalForexMarketOpen()) {
     return { ok: false, error: 'السوق العالمي مغلق لعطلة نهاية الأسبوع' };
   }
+
+  // 1. Strict In-Memory Cooldown Mutex (Prevents rapid back-to-back duplicate signals):
+  // Minimum 170 seconds (~3 minutes) between any two consecutive VIP signals
+  if (lastVipSignalDispatchedAtMs > 0 && Date.now() - lastVipSignalDispatchedAtMs < 170_000) {
+    const remainingCooldownSec = Math.ceil((170_000 - (Date.now() - lastVipSignalDispatchedAtMs)) / 1000);
+    return {
+      ok: false,
+      error: `فترة تبريد إجبارية نشطة: متبقي ${remainingCooldownSec} ثانية بعد الإشارة السابقة (يُشترط دقيقتان بعد إغلاق الصفقة)`
+    };
+  }
+
   const now = new Date();
   const currentSec = now.getSeconds();
   const secondsRemainingInCurrentMinute = 60 - currentSec;
@@ -5783,13 +5796,62 @@ async function dispatchVipMomentumPauseSignal(
   const targetEntryTimestamp = Math.floor(targetEntryDate.getTime() / 1000);
   const entryMinute = String(targetEntryDate.getMinutes()).padStart(2, '0');
 
-  // Duplicate guard on exact same candle timestamp:
+  // 2. Duplicate guard on exact same candle timestamp:
   const duplicateExists = signalsStore.some(
     s => s.targetEntryTimestamp === targetEntryTimestamp
   );
   if (duplicateExists) {
     return { ok: false, error: 'تم إرسال إشارة لهذه الشمعة بالفعل' };
   }
+
+  // 3. Strict Post-Trade Cooldown Requirement:
+  // "المسج كل دقيقتين بعد اغلاق الصفقة التي مفتوحة"
+  // Trade candle runs for 60 seconds. Must wait 120 seconds AFTER candle closes (total 180s from entry).
+  const latestVipSignal = signalsStore.find(
+    s => s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || Boolean(s.vipTelegramMessageId)
+  );
+  if (latestVipSignal) {
+    const tradeCloseTimeMs = latestVipSignal.targetEntryTimestamp
+      ? (latestVipSignal.targetEntryTimestamp + 60) * 1000
+      : (latestVipSignal.createdAt ? new Date(latestVipSignal.createdAt).getTime() + 60000 : 0);
+    const cooldownEndMs = tradeCloseTimeMs + 120 * 1000;
+    if (Date.now() < cooldownEndMs) {
+      const waitRemainingSec = Math.ceil((cooldownEndMs - Date.now()) / 1000);
+      return {
+        ok: false,
+        error: `فترة تبريد إجبارية (متبقي ${waitRemainingSec} ثانية بعد إغلاق الصفقة السابقة — التبريد دقيقتان بعد الإغلاق)`
+      };
+    }
+  }
+
+  // 4. Cross-Instance Cloud Firestore Mutex Lock (Ensures only 1 instance can dispatch VIP signals):
+  if (serverFirestoreDb) {
+    try {
+      const vipLockRef = doc(serverFirestoreDb, 'system_state', 'vip_mpb_lock');
+      const snap = await getDoc(vipLockRef);
+      if (snap.exists()) {
+        const lockData = snap.data();
+        if (lockData && typeof lockData.lockedUntil === 'number' && Date.now() < lockData.lockedUntil) {
+          const remSec = Math.ceil((lockData.lockedUntil - Date.now()) / 1000);
+          return {
+            ok: false,
+            error: `تم إرسال إشارة VIP من سيرفر مشترك (متبقي في التبريد ${remSec} ثانية لمنع تكرار الرسائل)`
+          };
+        }
+      }
+      // Claim the lock immediately for 180 seconds
+      await setDoc(vipLockRef, {
+        lockedUntil: Date.now() + 180_000,
+        targetEntryTimestamp,
+        asset: candidate.pair,
+        lockedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (_e) {
+      // Ignore Firestore network hiccups and proceed
+    }
+  }
+
+  lastVipSignalDispatchedAtMs = Date.now();
 
   const activeVipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
   const activeVipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
@@ -5902,6 +5964,7 @@ async function dispatchVipMomentumPauseSignal(
     ...signalsStore.filter(s => s.id !== newSignal.id && s.targetEntryTimestamp !== targetEntryTimestamp)
   ].slice(0, 50);
 
+  lastDispatchedEpochMinute = targetEntryTimestamp;
   await saveState();
 
   // Evaluate trade outcome after candle finishes (68 seconds)
@@ -5966,16 +6029,24 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
     // Continuous loop runs during Robot MPB hours (09:00 AM to 09:00 PM daily) or when VIP bot is active
     if (!isMpbRobotHours && !isVipBotActiveNow()) return;
 
+    // Always ensure fresh state from Cloud Firestore before checking cooldown or signals
+    await loadStateFromCloudAndDisk();
+
     const now = new Date();
     const sec = now.getSeconds();
 
-    // High-accuracy confirmation window before candle close: between :48 and :58 of the minute
-    // Gives 2 to 12 seconds head start so signal is dispatched and executed smoothly at :00 candle open!
-    if (sec < 48 || sec > 58) return;
+    // Strict 5-second Instant Execution Window (:54 to :56 seconds):
+    // Dispatches precisely 5 seconds before candle boundary at :00!
+    if (sec < 54 || sec > 56) return;
 
     // Prevent duplicate firing in the exact same minute
     const currentMinuteKey = `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}-${now.getUTCHours()}:${now.getUTCMinutes()}`;
     if (lastVipDispatchedMinute === currentMinuteKey) return;
+
+    // 0. Strict Mutex Guard: Never allow consecutive signals within 170s
+    if (lastVipSignalDispatchedAtMs > 0 && Date.now() - lastVipSignalDispatchedAtMs < 170_000) {
+      return;
+    }
 
     // 1. High-Impact Economic News Pause:
     // Allows the robot to pause during high-impact news events (+/- 10 minutes around target time)
@@ -5987,23 +6058,18 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
     // 2. Strict Post-Trade Cooldown Guard:
     // Must wait at least 2 full minutes (120 seconds) AFTER the currently open trade has closed!
     // Prevents consecutive minute 2, 3, 4 signal spamming.
-    const lastSignal = signalsStore[0];
-    if (lastSignal) {
+    const latestVip = signalsStore.find(
+      s => s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || Boolean(s.vipTelegramMessageId)
+    );
+    if (latestVip) {
       // 1-minute expiration: trade candle closes 60 seconds after entry
-      const tradeCloseTimeMs = lastSignal.targetEntryTimestamp
-        ? (lastSignal.targetEntryTimestamp + 60) * 1000
-        : (lastSignal.createdAt ? new Date(lastSignal.createdAt).getTime() + 60 * 1000 : 0);
+      const tradeCloseTimeMs = latestVip.targetEntryTimestamp
+        ? (latestVip.targetEntryTimestamp + 60) * 1000
+        : (latestVip.createdAt ? new Date(latestVip.createdAt).getTime() + 60 * 1000 : 0);
 
-      // If the trade candle is still open, never dispatch another signal
-      if (Date.now() < tradeCloseTimeMs) {
+      // If the trade candle is still open or within 2 minutes after close, never dispatch another signal
+      if (Date.now() < tradeCloseTimeMs + 120 * 1000) {
         return;
-      }
-
-      // Must wait at least 2 full minutes (120,000 ms) AFTER the trade candle closed
-      const elapsedSinceTradeClosedMs = Date.now() - tradeCloseTimeMs;
-      const minRequiredCooldownMs = 120 * 1000; // Strictly 2 minutes (120s) post-trade-close cooldown as requested
-      if (elapsedSinceTradeClosedMs < minRequiredCooldownMs) {
-        return; // Wait at least 2 full minutes after trade close
       }
     }
 
