@@ -575,9 +575,9 @@ export default function App() {
           if (Array.isArray(parsed) && parsed.length > 0) return parsed;
         }
       } catch (_e) {}
-      return ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'];
+      return ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'AUD/USD', 'USD/CAD', 'GBP/JPY'];
     })(),
-    customPairsList: ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP']
+    customPairsList: ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP']
   });
   const [newCustomPairInput, setNewCustomPairInput] = useState<string>('');
   const [isSavingAutoPilot, setIsSavingAutoPilot] = useState<boolean>(false);
@@ -4174,7 +4174,9 @@ export default function App() {
                       اختر الزوج الثابت اليومي (الافتراضي: EUR/JPY):
                     </label>
                     <div className="flex flex-wrap items-center gap-2">
-                      {(autoPilot.customPairsList || ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP']).map((pair) => (
+                      {(autoPilot.customPairsList || ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP'])
+                        .filter((pair) => pair !== 'USD/JPY' && !pair.includes('USDJPY'))
+                        .map((pair) => (
                         <button
                           key={`fixed-sel-${pair}`}
                           type="button"
@@ -4203,7 +4205,7 @@ export default function App() {
                       <button
                         type="button"
                         onClick={() => handleSaveAutoPilot({
-                          allowedPairs: ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'],
+                          allowedPairs: ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'AUD/USD', 'USD/CAD', 'GBP/JPY'],
                           pairSelectionMode: 'custom_list'
                         })}
                         className="px-2.5 py-1 bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 border border-emerald-500/50 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center gap-1 shadow-xs"
@@ -4218,7 +4220,9 @@ export default function App() {
 
                   {/* List of pairs with toggle checkbox and delete button */}
                   <div className="flex flex-wrap gap-2">
-                    {(autoPilot.customPairsList || ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP']).map((pair) => {
+                    {(autoPilot.customPairsList || ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP'])
+                      .filter((pair) => pair !== 'USD/JPY' && !pair.includes('USDJPY'))
+                      .map((pair) => {
                       const isAllowed = (autoPilot.allowedPairs || []).includes(pair);
                       const isPrimary = (autoPilot.primaryFixedPair || 'EUR/JPY') === pair;
 

@@ -147,7 +147,7 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
     setTimeout(() => setBroadcastSuccessMessage(''), 4000);
   };
 
-  const PRIMARY_6_PAIRS = ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD'];
+  const PRIMARY_6_PAIRS = ['EUR/JPY', 'EUR/USD', 'GBP/USD', 'AUD/USD', 'USD/CAD', 'GBP/JPY'];
 
   const handleSelectMode = async (mode: 'fixed_single' | 'custom_list' | 'all_global') => {
     if (!onSaveAutoPilot) return;
@@ -179,7 +179,7 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
         allowedPairs: PRIMARY_6_PAIRS,
         pairSelectionMode: 'custom_list'
       });
-      setBroadcastSuccessMessage('⚡ تم تفعيل وتثبيت الـ 6 أزواج الأساسية بنجاح: (EUR/JPY, EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CAD)!');
+      setBroadcastSuccessMessage('⚡ تم تفعيل وتثبيت الـ 6 أزواج الأساسية بنجاح: (EUR/JPY, EUR/USD, GBP/USD, AUD/USD, USD/CAD, GBP/JPY)!');
       setTimeout(() => setBroadcastSuccessMessage(''), 5000);
     } finally {
       setIsSavingPair(false);
@@ -1091,7 +1091,7 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
                   disabled={isSavingPair}
                   onClick={handleActivatePrimary6Pairs}
                   className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black shadow-xs transition-all cursor-pointer flex items-center gap-1.5"
-                  title="تفعيل الأزواج الستة الأساسية فوراً: EUR/JPY, EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CAD"
+                  title="تفعيل الأزواج الستة الأساسية فوراً: EUR/JPY, EUR/USD, GBP/USD, AUD/USD, USD/CAD, GBP/JPY"
                 >
                   <Zap className="w-3.5 h-3.5" />
                   <span>⚡ تفعيل الـ 6 أزواج الأساسية دفعة واحدة</span>
