@@ -636,7 +636,7 @@ export default function QuotexRobotAdminPage({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'zad-broker-robot.golden-v3.6.user.js';
+      a.download = 'zad-broker-robot.golden-v4.0.user.js';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -647,7 +647,7 @@ export default function QuotexRobotAdminPage({
   };
 
   const handleRestoreGoldenBaseline = async () => {
-    if (!window.confirm('🔒 هل أنت متأكد من رغبتك في استعادة وتثبيت النسخة المرجعية الذهبية (v3.6 Golden Baseline)؟\nسيتم تثبيت كود محرك التبديل والتداول المعتمد بنسبة 100% كمرجع أساسي.')) {
+    if (!window.confirm('🔒 هل أنت متأكد من رغبتك في استعادة وتثبيت النسخة المرجعية الذهبية (v4.0 Golden Baseline)؟\nسيتم تثبيت كود محرك التبديل والتداول المعتمد بنسبة 100% كمرجع أساسي.')) {
       return;
     }
     setIsRestoringGolden(true);
@@ -1364,7 +1364,7 @@ export default function QuotexRobotAdminPage({
                 {/* Clickable pair tabs to test auto-discovery of pair switching in real time */}
                 <div className="flex flex-wrap items-center gap-1 bg-slate-950/80 p-1 rounded-xl border border-slate-800">
                   <span className="text-[10px] text-slate-400 px-1 font-bold">أزواج الشارت:</span>
-                  {['EUR/JPY', 'EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'USD/CAD', 'EUR/GBP', 'GOLD (XAU/USD)'].map(pair => (
+                  {['EUR/JPY', 'EUR/USD', 'GBP/USD', 'GBP/JPY', 'AUD/USD', 'USD/CAD', 'EUR/GBP', 'GOLD (XAU/USD)'].map(pair => (
                     <button
                       key={pair}
                       type="button"
@@ -2262,7 +2262,7 @@ export default function QuotexRobotAdminPage({
 
             <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5 text-[11px] text-emerald-200">
               <div className="font-bold flex items-center gap-1.5 text-emerald-300">
-                <span>🚀 تحديث الروبوت المستقل بالكامل (الإصدار v3.1 Cloud Edition):</span>
+                <span>🚀 تحديث الروبوت المستقل بالكامل (الإصدار v4.0 Cloud Edition):</span>
               </div>
               <ul className="list-disc list-inside space-y-1 text-slate-300">
                 <li><strong className="text-white">استقلالية كاملة 100%:</strong> يعمل الروبوت مباشرة على منصة كيوتكس (Quotex) دون الحاجة لفتح موقعك أو أي تبويب إضافي على الإطلاق.</li>
@@ -2284,8 +2284,8 @@ export default function QuotexRobotAdminPage({
                 <Copy className="w-4 h-4" />
                 <span>
                   {copiedId === 'userscript-code'
-                    ? '✓ تم نسخ كود السكريبت (v3.6) بنجاح!'
-                    : 'نسخ كود السكريبت المحدث v3.6'}
+                    ? '✓ تم نسخ كود السكريبت (v4.0) بنجاح!'
+                    : 'نسخ كود السكريبت المحدث v4.0'}
                 </span>
               </button>
 
@@ -2308,7 +2308,7 @@ export default function QuotexRobotAdminPage({
                 className="px-3 py-1 bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold rounded-lg text-xs flex items-center gap-1 transition-all"
                 title="اضغط لفتح شاشة التثبيت التلقائي المباشرة في تامبرمونكي بنقرة واحدة"
               >
-                <span>تثبيت مباشر بنقرة واحدة ↗</span>
+                <span>تثبيت مباشر بنقرة واحدة (v4.0) ↗</span>
               </a>
             </div>
 
@@ -2321,7 +2321,7 @@ export default function QuotexRobotAdminPage({
                   </span>
                   <div>
                     <h4 className="text-xs font-extrabold text-amber-300 flex items-center gap-1.5">
-                      <span>النسخة المرجعية الذهبية المعتمدة (v3.6 Golden Baseline)</span>
+                      <span>النسخة المرجعية الذهبية المعتمدة (v4.0 Golden Baseline)</span>
                       <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[9px] font-bold">
                         محمية ومقفولة
                       </span>

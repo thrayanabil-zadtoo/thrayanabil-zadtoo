@@ -1332,7 +1332,12 @@
 
       const isCall = direction === "CALL";
       const dirArabic = isCall ? "الشراء (CALL 🟢)" : "البيع (PUT 🔴)";
-      const btn = findBrokerTradeButton(direction);
+      let btn = null;
+      if (cachedTradeButton && cachedTradeButton.dir === direction && cachedTradeButton.el && document.body.contains(cachedTradeButton.el) && (now - cachedTradeButton.cachedAt) < 10000) {
+        btn = cachedTradeButton.el;
+      } else {
+        btn = findBrokerTradeButton(direction);
+      }
 
       if (btn) {
         if (!isTestMode) {
@@ -1956,7 +1961,9 @@
   let activeSignalObj = null;
   let currentActiveSignalId = null;
   let currentTargetEntryEpoch = null;
-  let serverClockOffsetSec = 0;
+  let serverClockOffsetMs = 0;
+  let hasLiveServerClock = false;
+  let cachedTradeButton = { dir: "", el: null, cachedAt: 0 };
   LAST_EXECUTED_SIG_ID = localStorage.getItem("zad_last_executed_sig_id") || "";
   LAST_ALERTED_SIG_ID = null;
   let LAST_EXECUTED_TIMESTAMP = parseInt(localStorage.getItem("zad_last_executed_time") || "0", 10);
@@ -2127,10 +2134,10 @@
       return;
     }
 
-    // 2. تحديث العداد التنازلي والتنفيذ الصارم عند ثانية :00.00 بدقة الملي ثانية مع تعويض زمن النقل للبروكر
-    const clockOffset = typeof serverClockOffsetSec === "number" ? serverClockOffsetSec : 0;
-    const currentNowSec = (Date.now() / 1000) + clockOffset;
-    const remainingSec = currentTargetEntryEpoch - currentNowSec;
+    // 2. تحديث العداد التنازلي والتنفيذ الصارم عند ثانية :00.00 بدقة الملي ثانية المعايرة بالسيرفر الحي
+    const currentNowMs = Date.now() + (typeof serverClockOffsetMs === "number" ? serverClockOffsetMs : 0);
+    const remainingMs = (currentTargetEntryEpoch * 1000) - currentNowMs;
+    const remainingSec = remainingMs / 1000;
 
     // إذا انتهت صلاحية الإشارة تماماً بعد انتهاء الشمعة (مر أكثر من 55 ثانية) أو كانت بعيدة جداً:
     if (remainingSec < -55 || remainingSec > 180) {
@@ -2142,9 +2149,9 @@
       return;
     }
 
-    // لحظة افتتاح الشمعة عند ثانية :00.00 بدقة متناهية:
-    // إرسال الأمر بمهلة استباقية 0.85 ثانية (850ms) لتعويض زمن معالجة DOM واستجابة سيرفر المنصة ليصل الأمر في ثانية :00.00 تماماً بدون أي تأخير ثانيتين!
-    const isEntryWindow = (remainingSec <= 0.85 && remainingSec >= -3.5);
+    // لحظة افتتاح الشمعة عند ثانية :00.00 بدقة الملي ثانية المتناهية:
+    // ننتظر حتى يتبقى <= 120 ملي ثانية قبل :00.00 (ثانية :59.88 حتى :00.00) لتعويض زمن استجابة البروكر فقط فيصل الأمر عند 00.00 تماماً!
+    const isEntryWindow = (remainingMs <= 120 && remainingMs >= -2500);
 
     if (isEntryWindow) {
       if (cdVal) cdVal.textContent = ROBOT_MODE === "AUTO" ? "🤖 تنفيذ آلي فوري (:00.00)!" : "🚀 ادخل الآن (:00.00)!";
@@ -2152,7 +2159,7 @@
 
       // تنفيذ الصفقة حصرياً عند افتتاح الشمعة :00.00 وبدقة الملي ثانية (صفقة واحدة مؤمنة)
       if (ROBOT_MODE === "AUTO") {
-        executeSingleTrade(activeSignalObj.id, activeSignalObj.direction, "strict_00_entry");
+        executeSingleTrade(activeSignalObj.id, activeSignalObj.direction, "strict_00_00_exact");
       }
 
       // بدء حالة "الصفقة جارية الآن" فوراً وتثبيتها طوال فترة فتحها (60 ثانية M1)
@@ -2170,7 +2177,7 @@
     }
 
     // فترة ما قبل الدخول (العد التنازلي التمهيدي الهادئ قبل ثانية :00)
-    if (remainingSec > 0.85) {
+    if (remainingMs > 120) {
       if (cdContainer) cdContainer.style.display = "block";
       const displaySec = Math.max(1, Math.ceil(remainingSec));
       const secStr = displaySec + " ثانية";
@@ -2208,13 +2215,22 @@
         }
       }
 
-      // تبديل الشارت للزوج مسبقاً بهدوء (فقط للإشارات المعلقة وقبل فوات ثانية الدخول :00)
-      const nowEpochSec = Math.floor(Date.now() / 1000);
+      // تبديل الشارت للزوج مسبقاً بهدوء وتحضير الزر (فقط للإشارات المعلقة وقبل فوات ثانية الدخول :00)
+      const nowEpochSec = Math.floor(currentNowMs / 1000);
       const isPendingSignal = activeSignalObj && activeSignalObj.status === "PENDING";
       const isBeforeCandleOpen = currentTargetEntryEpoch ? nowEpochSec < currentTargetEntryEpoch : true;
       if (isPendingSignal && isBeforeCandleOpen && activeSignalObj.asset && activeSignalObj.id !== LAST_SWITCHED_SIG_ID) {
         LAST_SWITCHED_SIG_ID = activeSignalObj.id;
-        try { switchToBrokerAsset(activeSignalObj.asset, false); } catch(e) {}
+        try {
+          switchToBrokerAsset(activeSignalObj.asset, false);
+          const preDir = activeSignalObj.direction;
+          setTimeout(() => {
+            try {
+              const found = findBrokerTradeButton(preDir);
+              if (found) cachedTradeButton = { dir: preDir, el: found, cachedAt: Date.now() };
+            } catch(_e) {}
+          }, 350);
+        } catch(e) {}
       }
 
       if (actElem && activeSignalObj.id !== LAST_EXECUTED_SIG_ID) {
@@ -2234,8 +2250,8 @@
       }
     }
 
-    // تحديث مؤشر الاتصال مرة كل ثانية (10 نبضات عند 100ms)
-    if (robotTickCounter % 10 === 0) {
+    // تحديث مؤشر الاتصال مرة كل ثانية (25 نبضة عند 40ms)
+    if (robotTickCounter % 25 === 0) {
       const connBadge = document.getElementById("zad-conn-badge");
       const statusDot = document.getElementById("zad-status-dot");
       const isLive = Date.now() - lastDataReceivedTime < 25000;
@@ -2257,18 +2273,29 @@
         }
       }
     }
-  }, 100);
+  }, 40);
 
   // معالجة بيانات الـ Feed وتطبيقها على واجهة الروبوت
-  function processRobotPayload(data, sourceLabel) {
+  function processRobotPayload(data, sourceLabel, reqStartMs) {
     if (!data || !data.ok) return;
-    lastDataReceivedTime = Date.now();
+    const nowRecvMs = Date.now();
+    lastDataReceivedTime = nowRecvMs;
     let sig = data.activeSignal || data.signal || null;
 
-    if (data.serverEpochSeconds && typeof data.serverEpochSeconds === "number") {
-      serverClockOffsetSec = data.serverEpochSeconds - Math.floor(Date.now() / 1000);
-    } else {
-      serverClockOffsetSec = 0;
+    // معايرة الساعة بدقة الملي ثانية حصرياً من استجابة API السيرفر الحية (يمنع أخطاء التوقيت من مستند Firestore المخزن!)
+    const isLiveApiSource = sourceLabel === "server_fetch" || sourceLabel === "server_gm";
+    if (isLiveApiSource && (data.serverEpochMs || data.serverTimeIso || data.serverEpochSeconds)) {
+      const rtt = typeof reqStartMs === "number" ? Math.min(1200, Math.max(0, nowRecvMs - reqStartMs)) : 80;
+      const srvMs = typeof data.serverEpochMs === "number"
+        ? data.serverEpochMs
+        : (data.serverTimeIso ? Date.parse(data.serverTimeIso) : (data.serverEpochSeconds * 1000 + 500));
+      if (srvMs && !isNaN(srvMs)) {
+        const estimatedOffset = Math.round((srvMs + rtt / 2) - nowRecvMs);
+        serverClockOffsetMs = (!hasLiveServerClock || Math.abs(estimatedOffset - serverClockOffsetMs) > 400)
+          ? estimatedOffset
+          : Math.round(serverClockOffsetMs * 0.65 + estimatedOffset * 0.35);
+        hasLiveServerClock = true;
+      }
     }
 
     if (data.marketOpen !== undefined || data.isMarketOpen !== undefined) {
@@ -2386,10 +2413,9 @@
       widget.style.borderColor = isCall ? '#10b981' : '#ef4444';
       widget.style.boxShadow = isCall ? '0 0 25px rgba(16, 185, 129, 0.4)' : '0 0 25px rgba(239, 68, 68, 0.4)';
 
-      // حساب وتثبيت وقت الدخول المستهدف بدقة بالثواني المرجعية (Epoch Seconds)
-      // لجميع إشارات MPB الفورية (5 ثوانٍ): افتتاح الشمعة هو دائماً بداية الدقيقة القادمة :00.00 تماماً
-      const clockOffsetNow = typeof serverClockOffsetSec === "number" ? serverClockOffsetSec : 0;
-      const targetCalcEpochSec = Math.floor((Date.now() / 1000) + clockOffsetNow);
+      // حساب وتثبيت وقت الدخول المستهدف بدقة الملي ثانية المرجعية (Epoch Seconds عند :00.00)
+      const clockOffsetNowMs = typeof serverClockOffsetMs === "number" ? serverClockOffsetMs : 0;
+      const targetCalcEpochSec = Math.floor((Date.now() + clockOffsetNowMs) / 1000);
       const upcomingCandleBoundary = Math.ceil(targetCalcEpochSec / 60) * 60;
 
       if (sig.targetEntryTimestamp && sig.targetEntryTimestamp > 1000000000) {
@@ -2403,10 +2429,9 @@
         currentTargetEntryEpoch = upcomingCandleBoundary;
       }
 
-      const isCandleAlreadyStarted = currentTargetEntryEpoch ? targetCalcEpochSec >= currentTargetEntryEpoch : false;
+      const isCandleAlreadyStarted = currentTargetEntryEpoch ? ((Date.now() + clockOffsetNowMs) >= currentTargetEntryEpoch * 1000) : false;
 
-      // تشغيل التنبيه الصوتي ومحاولة تبديل الشارت تلقائياً فور وصول إشارة جديدة لأول مرة
-      // شرط حاسم: التبديل يتم حصرياً للإشارات المعلقة وقبل بداية شمعة الدخول (قبل ثانية :00)
+      // تشغيل التنبيه الصوتي ومحاولة تبديل الشارت وتجهيز الزر فور وصول إشارة جديدة لأول مرة قبل :00.00
       if (sig.id !== LAST_ALERTED_SIG_ID && !isCandleAlreadyStarted) {
         LAST_ALERTED_SIG_ID = sig.id;
         playSignalChime(isCall);
@@ -2417,6 +2442,13 @@
           if (!cleanCur || !cleanTarget || !cleanCur.includes(cleanTarget.slice(0, 6))) {
             switchToBrokerAsset(sig.asset, false);
           }
+          const preDir = sig.direction;
+          setTimeout(() => {
+            try {
+              const found = findBrokerTradeButton(preDir);
+              if (found) cachedTradeButton = { dir: preDir, el: found, cachedAt: Date.now() };
+            } catch(_e) {}
+          }, 400);
         } catch(e) {}
       }
 
@@ -2653,21 +2685,23 @@
   }
   scheduleNextCloudPoll();
 
-  // 2. قناة الـ API المباشرة للسيرفر (Server API Feed)
+  // 2. قناة الـ API المباشرة للسيرفر (Server API Feed) + معايرة التوقيت بالملي ثانية مع RTT
   function checkDirectApi() {
     const feedUrl = API_BASE + "/api/quotex-robot/feed?apiKey=" + encodeURIComponent(MEMBER_IDENTIFIER) +
       "&strategyMode=" + encodeURIComponent(ROBOT_STRATEGY_MODE || "VIP_WITH_MPB");
 
     if (typeof fetch === "function") {
+      const reqStart = Date.now();
       fetch(feedUrl, { mode: "cors", cache: "no-store" })
         .then(function(r) { return r.json(); })
         .then(function(data) {
-          if (data && data.ok) processRobotPayload(data, "server_fetch");
+          if (data && data.ok) processRobotPayload(data, "server_fetch", reqStart);
         })
         .catch(function() {});
     }
 
     if (typeof GM_xmlhttpRequest === "function") {
+      const gmStart = Date.now();
       GM_xmlhttpRequest({
         method: "GET",
         url: feedUrl,
@@ -2676,7 +2710,7 @@
           try {
             if (response.status === 200) {
               const data = JSON.parse(response.responseText);
-              if (data && data.ok) processRobotPayload(data, "server_gm");
+              if (data && data.ok) processRobotPayload(data, "server_gm", gmStart);
             }
           } catch(e) {}
         },
@@ -2690,7 +2724,7 @@
     checkDirectApi();
     const sec = new Date().getSeconds();
     const isCritical = (activeSignalObj && activeSignalObj.status === "PENDING") || (sec >= 48 || sec <= 5);
-    setTimeout(scheduleNextApiPoll, isCritical ? 1000 : 2500);
+    setTimeout(scheduleNextApiPoll, isCritical ? 550 : 2000);
   }
   scheduleNextApiPoll();
 

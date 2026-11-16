@@ -8,7 +8,7 @@
 فريم الشموع: دقيقة واحدة (1 Minute - M1)
 نوع الشموع: شموع يابانية (Japanese Candlesticks)
 مدة الصفقة (Expiration): دقيقة واحدة (1 Minute - فريم الدقيقة الصافي بدون مضاعفات)
-الأزواج المستهدفة: أزواج السوق العالمي الرسمية (EUR/JPY, EUR/USD, GBP/USD, USD/JPY, AUD/USD, USD/CAD, USD/CHF, GBP/JPY, EUR/GBP)
+الأزواج المستهدفة: أزواج السوق العالمي الرسمية (EUR/JPY, EUR/USD, GBP/USD, AUD/USD, USD/CAD, GBP/JPY, USD/CHF, EUR/GBP)
 
 ================================================================================
 قاعدة الدخول الأساسية الصارمة (Golden Execution Rule):

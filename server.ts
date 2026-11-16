@@ -16,7 +16,7 @@ import {
   FormatterOptions,
   ParsedSignal
 } from './src/utils/signalParser.ts';
-import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, calculateEventTimes } from './src/types/forexNews.ts';
+import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, calculateEventTimes, filterActiveForexNews } from './src/types/forexNews.ts';
 import {
   SubscriptionPlan,
   PlatformContactLinks,
@@ -1177,10 +1177,231 @@ let signalsStore: SignalItem[] = [...initialSignals];
 let subscribersStore: VipSubscriber[] = [];
 let quickNotesStore: QuickNote[] = [...initialQuickNotes];
 let dailyStatsStore: Record<string, DailyStatRecord> = {};
-let forexNewsStore: ForexNewsItem[] = [...INITIAL_WEEKLY_FOREX_NEWS];
+let forexNewsStore: ForexNewsItem[] = filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS);
 let plansStore: SubscriptionPlan[] = [...INITIAL_SUBSCRIPTION_PLANS];
 let contactLinksStore: PlatformContactLinks = { ...INITIAL_CONTACT_LINKS };
 let paymentMethodsStore: PaymentMethodConfig[] = [...INITIAL_PAYMENT_METHODS];
+
+let lastRemoteForexNewsFetchMs = 0;
+
+function translateEconomicTitleToArabic(rawTitle: string, currency: string): { titleAr: string; categoryAr: string } {
+  const t = rawTitle.toLowerCase();
+  let categoryAr = 'أخبار اقتصادية';
+  if (t.includes('cpi') || t.includes('inflation') || t.includes('ppi') || t.includes('pce')) categoryAr = 'التضخم والأسعار';
+  else if (t.includes('rate') || t.includes('fomc') || t.includes('monetary') || t.includes('minutes') || t.includes('boe') || t.includes('ecb') || t.includes('rba') || t.includes('boc') || t.includes('boj')) categoryAr = 'السياسة النقدية والفائدة';
+  else if (t.includes('employment') || t.includes('unemployment') || t.includes('jobless') || t.includes('payroll') || t.includes('nfp') || t.includes('claims')) categoryAr = 'الوظائف والبطالة';
+  else if (t.includes('retail')) categoryAr = 'الإنفاق الاستهلاكي';
+  else if (t.includes('pmi') || t.includes('ism') || t.includes('manufacturing') || t.includes('services')) categoryAr = 'النشاط الاقتصادي';
+  else if (t.includes('gdp')) categoryAr = 'الناتج المحلي الإجمالي';
+  else if (t.includes('trade')) categoryAr = 'التجارة والميزان التجاري';
+  else if (t.includes('speaks') || t.includes('speech') || t.includes('testif') || t.includes('press conference')) categoryAr = 'تصريحات ومؤتمرات';
+
+  const currLabel: Record<string, string> = {
+    USD: 'الأمريكي',
+    EUR: 'الأوروبي',
+    GBP: 'البريطاني',
+    AUD: 'الأسترالي',
+    CAD: 'الكندي',
+    CHF: 'السويسري',
+    JPY: 'الياباني',
+    XAU: 'للذهب'
+  };
+  const adj = currLabel[currency] || currency;
+  let titleAr = `${rawTitle} (${currency})`;
+  if (t.includes('unemployment claims') || t.includes('jobless claims')) titleAr = `طلبات إعانة البطالة ${adj} الأسبوعية (${rawTitle})`;
+  else if (t.includes('retail sales')) titleAr = `مؤشر مبيعات التجزئة ${adj} (${rawTitle})`;
+  else if (t.includes('cpi')) titleAr = `مؤشر أسعار المستهلكين / التضخم ${adj} (${rawTitle})`;
+  else if (t.includes('ppi')) titleAr = `مؤشر أسعار المنتجين ${adj} (${rawTitle})`;
+  else if (t.includes('flash manufacturing pmi') || t.includes('manufacturing pmi')) titleAr = `مؤشر مديري المشتريات الصناعي ${adj} (${rawTitle})`;
+  else if (t.includes('flash services pmi') || t.includes('services pmi')) titleAr = `مؤشر مديري المشتريات الخدمي ${adj} (${rawTitle})`;
+  else if (t.includes('non-farm') || t.includes('employment change')) titleAr = `تقرير التوظيف والتغير في العمالة ${adj} (${rawTitle})`;
+  else if (t.includes('monetary policy') || t.includes('meeting minutes')) titleAr = `محضر السياسة النقدية والمركزي ${adj} (${rawTitle})`;
+  else if (t.includes('official bank rate') || t.includes('interest rate') || t.includes('federal funds')) titleAr = `قرار أسعار الفائدة ${adj} (${rawTitle})`;
+  else if (t.includes('gdp')) titleAr = `معدل النمو والناتج المحلي الإجمالي ${adj} (${rawTitle})`;
+  else if (t.includes('trade balance')) titleAr = `بيانات الميزان التجاري ${adj} (${rawTitle})`;
+
+  return { titleAr, categoryAr };
+}
+
+function getSafePairForNewsCurrency(currency: string): string {
+  switch (currency) {
+    case 'EUR': return 'EUR/USD';
+    case 'GBP': return 'GBP/USD';
+    case 'AUD': return 'AUD/USD';
+    case 'CAD': return 'USD/CAD';
+    case 'CHF': return 'USD/CHF';
+    case 'JPY': return 'GBP/JPY';
+    case 'XAU': return 'GOLD (XAU/USD)';
+    default: return 'EUR/USD';
+  }
+}
+
+/**
+ * Automatically purges finished/expired economic news and fetches/updates upcoming economic events.
+ * Runs cleanly on boot, every 5 minutes in background, and on demand via /api/forex-news & /api/forex-news/auto-fetch.
+ */
+async function cleanupAndAutoUpdateForexNews(options?: {
+  forceRemote?: boolean;
+  currencyFilter?: string;
+}): Promise<{ added: number; updated: number; purged: number }> {
+  const nowMs = Date.now();
+  const graceMs = 0;
+  const forceRemote = Boolean(options?.forceRemote);
+  const currencyFilter = options?.currencyFilter;
+
+  const beforeCount = forexNewsStore.length;
+  forexNewsStore = filterActiveForexNews(forexNewsStore, graceMs);
+  const purged = Math.max(0, beforeCount - forexNewsStore.length);
+
+  let added = 0;
+  let updated = 0;
+
+  const candidateEvents: ForexNewsItem[] = [];
+
+  const shouldFetchRemote = forceRemote || nowMs - lastRemoteForexNewsFetchMs > 20 * 60 * 1000;
+  if (shouldFetchRemote) {
+    lastRemoteForexNewsFetchMs = nowMs;
+    const feedUrls = [
+      'https://nfs.faireconomy.media/ff_calendar_thisweek.json',
+      'https://nfs.faireconomy.media/ff_calendar_nextweek.json'
+    ];
+    const allowedCurrencies = new Set(['USD', 'EUR', 'GBP', 'AUD', 'CAD', 'CHF', 'JPY', 'XAU']);
+
+    for (const url of feedUrls) {
+      try {
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 5500);
+        const resp = await fetch(url, {
+          signal: ctrl.signal,
+          headers: { Accept: 'application/json', 'User-Agent': 'ZADFX-CalendarSync/1.0' }
+        });
+        clearTimeout(tid);
+        if (!resp.ok) continue;
+        const rows = (await resp.json()) as any[];
+        if (!Array.isArray(rows)) continue;
+
+        for (const row of rows) {
+          const rawCurr = String(row?.country || row?.currency || '').toUpperCase().trim();
+          const rawImpact = String(row?.impact || '').toLowerCase().trim();
+          const rawTitle = String(row?.title || '').trim();
+          const rawDate = String(row?.date || '').trim();
+          if (!rawCurr || !allowedCurrencies.has(rawCurr) || !rawTitle || !rawDate) continue;
+          if (rawImpact !== 'high' && rawImpact !== 'medium') continue;
+
+          const parsedMs = Date.parse(rawDate);
+          if (isNaN(parsedMs) || parsedMs + graceMs <= nowMs) continue;
+
+          const dtUtc = new Date(parsedMs);
+          const eventDate = dtUtc.toISOString().slice(0, 10);
+          const timeGmt = `${String(dtUtc.getUTCHours()).padStart(2, '0')}:${String(dtUtc.getUTCMinutes()).padStart(2, '0')}`;
+          const tData = calculateEventTimes(eventDate, timeGmt);
+          const { titleAr, categoryAr } = translateEconomicTitleToArabic(rawTitle, rawCurr);
+          const safeId = `ff-${rawCurr.toLowerCase()}-${eventDate}-${timeGmt.replace(':', '')}-${rawTitle.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 18)}`;
+          const recPair = getSafePairForNewsCurrency(rawCurr);
+          const impactLevel: 'high' | 'medium' = rawImpact === 'high' ? 'high' : 'medium';
+
+          candidateEvents.push({
+            id: safeId,
+            title: titleAr,
+            currency: rawCurr as ForexNewsItem['currency'],
+            impact: impactLevel,
+            category: categoryAr,
+            eventDate,
+            eventDayArabic: tData.eventDayArabic,
+            timeGmt,
+            timeCairo: tData.timeCairo,
+            timeMecca: tData.timeMecca,
+            targetEpochMs: tData.targetEpochMs,
+            previous: String(row?.previous || '').trim(),
+            forecast: String(row?.forecast || '').trim(),
+            actual: String(row?.actual || '').trim(),
+            expectedImpact: rawCurr === 'USD' ? 'usd_bullish' : 'currency_bullish',
+            expectedMoveSummary: `حدث اقتصادي ${impactLevel === 'high' ? 'عالي التأثير 🔴' : 'متوسط التأثير 🟡'} على عملة (${rawCurr}) يرفع السيولة والتقلبات السعرية وقت الصدور.`,
+            recommendation: {
+              pair: recPair,
+              action: 'BUY',
+              entryStrategy: `متابعة حركة ${recPair} فور صدور النتيجة الفعلية ومقارنتها بالتوقعات (${row?.forecast || 'المعلنة'})`
+            },
+            isBroadcasted: false,
+            autoFetched: true,
+            source: 'التقويم الاقتصادي العالمي المباشر',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+        }
+      } catch (_e) {
+        // Fallback smoothly to canonical active weekly events
+      }
+    }
+  }
+
+  for (const initItem of filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS, graceMs)) {
+    candidateEvents.push(initItem);
+  }
+
+  for (const candidate of candidateEvents) {
+    if (!candidate.targetEpochMs || candidate.targetEpochMs + graceMs <= nowMs) continue;
+    if (currencyFilter && candidate.currency !== currencyFilter) continue;
+
+    const existingIdx = forexNewsStore.findIndex(
+      n =>
+        n.id === candidate.id ||
+        (n.currency === candidate.currency && n.eventDate === candidate.eventDate && n.timeGmt === candidate.timeGmt)
+    );
+    const timeData = calculateEventTimes(candidate.eventDate, candidate.timeGmt);
+
+    if (existingIdx !== -1) {
+      const existing = forexNewsStore[existingIdx];
+      const changed =
+        existing.timeGmt !== candidate.timeGmt ||
+        (candidate.actual && candidate.actual !== existing.actual) ||
+        (candidate.forecast && candidate.forecast !== existing.forecast) ||
+        (candidate.previous && candidate.previous !== existing.previous);
+      if (changed || forceRemote) {
+        forexNewsStore[existingIdx] = {
+          ...candidate,
+          ...existing,
+          timeGmt: candidate.timeGmt,
+          timeCairo: timeData.timeCairo,
+          timeMecca: timeData.timeMecca,
+          targetEpochMs: timeData.targetEpochMs,
+          eventDayArabic: timeData.eventDayArabic,
+          previous: candidate.previous || existing.previous,
+          forecast: candidate.forecast || existing.forecast,
+          actual: candidate.actual || existing.actual,
+          updatedAt: new Date().toISOString()
+        };
+        updated++;
+      }
+    } else {
+      forexNewsStore.push({
+        ...candidate,
+        timeCairo: timeData.timeCairo,
+        timeMecca: timeData.timeMecca,
+        targetEpochMs: timeData.targetEpochMs,
+        eventDayArabic: timeData.eventDayArabic,
+        autoFetched: true,
+        updatedAt: new Date().toISOString()
+      });
+      added++;
+    }
+  }
+
+  const seen = new Set<string>();
+  forexNewsStore = filterActiveForexNews(forexNewsStore, graceMs).filter(item => {
+    const key = `${item.currency}_${item.eventDate}_${item.timeGmt}_${item.title.slice(0, 18)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  if (purged > 0 || added > 0 || updated > 0) {
+    console.log(`[Forex News 🗞️] Auto-sync complete: purged=${purged} expired, added=${added}, updated=${updated}, active=${forexNewsStore.length}.`);
+    await saveState();
+  }
+
+  return { added, updated, purged };
+}
 
 /**
  * Checks if a high-impact news event is currently occurring (+/- 10 minutes).
@@ -1605,9 +1826,10 @@ function applyParsedState(parsed: Partial<PersistedState>) {
         merged.push(initItem);
       }
     }
-    forexNewsStore = merged;
+    const activeNews = filterActiveForexNews(merged);
+    forexNewsStore = activeNews.length > 0 ? activeNews : filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS);
   } else {
-    forexNewsStore = [...INITIAL_WEEKLY_FOREX_NEWS];
+    forexNewsStore = filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS);
   }
   if (parsed.plans && Array.isArray(parsed.plans) && parsed.plans.length > 0) {
     plansStore = parsed.plans;
@@ -1926,10 +2148,11 @@ async function saveState(): Promise<boolean> {
           vipLossImageUrl: autoPilot.vipLossImageUrl || ''
         },
         robotSettings,
+        liveBroadcastSession,
         subscribers: sanitizedSubscribers,
         quickNotes: [], // Exclude private internal admin notes
         dailyStats: sortedDailyStats,
-        forexNews: forexNewsStore,
+        forexNews: filterActiveForexNews(forexNewsStore),
         plans: plansStore,
         contactLinks: contactLinksStore,
         lastDispatchedEpochMinute
@@ -2095,8 +2318,9 @@ async function saveState(): Promise<boolean> {
   }
 }
 
-loadStateFromCloudAndDisk().then(() => {
-  saveState();
+loadStateFromCloudAndDisk().then(async () => {
+  await cleanupAndAutoUpdateForexNews({ forceRemote: true }).catch(() => {});
+  await saveState();
 });
 
 /**
@@ -6402,19 +6626,26 @@ async function handleVipBotTradeOutcome(sig: SignalItem, status: 'WIN' | 'WIN_GA
  * - Concludes with: "شكراً لكم نكتفي بهذا القدر ولنا لقاء يوم الغد"
  * - In case of win: congratulations! In case of loss/modest: comforting message and reassurance.
  */
+let lastLiveClosingReportAttemptMs = 0;
 async function sendLiveBroadcastClosingReport(_reason?: string): Promise<void> {
   const todayEgypt = getCurrentEgyptDateString(new Date());
   if (liveBroadcastSession.closingReportSentDate === todayEgypt) return;
-  liveBroadcastSession.closingReportSentDate = todayEgypt;
+  if (Date.now() - lastLiveClosingReportAttemptMs < 45_000) return;
+  lastLiveClosingReportAttemptMs = Date.now();
 
   const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
   const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
 
   const liveStatus = getEveningLiveSessionStatus();
-  const wins = liveBroadcastSession.wins;
-  const losses = liveBroadcastSession.losses;
-  const winRate = liveBroadcastSession.winRate;
-  const isWin = liveStatus.isProfitable || wins >= 2 || winRate >= 65;
+  const wins = liveStatus.liveWins > 0 || liveStatus.liveLosses > 0
+    ? liveStatus.liveWins
+    : (liveBroadcastSession.wins || 0);
+  const losses = liveStatus.liveWins > 0 || liveStatus.liveLosses > 0
+    ? liveStatus.liveLosses
+    : (liveBroadcastSession.losses || 0);
+  const totalDecisive = wins + losses;
+  const winRate = totalDecisive > 0 ? Math.round((wins / totalDecisive) * 100) : (liveBroadcastSession.winRate || 0);
+  const isWin = totalDecisive > 0 && (liveStatus.isProfitable || wins >= 2 || winRate >= 65);
 
   let msg = '';
   if (isWin) {
@@ -6456,7 +6687,13 @@ async function sendLiveBroadcastClosingReport(_reason?: string): Promise<void> {
   // Send closing report strictly to VIP channel (Free channel ended at 12:00 PM)
   if (vipToken && vipChat) {
     try {
-      await sendTelegramMessage(vipToken, vipChat, msg);
+      const tgRes = await sendTelegramMessage(vipToken, vipChat, msg);
+      if (tgRes.ok) {
+        liveBroadcastSession.closingReportSentDate = todayEgypt;
+        console.log(`[Live Broadcast 🔴] Closing report sent to VIP channel (${todayEgypt}, reason=${_reason || 'end'}, wins=${wins}, losses=${losses}, winRate=${winRate}%).`);
+      } else {
+        console.warn('[Live Broadcast 🔴] Failed to send VIP closing report:', tgRes.description);
+      }
     } catch (_e) {}
   }
   await saveState();
@@ -6796,6 +7033,13 @@ async function checkLiveBroadcastEveningSession(): Promise<void> {
     liveBroadcastSession.status === 'STOPPED_BAD_MARKET' ||
     liveBroadcastSession.status === 'STOPPED_SESSION_COMPLETED'
   ) {
+    // Guarantee closing report is never missed even if session stopped early or server restarted before 19:00
+    if (
+      liveBroadcastSession.closingReportSentDate !== todayEgypt &&
+      (liveBroadcastSession.status !== 'STOPPED_BAD_MARKET' || cairoH >= 19)
+    ) {
+      await sendLiveBroadcastClosingReport('ensure_closing_report');
+    }
     return;
   }
 
@@ -7165,8 +7409,13 @@ async function dispatchEndOfDayReportToTelegram(
  */
 async function checkAndSendMorningSessionClosingReport(forceNoon = false): Promise<boolean> {
   const todayEgypt = getCurrentEgyptDateString(new Date());
-  if (autoPilot.freeBot12ReportSentDate === todayEgypt && autoPilot.vipMorningReportSentDate === todayEgypt) {
-    return false; // Already sent today
+  const freeAlreadySent =
+    autoPilot.freeBot12ReportSentDate === todayEgypt ||
+    autoPilot.freeBotCelebrationSentDate === todayEgypt;
+  const vipAlreadySent = autoPilot.vipMorningReportSentDate === todayEgypt;
+
+  if (freeAlreadySent && vipAlreadySent) {
+    return false; // Already sent to both channels today
   }
 
   const currentH = getCurrentEgyptHour();
@@ -7177,7 +7426,7 @@ async function checkAndSendMorningSessionClosingReport(forceNoon = false): Promi
     return false;
   }
 
-  // Must have at least 1 completed signal today to send a report
+  // Must have at least 1 completed signal today to end early before 12:00 PM
   if (status.totalCompleted === 0 && currentH < 12) {
     return false;
   }
@@ -7190,7 +7439,7 @@ async function checkAndSendMorningSessionClosingReport(forceNoon = false): Promi
   const wins = status.todayWins;
   const losses = status.todayLosses;
   const winRate = status.winRate;
-  const isWin = winRate >= 65 || (wins >= 2 && losses === 0) || wins > losses;
+  const isWin = status.totalCompleted > 0 && (winRate >= 65 || (wins >= 2 && losses === 0) || wins > losses);
 
   let reportText = '';
   if (isWin) {
@@ -7229,7 +7478,7 @@ async function checkAndSendMorningSessionClosingReport(forceNoon = false): Promi
   }
 
   const promises: Promise<any>[] = [];
-  if (freeToken && freeChat && autoPilot.freeBot12ReportSentDate !== todayEgypt) {
+  if (freeToken && freeChat && !freeAlreadySent) {
     promises.push(
       sendTelegramMessage(freeToken, freeChat, reportText)
         .then(res => {
@@ -7238,18 +7487,20 @@ async function checkAndSendMorningSessionClosingReport(forceNoon = false): Promi
             autoPilot.freeBot12ReportSentDate = todayEgypt;
             autoPilot.freeBotDailyTargetReached = true;
             autoPilot.freeBotStoppedForToday = true;
+            console.log(`[Morning Report ✅] Sent Free Channel closing report (${todayEgypt}).`);
           }
         })
         .catch(() => {})
     );
   }
 
-  if (vipToken && vipChat && autoPilot.vipMorningReportSentDate !== todayEgypt) {
+  if (vipToken && vipChat && !vipAlreadySent) {
     promises.push(
       sendTelegramMessage(vipToken, vipChat, reportText)
         .then(res => {
           if (res.ok) {
             autoPilot.vipMorningReportSentDate = todayEgypt;
+            console.log(`[Morning Report ✅] Sent VIP Channel closing report (${todayEgypt}).`);
           }
         })
         .catch(() => {})
@@ -7417,17 +7668,19 @@ async function checkFocusedGlobalMarketAutoPilot() {
 
           sig.status = finalOutcome;
           sig.resultSent = true;
-          sig.formattedMessage = appendResultToSignalMessage(sig.formattedMessage, finalOutcome);
-          await saveState();
-
           await updateTelegramSignalResult(
             autoPilot.botToken,
             autoPilot.chatId,
             sig,
             finalOutcome
           );
-          if (sig.telegramMessageId) {
-            await checkAndSendFreeBotTargetCelebration();
+          sig.formattedMessage = appendResultToSignalMessage(sig.formattedMessage, finalOutcome);
+          await saveState();
+          if (sig.telegramMessageId || sig.vipTelegramMessageId) {
+            const mStatus = getFreeBotTargetStatus();
+            if (mStatus.isTargetReached) {
+              await checkAndSendMorningSessionClosingReport(false);
+            }
           }
           if (sig.isLiveBroadcast || (sig.payout && sig.payout.includes('بث حي'))) {
             await handleLiveBroadcastSignalOutcome(sig, finalOutcome);
@@ -7616,10 +7869,15 @@ setInterval(() => {
   checkFocusedGlobalMarketAutoPilot();
 }, 25 * 1000);
 
-// Ultra-High-Frequency 1s Loop for VIP Momentum Pause Breakout (fires at :53-:55s mark, giving 5-7s head start)
+// Ultra-High-Frequency 1s Loop for VIP Momentum Pause Breakout (fires at :54-:56s mark, giving 4-6s head start)
 setInterval(() => {
   checkVipMomentumPauseBreakoutLoop();
 }, 1000);
+
+// Automatic 5-Minute Economic News Cleanup & Live Calendar Refresh (runs 24/7 even on weekends)
+setInterval(() => {
+  cleanupAndAutoUpdateForexNews({ forceRemote: false }).catch(() => {});
+}, 5 * 60 * 1000);
 
 setInterval(() => {
   pollTelegramBotIncomingForwards();
@@ -8361,6 +8619,7 @@ async function startServer() {
       effectiveStrategyMode: effectiveMode,
       strategyTitle: workingStatus.strategyTitle,
       serverTimeIso: new Date().toISOString(),
+      serverEpochMs: Date.now(),
       serverEpochSeconds: Math.floor(Date.now() / 1000),
       marketOpen: isGlobalMarketOpen,
       isMarketOpen: isGlobalMarketOpen,
@@ -8458,7 +8717,7 @@ async function startServer() {
     res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    res.setHeader('Content-Disposition', 'inline; filename="zad-broker-robot.golden-v3.6.user.js"');
+    res.setHeader('Content-Disposition', 'inline; filename="zad-broker-robot.golden-v4.0.user.js"');
     const goldenPath = path.join(process.cwd(), 'public', 'backups', 'zad-broker-robot.golden-v3.6.user.js');
     const fallbackPath = path.join(process.cwd(), 'public', 'zad-broker-robot.user.js');
     const targetFile = fs.existsSync(goldenPath) ? goldenPath : fallbackPath;
@@ -8470,7 +8729,7 @@ async function startServer() {
     res.status(404).send('Golden Userscript file not found');
   });
 
-  // Admin Restore Golden Baseline Endpoint (Instantly rolls back the robot to the tested v3.6 Golden Baseline)
+  // Admin Restore Golden Baseline Endpoint (Instantly rolls back the robot to the tested v4.0 Golden Baseline)
   app.post('/api/quotex-robot/restore-golden-baseline', async (_req, res) => {
     try {
       const goldenPath = path.join(process.cwd(), 'public', 'backups', 'zad-broker-robot.golden-v3.6.user.js');
@@ -8488,8 +8747,8 @@ async function startServer() {
 
       res.json({
         ok: true,
-        message: 'تم بنجاح استعادة وتثبيت النسخة المرجعية الذهبية (v3.6 Golden Baseline) بنسبة 100%!',
-        version: '3.6-GOLDEN-REFERENCE',
+        message: 'تم بنجاح استعادة وتثبيت النسخة المرجعية الذهبية (v4.0 Golden Baseline) بنسبة 100%!',
+        version: '4.0-GOLDEN-REFERENCE',
         restoredAt: new Date().toISOString()
       });
     } catch (err: any) {
@@ -8965,6 +9224,9 @@ async function startServer() {
     }
     if (!rawPair.includes('/')) {
       return res.status(400).json({ ok: false, error: 'صيغة الزوج غير صحيحة، يرجى كتابته مثل EUR/JPY أو EURUSD' });
+    }
+    if (rawPair === 'USD/JPY' || rawPair.includes('USDJPY')) {
+      return res.status(400).json({ ok: false, error: 'تم إلغاء وحظر زوج USD/JPY نهائياً لعدم توفر شارت متوافق في المنصة' });
     }
 
     const currentList = autoPilot.customPairsList || ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP'];
@@ -9686,16 +9948,22 @@ async function startServer() {
   // FOREX BREAKING NEWS & ECONOMIC CALENDAR ENDPOINTS
   // -------------------------------------------------------------
 
-  // Get all weekly forex news (Public)
+  // Get all weekly forex news (Public) - automatically purges expired news & keeps upcoming schedule fresh
   app.get('/api/forex-news', async (_req, res) => {
     if (!isCloudStateLoaded) {
       await loadStateFromCloudAndDisk();
     }
     const now = Date.now();
-    const mapped = forexNewsStore
+    const hasExpired = forexNewsStore.some(item => !item.targetEpochMs || now >= item.targetEpochMs);
+    if (hasExpired || forexNewsStore.length === 0) {
+      await cleanupAndAutoUpdateForexNews({ forceRemote: forexNewsStore.length === 0 });
+    }
+    const freshNow = Date.now();
+    const mapped = filterActiveForexNews(forexNewsStore, 0)
+      .filter(item => item.targetEpochMs > freshNow)
       .map(item => ({
         ...item,
-        isExpired: now > item.targetEpochMs
+        isExpired: false
       }))
       .sort((a, b) => a.targetEpochMs - b.targetEpochMs);
     res.json({ ok: true, news: mapped });
@@ -9797,7 +10065,7 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  // Auto-fetch and sync breaking forex news & economic calendar releases (Search & Insert automatically)
+  // Auto-fetch and sync breaking forex news & economic calendar releases (Auto-purges expired + live refresh)
   app.post('/api/forex-news/auto-fetch', async (req, res) => {
     try {
       if (!isCloudStateLoaded) {
@@ -9806,96 +10074,19 @@ async function startServer() {
 
       const body = req.body || {};
       const requestedCurrency = (body.currency || '').trim().toUpperCase();
-      const forceRefresh = Boolean(body.forceRefresh);
-
-      let addedCount = 0;
-      let updatedCount = 0;
-
-      // Candidate live economic releases
-      const candidateEvents: ForexNewsItem[] = [...INITIAL_WEEKLY_FOREX_NEWS];
-
-      for (const candidate of candidateEvents) {
-        if (requestedCurrency && requestedCurrency !== 'ALL' && candidate.currency !== requestedCurrency) {
-          continue;
-        }
-
-        const existingIdx = forexNewsStore.findIndex(
-          n => n.id === candidate.id || (n.title.trim() === candidate.title.trim() && n.eventDate === candidate.eventDate)
-        );
-
-        const timeData = calculateEventTimes(candidate.eventDate, candidate.timeGmt);
-
-        if (existingIdx !== -1) {
-          const existing = forexNewsStore[existingIdx];
-          forexNewsStore[existingIdx] = {
-            ...candidate,
-            ...existing,
-            // Guaranteed exact calculated times for Cairo, Mecca, GMT
-            timeGmt: candidate.timeGmt,
-            timeCairo: timeData.timeCairo,
-            timeMecca: timeData.timeMecca,
-            targetEpochMs: timeData.targetEpochMs,
-            eventDayArabic: timeData.eventDayArabic,
-            previous: candidate.previous || existing.previous,
-            forecast: candidate.forecast || existing.forecast,
-            actual: candidate.actual || existing.actual,
-            updatedAt: new Date().toISOString()
-          };
-          updatedCount++;
-        } else {
-          const newItem: ForexNewsItem = {
-            ...candidate,
-            timeCairo: timeData.timeCairo,
-            timeMecca: timeData.timeMecca,
-            targetEpochMs: timeData.targetEpochMs,
-            eventDayArabic: timeData.eventDayArabic,
-            autoFetched: true,
-            isBroadcasted: false,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-          forexNewsStore.push(newItem);
-          addedCount++;
-        }
-      }
-
-      // If forceRefresh requested, clean up past October items so active November schedule shines
-      if (forceRefresh) {
-        forexNewsStore = forexNewsStore.filter(item => {
-          return item.eventDate >= '2026-11-01';
-        });
-      }
-
-      // Deduplicate by title prefix and event date
-      const seen = new Set<string>();
-      forexNewsStore = forexNewsStore.filter(item => {
-        const key = item.title.trim().slice(0, 25) + '_' + item.eventDate;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
+      const result = await cleanupAndAutoUpdateForexNews({
+        forceRemote: true,
+        currencyFilter: requestedCurrency && requestedCurrency !== 'ALL' ? requestedCurrency : undefined
       });
-
-      forexNewsStore = forexNewsStore.map(item => {
-        const timeData = calculateEventTimes(item.eventDate, item.timeGmt);
-        return {
-          ...item,
-          timeCairo: timeData.timeCairo,
-          timeMecca: timeData.timeMecca,
-          targetEpochMs: timeData.targetEpochMs,
-          eventDayArabic: timeData.eventDayArabic
-        };
-      });
-
-      forexNewsStore.sort((a, b) => a.targetEpochMs - b.targetEpochMs);
-      await saveState();
 
       res.json({
         ok: true,
         count: forexNewsStore.length,
-        added: addedCount,
-        updated: updatedCount,
+        added: result.added,
+        updated: result.updated,
+        purged: result.purged,
         news: forexNewsStore,
-        message: `تم جلب وتحديث أجندة الأخبار الاقتصادية العاجلة آلياً بنجاح! (${addedCount} جديد، ${updatedCount} تم تحديثه بدقة التواقيت)`
+        message: `تم مسح (${result.purged}) خبر منتهي وتحديث وجلب (${result.added} جديد، ${result.updated} محدث) بدقة التواقيت العالمية!`
       });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err.message || 'خطأ أثناء الجلب الآلي للأخبار' });
@@ -9904,8 +10095,8 @@ async function startServer() {
 
   // Re-seed default weekly news schedule (Admin)
   app.post('/api/forex-news/seed-weekly', async (_req, res) => {
-    forexNewsStore = [...INITIAL_WEEKLY_FOREX_NEWS];
-    await saveState();
+    forexNewsStore = filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS);
+    await cleanupAndAutoUpdateForexNews({ forceRemote: true });
     res.json({ ok: true, count: forexNewsStore.length, news: forexNewsStore });
   });
 

@@ -98,7 +98,7 @@ export const ZadtooAutoTradePage: React.FC<ZadtooAutoTradePageProps> = ({
     if (!isSimulating) return;
 
     const interval = setInterval(() => {
-      const pairs = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'EUR/JPY'];
+      const pairs = ['EUR/USD', 'GBP/USD', 'GBP/JPY', 'AUD/USD', 'EUR/JPY'];
       const randomPair = pairs[Math.floor(Math.random() * pairs.length)];
       const randomDir: 'CALL' | 'PUT' = Math.random() > 0.48 ? 'CALL' : 'PUT';
       const isWin = Math.random() < 0.82; // 82% win rate simulation
@@ -438,7 +438,7 @@ export const ZadtooAutoTradePage: React.FC<ZadtooAutoTradePageProps> = ({
               <div>
                 <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
                   <Cpu className="w-5 h-5 text-emerald-600" />
-                  <span>لوحة المشرف: روبوت ZAD FX العائم (Universal Broker Pro Bot v3.6)</span>
+                  <span>لوحة المشرف: روبوت ZAD FX العائم (Universal Broker Pro Bot v4.0)</span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
                   أدوات المشرف الخاصة بتثبيت وتحديث سكريبت الروبوت العائم.

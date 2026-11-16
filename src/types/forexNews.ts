@@ -74,341 +74,244 @@ export function calculateEventTimes(eventDate: string, timeGmt: string) {
   }
 }
 
+/**
+ * Filters out expired news items immediately at expiry (graceMs = 0 by default)
+ * and replaces any banned USD/JPY pair recommendations.
+ */
+export function filterActiveForexNews(items: ForexNewsItem[], graceMs = 0): ForexNewsItem[] {
+  const nowMs = Date.now();
+  return items
+    .filter(item => item && typeof item.targetEpochMs === 'number' && nowMs < item.targetEpochMs + graceMs)
+    .map(item => {
+      if (item.recommendation?.pair && (item.recommendation.pair.includes('USD/JPY') || item.recommendation.pair.includes('USDJPY'))) {
+        return {
+          ...item,
+          recommendation: {
+            ...item.recommendation,
+            pair: 'GBP/JPY',
+            entryStrategy: item.recommendation.entryStrategy.replace(/الدولار\/ين|USD\/JPY/gi, 'الباوند/ين (GBP/JPY)')
+          }
+        };
+      }
+      return item;
+    })
+    .sort((a, b) => a.targetEpochMs - b.targetEpochMs);
+}
+
+function buildCanonicalNewsItem(
+  base: Omit<ForexNewsItem, 'timeCairo' | 'timeMecca' | 'targetEpochMs' | 'eventDayArabic' | 'createdAt' | 'updatedAt'>
+): ForexNewsItem {
+  const t = calculateEventTimes(base.eventDate, base.timeGmt);
+  const nowIso = new Date().toISOString();
+  return {
+    ...base,
+    timeCairo: t.timeCairo,
+    timeMecca: t.timeMecca,
+    targetEpochMs: t.targetEpochMs,
+    eventDayArabic: t.eventDayArabic,
+    createdAt: nowIso,
+    updatedAt: nowIso
+  };
+}
+
 export const INITIAL_WEEKLY_FOREX_NEWS: ForexNewsItem[] = [
-  {
-    id: 'news-us-jolts-nov',
-    title: 'فرص العمل ودوران العمالة الأمريكية (US JOLTs Job Openings)',
-    currency: 'USD',
-    impact: 'high',
-    category: 'الوظائف والعمالة',
-    eventDate: '2026-11-03',
-    eventDayArabic: 'الثلاثاء',
-    timeGmt: '15:00',
-    timeCairo: '17:00',
-    timeMecca: '18:00',
-    targetEpochMs: new Date('2026-11-03T15:00:00Z').getTime(),
-    previous: '8.04M',
-    forecast: '7.98M',
+  buildCanonicalNewsItem({
+    id: 'news-mon-eur-trade-nov16',
+    title: 'الميزان التجاري لمنطقة اليورو وتصريحات المركزي الأوروبي (Eurozone Trade Balance & ECB)',
+    currency: 'EUR',
+    impact: 'medium',
+    category: 'التجارة والبنوك المركزية',
+    eventDate: '2026-11-16',
+    timeGmt: '10:00',
+    previous: '11.0B',
+    forecast: '12.4B',
     actual: '',
-    expectedImpact: 'usd_bearish',
-    expectedMoveSummary: 'انخفاض فرص العمل دون 7.9M يعكس تباطؤ وتيرة التوظيف ويضغط على مؤشر الدولار بالهبوط، مما يمنح الذهب واليورو دفعة صعودية قوية.',
-    recommendation: {
-      pair: 'GOLD (XAU/USD)',
-      action: 'BUY',
-      entryStrategy: 'شراء الذهب فور تأكيد تراجع أرقام فرص العمل الأمريكية دون التوقعات اللحظية'
-    },
-    isBroadcasted: false,
-    autoFetched: true,
-    source: 'التقويم الاقتصادي العالمي المعتمد',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'news-rba-rate-decision',
-    title: 'قرار أسعار الفائدة وبيان السياسة النقدية للمركزي الأسترالي (RBA Interest Rate)',
-    currency: 'AUD',
-    impact: 'high',
-    category: 'أسعار الفائدة',
-    eventDate: '2026-11-03',
-    eventDayArabic: 'الثلاثاء',
-    timeGmt: '03:30',
-    timeCairo: '05:30',
-    timeMecca: '06:30',
-    targetEpochMs: new Date('2026-11-03T03:30:00Z').getTime(),
-    previous: '4.35%',
-    forecast: '4.35%',
-    actual: '4.35%',
     expectedImpact: 'currency_bullish',
-    expectedMoveSummary: 'تثبيت الفائدة مع لهجة متشددة تؤكد الحذر من عودة التضخم تمنح الدولار الأسترالي زخماً صعودياً أمام الدولار الأمريكي.',
-    recommendation: {
-      pair: 'AUD/USD',
-      action: 'BUY',
-      entryStrategy: 'شراء زوج الأسترالي/دولار مع اختراق المقاومة اللحظية وتأكيد ثبات الفائدة'
-    },
-    isBroadcasted: false,
-    autoFetched: true,
-    source: 'التقويم الاقتصادي العالمي المعتمد',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'news-us-adp-employment',
-    title: 'تقرير التوظيف بالقطاع الخاص الأمريكي (ADP Non-Farm Employment Change)',
-    currency: 'USD',
-    impact: 'high',
-    category: 'الوظائف والعمالة',
-    eventDate: '2026-11-04',
-    eventDayArabic: 'الأربعاء',
-    timeGmt: '13:15',
-    timeCairo: '15:15',
-    timeMecca: '16:15',
-    targetEpochMs: new Date('2026-11-04T13:15:00Z').getTime(),
-    previous: '143K',
-    forecast: '150K',
-    actual: '',
-    expectedImpact: 'usd_bullish',
-    expectedMoveSummary: 'المؤشر الاستباقي الرئيسي لتقرير الوظائف غير الزراعية NFP. أي قراءة تتجاوز 155 ألف وظيفة ستعزز قوة الدولار وتضغط على اليورو والذهب.',
-    recommendation: {
-      pair: 'USD/JPY',
-      action: 'BUY',
-      entryStrategy: 'شراء الدولار/ين فور صدور بيانات التوظيف بالقطاع الخاص أعلى من المتوقع'
-    },
-    isBroadcasted: false,
-    autoFetched: true,
-    source: 'التقويم الاقتصادي العالمي المعتمد',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'news-us-ism-services',
-    title: 'مؤشر مديري المشتريات للقطاع الخدمي الأمريكي الصادر عن معهد ISM (Services PMI)',
-    currency: 'USD',
-    impact: 'high',
-    category: 'النشاط الاقتصادي',
-    eventDate: '2026-11-04',
-    eventDayArabic: 'الأربعاء',
-    timeGmt: '15:00',
-    timeCairo: '17:00',
-    timeMecca: '18:00',
-    targetEpochMs: new Date('2026-11-04T15:00:00Z').getTime(),
-    previous: '54.9',
-    forecast: '53.8',
-    actual: '',
-    expectedImpact: 'usd_bullish',
-    expectedMoveSummary: 'القطاع الخدمي يشكل أكثر من ثلثي الناتج الإجمالي الأمريكي. الحفاظ على وتيرة النمو فوق 53 يدعم قوة الدولار الأمريكي عالمياً.',
+    expectedMoveSummary: 'تحسن فائض الميزان التجاري لمنطقة اليورو مع افتتاح الأسبوع يدعم قوة اليورو مقابل الدولار الأمريكي.',
     recommendation: {
       pair: 'EUR/USD',
-      action: 'SELL',
-      entryStrategy: 'بيع زوج اليورو/دولار مع إعادة اختبار مستوى المقاومة بعد صدور بيانات الخدمات'
+      action: 'BUY',
+      entryStrategy: 'شراء زوج EUR/USD مع تأكيد استقرار الشمعة فوق الدعم اللحظي وقت صدور البيانات الأوروبية'
     },
     isBroadcasted: false,
     autoFetched: true,
-    source: 'التقويم الاقتصادي العالمي المعتمد',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'news-boe-rate-decision',
-    title: 'قرار أسعار الفائدة الصادر عن بنك إنجلترا المركزي (BoE Official Bank Rate)',
-    currency: 'GBP',
-    impact: 'high',
-    category: 'أسعار الفائدة',
-    eventDate: '2026-11-05',
-    eventDayArabic: 'الخميس',
-    timeGmt: '12:00',
-    timeCairo: '14:00',
-    timeMecca: '15:00',
-    targetEpochMs: new Date('2026-11-05T12:00:00Z').getTime(),
-    previous: '5.00%',
-    forecast: '4.75%',
-    actual: '',
-    expectedImpact: 'currency_bearish',
-    expectedMoveSummary: 'توقعات شبه إجماعية بخفض أسعار الفائدة البريطانية بمقدار 25 نقطة أساس إلى 4.75%، مما يضغط سلباً على الجنيه الإسترليني.',
-    recommendation: {
-      pair: 'GBP/USD',
-      action: 'SELL',
-      entryStrategy: 'بيع الجنيه الإسترليني مقابل الدولار مع كسر الدعم اللحظي وتأكيد قرار الخفض'
-    },
-    isBroadcasted: false,
-    autoFetched: true,
-    source: 'التقويم الاقتصادي العالمي المعتمد',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'news-us-initial-jobless',
-    title: 'معدلات الشكاوى من البطالة الأمريكية الأسبوعية (US Initial Jobless Claims)',
-    currency: 'USD',
-    impact: 'high',
-    category: 'الوظائف والبطالة',
-    eventDate: '2026-11-05',
-    eventDayArabic: 'الخميس',
+    source: 'التقويم الاقتصادي العالمي المعتمد'
+  }),
+  buildCanonicalNewsItem({
+    id: 'news-mon-cad-housing-nov16',
+    title: 'مبيعات الصناعات التحويلية الكندية وبداية المشاريع السكنية (Canada Manufacturing Sales)',
+    currency: 'CAD',
+    impact: 'medium',
+    category: 'النشاط الاقتصادي',
+    eventDate: '2026-11-16',
     timeGmt: '13:30',
-    timeCairo: '15:30',
-    timeMecca: '16:30',
-    targetEpochMs: new Date('2026-11-05T13:30:00Z').getTime(),
-    previous: '216K',
-    forecast: '220K',
+    previous: '-1.3%',
+    forecast: '-0.5%',
     actual: '',
-    expectedImpact: 'usd_bearish',
-    expectedMoveSummary: 'مقياس أسبوعي مباشر لصحة سوق العمل الأمريكي، صدور قراءة أعلى من 222 ألف يضغط على الدولار بالهبوط الفوري.',
+    expectedImpact: 'currency_bullish',
+    expectedMoveSummary: 'صدور قراءة أفضل من المتوقع للمبيعات الصناعية في كندا يمنح الدولار الكندي دعماً فورياً أمام الدولار الأمريكي.',
     recommendation: {
-      pair: 'GOLD (XAU/USD)',
-      action: 'BUY',
-      entryStrategy: 'شراء الذهب مع شمعة الدقيقة الأولى في حال ارتفاع طلبات البطالة فوق التوقعات'
+      pair: 'USD/CAD',
+      action: 'SELL',
+      entryStrategy: 'بيع زوج USD/CAD عند صدور القراءة الكندية إيجابية أعلى من التوقعات'
     },
     isBroadcasted: false,
     autoFetched: true,
-    source: 'التقويم الاقتصادي العالمي المعتمد',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'news-fomc-rate-decision-nov',
-    title: 'قرار أسعار الفائدة الصادر عن البنك الفيدرالي الأمريكي (FOMC Federal Funds Rate)',
-    currency: 'USD',
+    source: 'التقويم الاقتصادي العالمي المعتمد'
+  }),
+  buildCanonicalNewsItem({
+    id: 'news-tue-rba-minutes-nov17',
+    title: 'محضر اجتماع السياسة النقدية للبنك المركزي الأسترالي (RBA Monetary Policy Minutes)',
+    currency: 'AUD',
     impact: 'high',
-    category: 'أسعار الفائدة',
-    eventDate: '2026-11-05',
-    eventDayArabic: 'الخميس',
-    timeGmt: '19:00',
-    timeCairo: '21:00',
-    timeMecca: '22:00',
-    targetEpochMs: new Date('2026-11-05T19:00:00Z').getTime(),
-    previous: '5.00%',
-    forecast: '4.75%',
-    actual: '',
-    expectedImpact: 'usd_bearish',
-    expectedMoveSummary: 'الحدث الأضخم لهذا الأسبوع! البنك الفيدرالي يتجه لخفض الفائدة 25 نقطة أساس لتصل 4.75%، متوقع انفجار صعودي لأسعار الذهب وهبوط للدولار.',
-    recommendation: {
-      pair: 'GOLD (XAU/USD)',
-      action: 'BUY',
-      entryStrategy: 'شراء قوي ومباشر للذهب مع صدور بيان الفائدة وتأكيد خفض الفائدة الأمريكية'
-    },
-    isBroadcasted: false,
-    autoFetched: true,
-    source: 'التقويم الاقتصادي العالمي المعتمد',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'news-fomc-powell-conference',
-    title: 'المؤتمر الصحفي لرئيس الفيدرالي الأمريكي جيروم باول (FOMC Press Conference)',
-    currency: 'USD',
-    impact: 'high',
-    category: 'المؤتمرات الصحفية',
-    eventDate: '2026-11-05',
-    eventDayArabic: 'الخميس',
-    timeGmt: '19:30',
-    timeCairo: '21:30',
-    timeMecca: '22:30',
-    targetEpochMs: new Date('2026-11-05T19:30:00Z').getTime(),
+    category: 'السياسة النقدية',
+    eventDate: '2026-11-17',
+    timeGmt: '00:30',
     previous: '-',
     forecast: '-',
     actual: '',
-    expectedImpact: 'usd_bearish',
-    expectedMoveSummary: 'تصريحات جيروم باول بشأن مستقبل التضخم والسياسة النقدية القادمة، أي لهجة تيسيرية ستمنح أزواج العملات ضد الدولار دفعة إضافية.',
-    recommendation: {
-      pair: 'EUR/USD',
-      action: 'BUY',
-      entryStrategy: 'شراء اليورو/دولار مع اختراق مستويات المقاومة أثناء المؤتمر الصحفي'
-    },
-    isBroadcasted: false,
-    autoFetched: true,
-    source: 'التقويم الاقتصادي العالمي المعتمد',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'news-us-nfp-nov',
-    title: 'تقرير التوظيف بغير القطاع الزراعي ومعدل البطالة الأمريكي (US NFP & Unemployment)',
-    currency: 'USD',
-    impact: 'high',
-    category: 'الوظائف والبطالة',
-    eventDate: '2026-11-06',
-    eventDayArabic: 'الجمعة',
-    timeGmt: '13:30',
-    timeCairo: '15:30',
-    timeMecca: '16:30',
-    targetEpochMs: new Date('2026-11-06T13:30:00Z').getTime(),
-    previous: '254K',
-    forecast: '113K',
-    actual: '',
-    expectedImpact: 'usd_bullish',
-    expectedMoveSummary: 'تقرير NFP الأهم على الإطلاق. صدور رقم يفوق 130K وظيفة سيدعم ارتداد الدولار الأمريكي ويهبط باليورو والذهب.',
-    recommendation: {
-      pair: 'EUR/USD',
-      action: 'SELL',
-      entryStrategy: 'بيع زوج EUR/USD مع تأكيد أول شمعة 5 دقائق بعد الصدور في حال تفوق الأرقام على التوقعات'
-    },
-    isBroadcasted: false,
-    autoFetched: true,
-    source: 'التقويم الاقتصادي العالمي المعتمد',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'news-cad-employment-change',
-    title: 'معدل التغير في التوظيف ومعدل البطالة الكندي (Canada Employment Change)',
-    currency: 'CAD',
-    impact: 'high',
-    category: 'الوظائف والعمالة',
-    eventDate: '2026-11-06',
-    eventDayArabic: 'الجمعة',
-    timeGmt: '13:30',
-    timeCairo: '15:30',
-    timeMecca: '16:30',
-    targetEpochMs: new Date('2026-11-06T13:30:00Z').getTime(),
-    previous: '46.7K',
-    forecast: '27.5K',
-    actual: '',
     expectedImpact: 'currency_bullish',
-    expectedMoveSummary: 'صدور بيانات كندا بالتزامن مع NFP الأمريكي يولد فرص سكالبينج قوية على زوج USD/CAD.',
+    expectedMoveSummary: 'تفاصيل مناقشات المركزي الأسترالي حول التضخم والفائدة ترفع تقلبات زوج AUD/USD بقوة في بداية الجلسة.',
     recommendation: {
-      pair: 'USD/CAD',
+      pair: 'AUD/USD',
       action: 'BUY',
-      entryStrategy: 'شراء USD/CAD مع تأكيد قوة بيانات الدولار وضعف أرقام التوظيف الكندية'
+      entryStrategy: 'شراء زوج AUD/USD في حال تأكيد لهجة متشددة من المركزي الأسترالي في المحضر'
     },
     isBroadcasted: false,
     autoFetched: true,
-    source: 'التقويم الاقتصادي العالمي المعتمد',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'news-us-cpi-nov',
-    title: 'مؤشر أسعار المستهلكين الأمريكي السنوي والشهري (US CPI Inflation Rate)',
-    currency: 'USD',
-    impact: 'high',
-    category: 'التضخم',
-    eventDate: '2026-11-10',
-    eventDayArabic: 'الثلاثاء',
-    timeGmt: '13:30',
-    timeCairo: '15:30',
-    timeMecca: '16:30',
-    targetEpochMs: new Date('2026-11-10T13:30:00Z').getTime(),
-    previous: '2.4%',
-    forecast: '2.3%',
-    actual: '',
-    expectedImpact: 'usd_bullish',
-    expectedMoveSummary: 'مؤشر التضخم الرئيسي الذي يحدد قرارات الفيدرالي القادمة، تجاوزه 2.3% يعزز الدولار بشكل واسع.',
-    recommendation: {
-      pair: 'USD/JPY',
-      action: 'BUY',
-      entryStrategy: 'شراء الدولار/ين مع افتتاح شمعة الخبر عند بقاء التضخم أعلى من المستهدف'
-    },
-    isBroadcasted: false,
-    autoFetched: true,
-    source: 'التقويم الاقتصادي العالمي المعتمد',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'news-us-retail-sales-nov',
-    title: 'مبيعات التجزئة الأمريكية الأساسية شهرياً (Core Retail Sales MoM)',
+    source: 'التقويم الاقتصادي العالمي المعتمد'
+  }),
+  buildCanonicalNewsItem({
+    id: 'news-tue-us-retail-sales-nov17',
+    title: 'مبيعات التجزئة الأمريكية الأساسية والكلية شهرياً (US Core & Retail Sales MoM)',
     currency: 'USD',
     impact: 'high',
     category: 'الإنفاق الاستهلاكي',
-    eventDate: '2026-11-13',
-    eventDayArabic: 'الجمعة',
+    eventDate: '2026-11-17',
     timeGmt: '13:30',
-    timeCairo: '15:30',
-    timeMecca: '16:30',
-    targetEpochMs: new Date('2026-11-13T13:30:00Z').getTime(),
-    previous: '0.5%',
+    previous: '0.4%',
     forecast: '0.3%',
     actual: '',
     expectedImpact: 'usd_bullish',
-    expectedMoveSummary: 'نمو إنفاق المستهلكين يعكس قوة الاستهلاك الداخلي الأمريكي ويدعم مكاسب الدولار أمام العملات المقابلة.',
+    expectedMoveSummary: 'محرك رئيسي للسيولة في النيويورك سيشن؛ تفوق مبيعات التجزئة على 0.3% يعزز الدولار ويهبط بالذهب واليورو.',
     recommendation: {
-      pair: 'USD/CHF',
-      action: 'BUY',
-      entryStrategy: 'شراء الدولار/فرنك فور صدور مبيعات التجزئة أعلى من التوقعات'
+      pair: 'GOLD (XAU/USD)',
+      action: 'SELL',
+      entryStrategy: 'بيع الذهب أو EUR/USD مع كسر أول دعم عند صدور أرقام إنفاق استهلاكي أمريكية قوية'
     },
     isBroadcasted: false,
     autoFetched: true,
-    source: 'التقويم الاقتصادي العالمي المعتمد',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  }
+    source: 'التقويم الاقتصادي العالمي المعتمد'
+  }),
+  buildCanonicalNewsItem({
+    id: 'news-wed-gbp-cpi-nov18',
+    title: 'مؤشر أسعار المستهلكين البريطاني السنوي (UK CPI Inflation Rate YoY)',
+    currency: 'GBP',
+    impact: 'high',
+    category: 'التضخم',
+    eventDate: '2026-11-18',
+    timeGmt: '07:00',
+    previous: '1.7%',
+    forecast: '2.2%',
+    actual: '',
+    expectedImpact: 'currency_bullish',
+    expectedMoveSummary: 'بيانات التضخم البريطاني تحدد مسار فائدة بنك إنجلترا القادمة وتولد حركة سريعة على الباوند دولار والباوند ين.',
+    recommendation: {
+      pair: 'GBP/JPY',
+      action: 'BUY',
+      entryStrategy: 'شراء GBP/JPY مع تأكيد ارتفاع التضخم البريطاني فوق التقديرات اللحظية'
+    },
+    isBroadcasted: false,
+    autoFetched: true,
+    source: 'التقويم الاقتصادي العالمي المعتمد'
+  }),
+  buildCanonicalNewsItem({
+    id: 'news-wed-eur-cpi-nov18',
+    title: 'القراءة النهائية لمؤشر أسعار المستهلكين الأوروبي (Eurozone Final CPI YoY)',
+    currency: 'EUR',
+    impact: 'medium',
+    category: 'التضخم',
+    eventDate: '2026-11-18',
+    timeGmt: '10:00',
+    previous: '2.0%',
+    forecast: '2.0%',
+    actual: '',
+    expectedImpact: 'currency_bullish',
+    expectedMoveSummary: 'تأكيد استقرار التضخم الأوروبي عند المستهدف 2.0% يمنح توازناً وسرعة استجابة فنية لأزواج اليورو.',
+    recommendation: {
+      pair: 'EUR/JPY',
+      action: 'BUY',
+      entryStrategy: 'شراء EUR/JPY مع اختراق المقاومة اللحظية أثناء الجلسة الصباحية'
+    },
+    isBroadcasted: false,
+    autoFetched: true,
+    source: 'التقويم الاقتصادي العالمي المعتمد'
+  }),
+  buildCanonicalNewsItem({
+    id: 'news-thu-us-jobless-claims-nov19',
+    title: 'طلبات إعانة البطالة الأمريكية الأسبوعية ومؤشر فيلادلفيا الصناعي (US Jobless Claims & Philly Fed)',
+    currency: 'USD',
+    impact: 'high',
+    category: 'الوظائف والبطالة',
+    eventDate: '2026-11-19',
+    timeGmt: '13:30',
+    previous: '217K',
+    forecast: '220K',
+    actual: '',
+    expectedImpact: 'usd_bearish',
+    expectedMoveSummary: 'ارتفاع طلبات البطالة فوق 222K يضغط على الدولار الأمريكي فوراً ويدفع اليورو والذهب للصعود.',
+    recommendation: {
+      pair: 'EUR/USD',
+      action: 'BUY',
+      entryStrategy: 'شراء EUR/USD مع انطلاق شمعة الخبر في حال تجاوز شكاوى البطالة 220K'
+    },
+    isBroadcasted: false,
+    autoFetched: true,
+    source: 'التقويم الاقتصادي العالمي المعتمد'
+  }),
+  buildCanonicalNewsItem({
+    id: 'news-fri-gbp-retail-pmi-nov20',
+    title: 'مبيعات التجزئة البريطانية ومؤشرات مديري المشتريات الأوروبية والأمريكية (UK Retail & Flash PMI)',
+    currency: 'GBP',
+    impact: 'high',
+    category: 'النشاط الاقتصادي والخدمات',
+    eventDate: '2026-11-20',
+    timeGmt: '09:30',
+    previous: '51.8',
+    forecast: '51.5',
+    actual: '',
+    expectedImpact: 'currency_bullish',
+    expectedMoveSummary: 'يوم مؤشرات مديري المشتريات PMI العالمي في ختام الأسبوع يرفع الزخم والسيولة على الباوند واليورو.',
+    recommendation: {
+      pair: 'GBP/USD',
+      action: 'BUY',
+      entryStrategy: 'شراء GBP/USD عند صدور مؤشر PMI البريطاني فوق مستوى 51.5'
+    },
+    isBroadcasted: false,
+    autoFetched: true,
+    source: 'التقويم الاقتصادي العالمي المعتمد'
+  }),
+  buildCanonicalNewsItem({
+    id: 'news-fri-us-flash-pmi-nov20',
+    title: 'مؤشر مديري المشتريات الأمريكي التصنيعي والخدمي الأولي (US Flash Manufacturing & Services PMI)',
+    currency: 'USD',
+    impact: 'high',
+    category: 'النشاط الاقتصادي',
+    eventDate: '2026-11-20',
+    timeGmt: '14:45',
+    previous: '55.0',
+    forecast: '55.2',
+    actual: '',
+    expectedImpact: 'usd_bullish',
+    expectedMoveSummary: 'الخبر الختامي الأهم في الأسبوع؛ قراءة قوية لقطاع الخدمات الأمريكي تعزز الدولار أمام العملات.',
+    recommendation: {
+      pair: 'USD/CHF',
+      action: 'BUY',
+      entryStrategy: 'شراء USD/CHF عند صدور مؤشر PMI الخدمي الأمريكي أعلى من 55.2'
+    },
+    isBroadcasted: false,
+    autoFetched: true,
+    source: 'التقويم الاقتصادي العالمي المعتمد'
+  })
 ];
+

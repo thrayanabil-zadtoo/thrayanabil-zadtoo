@@ -23,7 +23,7 @@ import {
   ExternalLink,
   ChevronDown
 } from 'lucide-react';
-import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, calculateEventTimes } from '../types/forexNews';
+import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, calculateEventTimes, filterActiveForexNews } from '../types/forexNews';
 import {
   DEFAULT_FREE_BOT_TOKEN,
   DEFAULT_FREE_CHAT_ID,
@@ -43,14 +43,14 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
   isAdmin,
   onNavigateSignals
 }) => {
-  const [news, setNews] = useState<ForexNewsItem[]>(INITIAL_WEEKLY_FOREX_NEWS);
+  const [news, setNews] = useState<ForexNewsItem[]>(() => filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS, 0));
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isAutoFetching, setIsAutoFetching] = useState<boolean>(false);
   const [selectedCurrency, setSelectedCurrency] = useState<string>('ALL');
   const [selectedImpact, setSelectedImpact] = useState<string>('ALL');
   const [selectedDay, setSelectedDay] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'upcoming' | 'expired'>('ALL');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'upcoming' | 'expired'>('upcoming');
   const [deviceNow, setDeviceNow] = useState<number>(Date.now());
 
   // Broadcasting states
@@ -98,54 +98,53 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Fetch news from Firestore, server, or local cache
+  // Fetch news from auto-purging server API first, then Firestore / active fallback
   const fetchNews = async () => {
     setIsLoading(true);
     let loaded = false;
 
-    // 1. Check persistent Firestore first for real-time admin changes
+    // 1. Server API first (auto-purges expired news & syncs upcoming calendar)
     try {
-      const docRef = doc(db, 'system_state', 'zad_main_state_v1');
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        const d = snap.data();
-        if (d?.payload) {
-          const parsed = JSON.parse(d.payload);
-          if (Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0) {
-            setNews(parsed.forexNews);
-            loaded = true;
-          }
+      const res = await fetch('/api/forex-news');
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.ok && Array.isArray(data.news) && data.news.length > 0) {
+          setNews(filterActiveForexNews(data.news));
+          loaded = true;
         }
       }
-    } catch (_firestoreErr) {
+    } catch (_serverErr) {
       // fallback
     }
 
-    // 2. Try server API if not loaded
+    // 2. Fallback to persistent Firestore if server is unreachable
     if (!loaded) {
       try {
-        const res = await fetch('/api/forex-news');
-        const contentType = res.headers.get('content-type') || '';
-        if (res.ok && contentType.includes('application/json')) {
-          const data = await res.json();
-          if (data.ok && Array.isArray(data.news) && data.news.length > 0) {
-            setNews(data.news);
-            loaded = true;
+        const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          const d = snap.data();
+          if (d?.payload) {
+            const parsed = JSON.parse(d.payload);
+            if (Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0) {
+              setNews(filterActiveForexNews(parsed.forexNews));
+              loaded = true;
+            }
           }
         }
-      } catch (_serverErr) {
+      } catch (_firestoreErr) {
         // fallback
       }
     }
 
-    // 4. Ensure upcoming events exist; if all saved items were past events, load fresh calendar
+    // 3. Ensure upcoming events exist; fallback to active weekly schedule
     setNews(prev => {
-      const now = Date.now();
-      const hasUpcoming = prev.some(n => n.targetEpochMs > (now - 86400000));
-      if (!hasUpcoming || prev.length === 0) {
-        return INITIAL_WEEKLY_FOREX_NEWS;
+      const cleaned = filterActiveForexNews(prev);
+      if (cleaned.length === 0) {
+        return filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS);
       }
-      return prev;
+      return cleaned;
     });
 
     setIsLoading(false);
@@ -153,6 +152,16 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
 
   useEffect(() => {
     fetchNews();
+    const refreshTimer = setInterval(() => {
+      setNews(prev => {
+        const activeOnly = filterActiveForexNews(prev, 0);
+        if (activeOnly.length !== prev.length) {
+          fetchNews().catch(() => {});
+        }
+        return activeOnly;
+      });
+    }, 5000);
+    return () => clearInterval(refreshTimer);
   }, []);
 
   // Calculate live clocks for GMT, Cairo, Mecca
@@ -760,10 +769,11 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
     return { isExpired: false, text: `متبقي ${mins} دقيقة و ${secs} ثانية (قريب جداً ⚡)` };
   };
 
-  // Filtered news items
+  // Filtered news items (never show expired events in UI)
   const filteredNews = useMemo(() => {
     return news.filter(item => {
-      const isExpired = deviceNow > item.targetEpochMs;
+      const isExpired = deviceNow >= item.targetEpochMs;
+      if (isExpired) return false;
 
       // Currency filter
       if (selectedCurrency !== 'ALL' && item.currency !== selectedCurrency) return false;

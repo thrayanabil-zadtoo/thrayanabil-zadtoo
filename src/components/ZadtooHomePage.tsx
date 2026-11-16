@@ -16,7 +16,8 @@ import {
   Newspaper,
   Flame
 } from 'lucide-react';
-import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS } from '../types/forexNews';
+import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, filterActiveForexNews } from '../types/forexNews';
+import { loadCloudSystemState } from '../firebase';
 
 interface ZadtooHomePageProps {
   onStartNow: () => void;
@@ -34,7 +35,7 @@ export const ZadtooHomePage: React.FC<ZadtooHomePageProps> = ({
   telegramChannelLink = 'https://t.me/ZadNBFX'
 }) => {
   const [showVideoModal, setShowVideoModal] = useState(false);
-  const [newsList, setNewsList] = useState<ForexNewsItem[]>(INITIAL_WEEKLY_FOREX_NEWS);
+  const [newsList, setNewsList] = useState<ForexNewsItem[]>(() => filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS, 0));
   const [nowMs, setNowMs] = useState<number>(Date.now());
 
   // Real-time ticking clock for countdown
@@ -45,65 +46,75 @@ export const ZadtooHomePage: React.FC<ZadtooHomePageProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Fetch live news schedule from server
+  // Fetch live upcoming news from server API with persistent Firestore fallback
   useEffect(() => {
-    fetch('/api/forex-news')
-      .then(res => res.json())
-      .then(data => {
-        if (data.ok && Array.isArray(data.news) && data.news.length > 0) {
-          setNewsList(data.news);
+    let isMounted = true;
+
+    const loadLatestNews = async () => {
+      let loadedFromServer = false;
+      try {
+        const res = await fetch('/api/forex-news');
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && contentType.includes('application/json')) {
+          const data = await res.json();
+          if (data.ok && Array.isArray(data.news)) {
+            const active = filterActiveForexNews(data.news, 0);
+            if (isMounted) {
+              setNewsList(active);
+            }
+            loadedFromServer = true;
+          }
         }
-      })
-      .catch(() => {});
+      } catch (_err) {
+        // Fallback to Firestore
+      }
+
+      if (!loadedFromServer) {
+        try {
+          const cloud = await loadCloudSystemState<{ forexNews?: ForexNewsItem[] }>();
+          if (cloud && Array.isArray(cloud.forexNews) && isMounted) {
+            const active = filterActiveForexNews(cloud.forexNews, 0);
+            if (active.length > 0) {
+              setNewsList(active);
+            }
+          }
+        } catch (_err) {
+          // Keep current active list
+        }
+      }
+    };
+
+    loadLatestNews();
+    const syncTimer = setInterval(loadLatestNews, 60000);
+    return () => {
+      isMounted = false;
+      clearInterval(syncTimer);
+    };
   }, []);
 
-  // Compute the live/upcoming active news item for today and subsequent days
+  // Compute strictly upcoming active news item (never show expired / finished events)
   const activeNewsItem = useMemo(() => {
     if (!newsList || newsList.length === 0) return null;
 
-    // Today's date string in local browser time: YYYY-MM-DD
+    const upcoming = newsList
+      .filter(n => n && typeof n.targetEpochMs === 'number' && n.targetEpochMs > nowMs)
+      .sort((a, b) => a.targetEpochMs - b.targetEpochMs);
+
+    if (upcoming.length === 0) return null;
+
+    // Prioritize today's upcoming event (UTC date matches eventDate)
     const todayStr = new Date(nowMs).toISOString().split('T')[0];
-
-    // 1. First priority: items scheduled for today
-    const todayItems = newsList.filter(n => n.eventDate === todayStr);
-
-    // Look for an upcoming event today (not expired yet)
-    const upcomingToday = todayItems.find(n => n.targetEpochMs > nowMs);
+    const upcomingToday = upcoming.find(n => n.eventDate === todayStr);
     if (upcomingToday) return upcomingToday;
 
-    // If all events today concluded, check if the last one concluded recently
-    const lastToday = todayItems[todayItems.length - 1];
-    if (lastToday) {
-      // If there's an upcoming event within the next 24 hours, show that; otherwise show today's finished event
-      const nextUpcoming = newsList.find(n => n.targetEpochMs > nowMs);
-      if (nextUpcoming && nextUpcoming.targetEpochMs - nowMs < 24 * 3600 * 1000) {
-        return nextUpcoming;
-      }
-      return lastToday;
-    }
-
-    // 2. Otherwise: next upcoming event in the weekly calendar
-    const nextUpcoming = newsList.find(n => n.targetEpochMs > nowMs);
-    if (nextUpcoming) return nextUpcoming;
-
-    // 3. Fallback to first item with recommendation
-    return newsList.find(n => n.recommendation) || newsList[0];
+    return upcoming[0];
   }, [newsList, nowMs]);
 
-  // Compute countdown and status for the active news item
+  // Compute live countdown for upcoming news (returns null if expired so ticker disappears cleanly)
   const countdownInfo = useMemo(() => {
     if (!activeNewsItem) return null;
     const diff = activeNewsItem.targetEpochMs - nowMs;
-    const isExpired = diff <= 0;
-
-    if (isExpired) {
-      return {
-        isExpired: true,
-        badgeText: 'منتهي',
-        badgeColor: 'bg-slate-700/80 text-slate-300 border-slate-600',
-        timerText: 'تم الصدور'
-      };
-    }
+    if (diff <= 0) return null;
 
     const totalSeconds = Math.floor(diff / 1000);
     const hours = Math.floor(totalSeconds / 3600);
@@ -183,7 +194,7 @@ export const ZadtooHomePage: React.FC<ZadtooHomePageProps> = ({
               </div>
 
               {/* Sleek Breaking News Recommendation Ticker Strip */}
-              {activeNewsItem && (
+              {activeNewsItem && countdownInfo && (
                 <div
                   onClick={onExploreNews}
                   role="button"
