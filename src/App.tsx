@@ -527,8 +527,8 @@ export default function App() {
     botToken: localStorage.getItem('tg_bot_token') || '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U',
     chatId: localStorage.getItem('tg_chat_id') || '@ZadNBFX',
     freeScheduleEnabled: true,
-    freeStartHourEgypt: Number(localStorage.getItem('tg_free_start_hour') ?? 9),
-    freeEndHourEgypt: Number(localStorage.getItem('tg_free_end_hour') ?? 12),
+    freeStartHourEgypt: Number(localStorage.getItem('tg_free_start_hour') ?? 10),
+    freeEndHourEgypt: Number(localStorage.getItem('tg_free_end_hour') ?? 13),
     freeWinIcon: localStorage.getItem('tg_free_win_icon') || '✅ ربح',
     freeWinGale1Icon: localStorage.getItem('tg_free_gale1_icon') || '✅ ربح مضاعفة واحدة',
     freeLossIcon: localStorage.getItem('tg_free_loss_icon') || '❌',
@@ -1574,7 +1574,7 @@ export default function App() {
       }
 
       const startH = updatedAutopilot.freeStartHourEgypt ?? 10;
-      const endH = updatedAutopilot.freeEndHourEgypt ?? 18;
+      const endH = updatedAutopilot.freeEndHourEgypt ?? 13;
       const startLabel = startH === 0 ? '12 ص' : startH < 12 ? `${startH} صباحاً` : startH === 12 ? '12 ظهراً' : `${startH - 12} مساءً`;
       const endLabel = endH === 0 ? '12 ص' : endH < 12 ? `${endH} صباحاً` : endH === 12 ? '12 ظهراً' : `${endH - 12} مساءً`;
       const galeLabel = updatedAutopilot.oneGaleEnabled === true ? 'مضاعفة واحدة مفعّلة' : 'بدون مضاعفات (متوقف)';
@@ -2022,12 +2022,12 @@ export default function App() {
   // Comprehensive End-of-Day Final Trading Report (تقرير نهاية يوم التداول بناءً على الساعة النهائية في البوت)
   const endOfDayReportData = useMemo(() => {
     const todayEgypt = getEgyptDateString(deviceNow);
-    const startH = Number(autoPilot.freeStartHourEgypt ?? 9);
-    const endH = Number(autoPilot.freeEndHourEgypt ?? 12);
+    const startH = Number(autoPilot.freeStartHourEgypt ?? 10);
+    const endH = Number(autoPilot.freeEndHourEgypt ?? 13);
     const currentH = Number(autoPilot.currentEgyptHour ?? deviceNow.getHours());
     const isAfterClose =
       autoPilot.freeScheduleEnabled === false
-        ? currentH >= 18
+        ? currentH >= 20
         : autoPilot.isFreeBotWithinSchedule === false;
 
     const liveDirectWins = todaySignals.filter(s => s.status === 'WIN').length;
@@ -3303,7 +3303,7 @@ export default function App() {
                               يبدأ الإرسال الساعة (بتوقيت مصر)
                             </label>
                             <select
-                              value={autoPilot.freeStartHourEgypt ?? 9}
+                              value={autoPilot.freeStartHourEgypt ?? 10}
                               onChange={(e) =>
                                 handleSaveAutoPilot({ freeStartHourEgypt: Number(e.target.value) })
                               }
@@ -3322,7 +3322,7 @@ export default function App() {
                               يتوقف الإرسال الساعة (بتوقيت مصر)
                             </label>
                             <select
-                              value={autoPilot.freeEndHourEgypt ?? 15}
+                              value={autoPilot.freeEndHourEgypt ?? 13}
                               onChange={(e) =>
                                 handleSaveAutoPilot({ freeEndHourEgypt: Number(e.target.value) })
                               }
@@ -3337,19 +3337,22 @@ export default function App() {
                           </div>
                         </div>
 
+                        <div className="p-2 bg-emerald-950/30 border border-emerald-500/30 rounded text-[11px] text-emerald-200 leading-relaxed">
+                          ⏰ <strong>الجدول الموحّد النشط على السيرفر:</strong> الصباحية <strong>10:30 ص – 01:00 ظهراً</strong> | المسائية المباشرة <strong>04:30 عصراً – 08:00 مساءً</strong> بتوقيت مصر (توقف ذكي عند 60%+).
+                        </div>
+
                         {/* Visual 24-Hour Egypt Schedule Timeline Bar */}
                         <div className="p-2.5 bg-[#0B0F17] border border-slate-800/90 rounded-lg space-y-1.5">
                           <div className="flex items-center justify-between text-[10px] text-slate-400">
                             <span>المخطط البصري لساعات عمل البوت المجاني (24 ساعة - توقيت القاهرة):</span>
                             <span className="font-mono-num text-emerald-400 font-bold">
-                              {String(autoPilot.freeStartHourEgypt ?? 9).padStart(2, '0')}:00 ←{' '}
-                              {String(autoPilot.freeEndHourEgypt ?? 15).padStart(2, '0')}:00
+                              10:30 ص ← 01:00 م (والمسائي 04:30 م ← 08:00 م)
                             </span>
                           </div>
                           <div className="grid grid-cols-24 gap-0.5 h-3 rounded overflow-hidden bg-slate-900 p-0.5">
                             {Array.from({ length: 24 }, (_, h) => {
-                              const startH = autoPilot.freeStartHourEgypt ?? 9;
-                              const endH = autoPilot.freeEndHourEgypt ?? 15;
+                              const startH = autoPilot.freeStartHourEgypt ?? 10;
+                              const endH = autoPilot.freeEndHourEgypt ?? 13;
                               const isActiveHour =
                                 startH <= endH
                                   ? h >= startH && h < endH
@@ -3373,10 +3376,10 @@ export default function App() {
                           <div className="flex items-center justify-between text-[9px] text-slate-500 font-mono-num">
                             <span>00:00</span>
                             <span>06:00</span>
-                            <span>09:00</span>
-                            <span>12:00</span>
-                            <span>18:00</span>
-                            <span>21:00</span>
+                            <span>10:30</span>
+                            <span>13:00</span>
+                            <span>16:30</span>
+                            <span>20:00</span>
                             <span>23:00</span>
                           </div>
                         </div>
@@ -3393,13 +3396,13 @@ export default function App() {
                               className="accent-emerald-500 w-4 h-4 rounded"
                             />
                             <span>
-                              📊 إرسال <strong>التقرير النهائي لليوم</strong> تلقائياً للقناة عند حلول ساعة الإغلاق ({String(autoPilot.freeEndHourEgypt ?? 18).padStart(2, '0')}:00)
+                              📊 إرسال <strong>التقرير النهائي لليوم</strong> تلقائياً للقناة عند حلول ساعة الإغلاق ({String(autoPilot.freeEndHourEgypt ?? 13).padStart(2, '0')}:00 / 20:00)
                             </span>
                           </label>
                           <span className="text-[10px] font-mono-num px-2 py-0.5 rounded bg-slate-900 text-emerald-300 border border-emerald-500/30">
                             {autoPilot.lastDailyReportSentDate === endOfDayReportData.todayEgypt
                               ? '✅ أُرسل تقرير اليوم'
-                              : `⏰ مجدول للساعة ${String(autoPilot.freeEndHourEgypt ?? 18).padStart(2, '0')}:00`}
+                              : `⏰ مجدول للختام عند الإغلاق (13:00 / 20:00)`}
                           </span>
                         </div>
                       </div>
@@ -3848,7 +3851,7 @@ export default function App() {
                   )}
 
                   <div className="p-3 bg-amber-950/20 border border-amber-500/20 rounded-lg text-[11px] text-amber-200/90 leading-relaxed">
-                    👑 <strong>ميزة البوت المزدوج:</strong> عندما تقتنص الخوارزمية فرصة قوية، يتم إرسالها فوراً إلى <strong>قناة VIP (يعمل 10 ص - 6 م بتوقيت مصر)</strong>، وفي نفس اللحظة يتم إرسالها إلى <strong>القناة المجانية</strong> طالما لم يتحقق شرط الهدف (70% - 75%).
+                    👑 <strong>ميزة البوت المزدوج:</strong> عندما تقتنص الخوارزمية فرصة قوية، يتم إرسالها فوراً إلى <strong>الفترة الصباحية (10:30 ص - 01:00 ظهراً) وجلسة البث المباشر المسائية (04:30 م - 08:00 م) بتوقيت مصر</strong>، وتتوقف الجلسة تلقائياً فور تحقيق شرط الهدف (60%+).
                   </div>
 
                   {/* Custom Win & Loss Icons + Image Upload for Bot 2 (VIP 24/7 Bot) */}

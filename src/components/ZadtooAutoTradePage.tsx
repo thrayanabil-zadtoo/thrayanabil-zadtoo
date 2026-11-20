@@ -438,7 +438,7 @@ export const ZadtooAutoTradePage: React.FC<ZadtooAutoTradePageProps> = ({
               <div>
                 <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
                   <Cpu className="w-5 h-5 text-emerald-600" />
-                  <span>لوحة المشرف: روبوت ZAD FX العائم (Universal Broker Pro Bot v4.0)</span>
+                  <span>لوحة المشرف: روبوت ZAD FX العائم (Universal Broker Pro Bot v4.5)</span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
                   أدوات المشرف الخاصة بتثبيت وتحديث سكريبت الروبوت العائم.

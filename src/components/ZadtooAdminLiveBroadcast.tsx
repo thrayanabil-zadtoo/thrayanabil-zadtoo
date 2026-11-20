@@ -296,9 +296,18 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
 
     // Prepare standard signal metadata
     const now = new Date();
-    const nextMin = String((now.getMinutes() + 1) % 60).padStart(2, '0');
-    const entryMinute = nextMin;
-    const targetEntryTimestamp = Math.floor(now.getTime() / 1000) + 60;
+    const minutesAhead = now.getSeconds() >= 56 ? 2 : 1;
+    const targetEntryDate = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+      now.getHours(),
+      now.getMinutes() + minutesAhead,
+      0,
+      0
+    );
+    const entryMinute = String(targetEntryDate.getMinutes()).padStart(2, '0');
+    const targetEntryTimestamp = Math.floor(targetEntryDate.getTime() / 1000);
     const dirSymbol = direction === 'CALL' ? 'صعود 🟢 ⬆️ (CALL)' : 'هبوط 🔴 ⬇️ (PUT)';
     const defaultPrices: Record<string, string> = {
       'EUR/USD': '1.08520',
@@ -735,10 +744,10 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
             </div>
             <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2.5">
               <Crown className="w-6 h-6 text-amber-400" />
-              <span>جلسة البث الحي للسوق العالمي (الساعة 06:00 مساءً بتوقيت مصر)</span>
+              <span>جلسة البث الحي للسوق العالمي (04:30 عصراً - 08:00 مساءً بتوقيت مصر)</span>
             </h2>
             <p className="text-slate-300 text-xs sm:text-sm max-w-3xl leading-relaxed">
-              بث حي آلي مباشر للسوق العالمي يبدأ يومياً الساعة <b>06:00 مساءً</b> بإرسال تنبيه: <i>«نقول بسم الله ونبدأ بعد 10 دقائق استعدوا يا أبطال 🚀»</i> مع مسح فني مدته <b>10 دقائق (18:00 - 18:10)</b>. تُرسل الإشارات <b>حصرياً لقناة VIP الخاصة</b> وتتوقف الجلسة تلقائياً <b>بعد 60 دقيقة من انطلاق الإشارة الأولى</b> أو عند تحقيق <b>70% - 75%</b>، مع إيقاف طوارئ فوري عند <b>3 خسائر متتالية</b> لحماية رأس المال، وإحصائياتها معزولة تماماً ضمن «إحصائيات البث المشرف».
+              بث حي آلي مباشر للسوق العالمي يبدأ يومياً الساعة <b>04:30 عصراً</b> (ذروة تداخل لندن ونيويورك) بإرسال تنبيه: <i>«نقول بسم الله ونبدأ بعد 10 دقائق استعدوا يا أبطال 🚀»</i> مع مسح فني مدته <b>10 دقائق (16:30 - 16:40)</b>. تُرسل الإشارات <b>لقناة VIP الخاصة والروبوت</b> وتستمر حتى الساعة <b>08:00 مساءً</b> أو تتوقف تلقائياً فور تحقيق <b>60%+</b>، مع إيقاف طوارئ فوري عند <b>3 خسائر متتالية</b> لحماية رأس المال.
             </p>
           </div>
 
@@ -782,7 +791,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
               {sessionData?.status === 'STOPPED_TARGET_REACHED' && (
                 <>
                   <Award className="w-4 h-4 text-amber-400" />
-                  <span>🎯 تم تحقيق الهدف (70% - 75%) وتم إيقاف البث</span>
+                  <span>🎯 تم تحقيق الهدف (60%+) وتم إيقاف البث</span>
                 </>
               )}
               {sessionData?.status === 'STOPPED_BAD_MARKET' && (
@@ -931,7 +940,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
               {sessionData?.winRate ?? 0}%
             </div>
             <div className="text-[10px] text-amber-300/80 mt-1">
-              الهدف: 70% إلى 75% 🎯
+              الهدف: 60%+ 🎯
             </div>
           </div>
         </div>
@@ -961,9 +970,9 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
           <div className="flex items-start gap-2.5">
             <Clock className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
             <div>
-              <div className="font-bold text-white">10 دقائق مسح + مدة 60 دقيقة</div>
+              <div className="font-bold text-white">10 دقائق مسح + نافذة 3.5 ساعات</div>
               <div className="text-slate-400 text-[11px]">
-                تنبيه البداية عند 18:00، ومسح 10 دقائق، وتنتهي الجلسة بعد 60 دقيقة من أول إشارة.
+                تنبيه البداية عند 16:30، ومسح 10 دقائق، وتنتهي عند تحقيق 60%+ أو الساعة 20:00.
               </div>
             </div>
           </div>

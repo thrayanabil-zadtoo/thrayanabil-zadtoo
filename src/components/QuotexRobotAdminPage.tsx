@@ -990,8 +990,8 @@ export default function QuotexRobotAdminPage({
             <div>
               <span className="font-black text-amber-300">عزل تام للمسارات وتخصيص البث:</span>
               <p className="text-slate-300 text-[11px] mt-0.5">
-                • <strong>القناة العامة (@ZadNBFX):</strong> تعمل فقط بالنظام الكلاسيكي السابق (09:00 - 12:00، هدف 3:1 أو 70%-75% stop).<br />
-                • <strong>قناة VIP وروبوت كيوتكس:</strong> تم تحويلهما بنسبة 100% لاستراتيجية Momentum Pause Breakout وتوافق 3/4 مؤشرات مع سرعة 5 ثوانٍ.
+                • <strong>الجلسة الصباحية الموحدة (العامة + VIP + الروبوت):</strong> تعمل من الساعة 10:30 صباحاً حتى 01:00 ظهراً بتوقيت مصر مع فترة مسح واستعداد 8 دقائق وإيقاف تلقائي عند تحقيق 60%+.<br />
+                • <strong>البث المباشر المسائي:</strong> من الساعة 04:30 عصراً حتى 08:00 مساءً (ذروة السيولة) باستراتيجية MPB والفلاتر المؤسسية وتنفيذ فوري بالثانية :00.00.
               </p>
             </div>
           </div>
@@ -2049,20 +2049,20 @@ export default function QuotexRobotAdminPage({
                         <span>📢 الخيار الأول نشط: استراتيجية القناة العامة (تلتزم بالقوانين ومواعيد العمل)</span>
                       </div>
                       <div className="text-[10.5px] text-slate-300 space-y-1">
-                        <div>• <b>مواعيد وقوانين العمل:</b> تعمل في <b>الجلسة الصباحية فقط (09:00 ص حتى 12:00 ظهراً)</b> وتلتزم بقوانين التوقف فور تحقيق الهدف اليومي (2 رابحة متتالية، 3-1، أو سقف 65%).</div>
-                        <div>• <b>رسالة التنبيه عند التوقف:</b> في حال انتهاء الوقت أو تحقيق الهدف تظهر للمستخدم <b>رسالة تنبيه واضحة تفيد بأن الروبوت متوقف</b> مع قفل أمان ومواعيد الجلسة القادمة.</div>
-                        <div>• <b>وقت الدخول:</b> يتم الانتظار دقيقة كاملة (60 ثانية) لتأكيد افتتاح الشمعة قبل الدخول.</div>
+                        <div>• <b>مواعيد وقوانين العمل:</b> تعمل في <b>الجلسة الصباحية (10:30 ص حتى 01:00 ظهراً)</b> وتلتزم بالإيقاف التلقائي فور تحقيق نسبة 60%+ أو عند الساعة 01:00 ظهراً.</div>
+                        <div>• <b>رسالة الافتتاح والاستعداد:</b> تبدأ الساعة 10:30 ص برسالة صباحية وفترة مسح للأزواج الستة (8 دقائق) قبل صدور أول إشارة.</div>
+                        <div>• <b>وقت الدخول:</b> استلام الإشارة قبل الشمعة وتنفيذ آلي عند ثانية :00.00.</div>
                       </div>
                     </div>
                   ) : (
                     <div className="bg-emerald-950/30 border border-emerald-500/40 text-emerald-200 p-2.5 rounded-lg space-y-1.5">
                       <div className="font-extrabold flex items-center gap-1.5 text-emerald-300">
-                        <span>💎 الخيار الثاني نشط: استراتيجية MPB (تعمل من 09:00 ص حتى 09:00 م متواصلة)</span>
+                        <span>💎 استراتيجية MPB الموحدة نشطة (10:30 ص - 01:00 م | والبث المباشر 04:30 م - 08:00 م)</span>
                       </div>
                       <div className="text-[10.5px] text-slate-300 space-y-1">
-                        <div>• <b>ساعات العمل المتواصلة:</b> يعمل الروبوت يومياً من <b>الساعة 09:00 صباحاً وحتى 09:00 مساءً</b> بتوقيت مصر بشكل متواصل ومستمر.</div>
-                        <div>• <b>استقلالية الروبوت:</b> يعمل <b>دون الالتزام بالتليجرام</b>، <b>دون أي إحصائيات تقفله</b>، و<b>دون أي قوانين للتوقف</b> (لا يتوقف عند هدف أو حد معين).</div>
-                        <div>• <b>شروط تلقي الإشارات:</b> يتم تلقي الإشارة مع توافر <b>3 شروط/مؤشرات فنية متوافقة</b> سواء تحقق الشرط الأساسي لمؤشر MPB أو بدونه.</div>
+                        <div>• <b>ساعات العمل الموحدة:</b> الجلسة الصباحية (<b>10:30 ص - 01:00 م</b>) وجلسة البث المباشر (<b>04:30 م - 08:00 م</b>) بتوقيت مصر، مع التوقف التلقائي عند تحقيق <b>60%+</b>.</div>
+                        <div>• <b>تنفيذ متزامن ومباشر:</b> تصل الإشارة في اللحظة نفسها للقنوات والروبوت وتنفذ على الأزواج الستة المفتوحة دون الضغط على زر +.</div>
+                        <div>• <b>شروط تلقي الإشارات:</b> توافر <b>3 مؤشرات فنية متوافقة</b> على الأقل من أصل 4 مؤشرات مع تأكيد الدقة.</div>
                         <div>• <b>سرعة التنفيذ:</b> انطلاق الإشارة وتنفيذها على المنصة <b>قبل 5 ثوانٍ من افتتاح الشمعة</b> بدقة فائقة.</div>
                       </div>
                     </div>
@@ -2262,7 +2262,7 @@ export default function QuotexRobotAdminPage({
 
             <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5 text-[11px] text-emerald-200">
               <div className="font-bold flex items-center gap-1.5 text-emerald-300">
-                <span>🚀 تحديث الروبوت المستقل بالكامل (الإصدار v4.0 Cloud Edition):</span>
+                <span>🚀 تحديث الروبوت المستقل بالكامل (الإصدار v4.5 Cloud Edition):</span>
               </div>
               <ul className="list-disc list-inside space-y-1 text-slate-300">
                 <li><strong className="text-white">استقلالية كاملة 100%:</strong> يعمل الروبوت مباشرة على منصة كيوتكس (Quotex) دون الحاجة لفتح موقعك أو أي تبويب إضافي على الإطلاق.</li>
@@ -2284,8 +2284,8 @@ export default function QuotexRobotAdminPage({
                 <Copy className="w-4 h-4" />
                 <span>
                   {copiedId === 'userscript-code'
-                    ? '✓ تم نسخ كود السكريبت (v4.0) بنجاح!'
-                    : 'نسخ كود السكريبت المحدث v4.0'}
+                    ? '✓ تم نسخ كود السكريبت (v4.5) بنجاح!'
+                    : 'نسخ كود السكريبت المحدث v4.5'}
                 </span>
               </button>
 
@@ -2308,7 +2308,7 @@ export default function QuotexRobotAdminPage({
                 className="px-3 py-1 bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold rounded-lg text-xs flex items-center gap-1 transition-all"
                 title="اضغط لفتح شاشة التثبيت التلقائي المباشرة في تامبرمونكي بنقرة واحدة"
               >
-                <span>تثبيت مباشر بنقرة واحدة (v4.0) ↗</span>
+                <span>تثبيت مباشر بنقرة واحدة (v4.5) ↗</span>
               </a>
             </div>
 
@@ -2321,7 +2321,7 @@ export default function QuotexRobotAdminPage({
                   </span>
                   <div>
                     <h4 className="text-xs font-extrabold text-amber-300 flex items-center gap-1.5">
-                      <span>النسخة المرجعية الذهبية المعتمدة (v4.0 Golden Baseline)</span>
+                      <span>النسخة المرجعية الذهبية المعتمدة (v4.5 Golden Baseline)</span>
                       <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[9px] font-bold">
                         محمية ومقفولة
                       </span>

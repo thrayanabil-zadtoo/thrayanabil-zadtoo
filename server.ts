@@ -164,7 +164,16 @@ export interface LivePairSnapshot {
     isSignalTriggered: boolean;
     matchedList: string[];
     summary: string;
+    adxValue?: number;
+    emaM5Trend?: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+    bollingerPercentB?: number;
+    institutionalFilterBlocked?: boolean;
+    institutionalFilterReason?: string;
   };
+  htfM5Trend?: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  ema50M1?: number;
+  adx14?: number;
+  bollingerPercentB?: number;
 }
 
 export interface AutoPilotConfig {
@@ -180,10 +189,11 @@ export interface AutoPilotConfig {
   botToken: string;
   chatId: string;
   freeScheduleEnabled: boolean;
-  freeStartHourEgypt: number; // Fixed 09:00 AM Africa/Cairo time
+  freeStartHourEgypt: number; // Fixed 11:00 AM Africa/Cairo time
   freeEndHourEgypt: number;   // Fixed 12:00 PM (12:00 noon) Africa/Cairo time
   freeBotConsecutiveLosses?: number; // Tracks consecutive losses in Free channel (triggers 30-min pause at 3)
   freeBotCooldownUntil?: number; // Timestamp until 30-min pause ends
+  morningGreetingSentDate?: string; // Cairo date (YYYY-MM-DD) when 11:00 AM opening greeting ("صباح الخير...") was sent
   freeBot12ReportSentDate?: string; // Date when 12:00 PM closing report was sent to Free channel
   vipMorningReportSentDate?: string; // Date when 12:00 PM closing report was sent to VIP channel
   vipClosingReportSentDate?: string; // Date when 09:00 PM closing report was sent to VIP channel
@@ -483,10 +493,11 @@ const defaultAutoPilot: AutoPilotConfig = {
   botToken: '',
   chatId: '@ZadNBFX',
   freeScheduleEnabled: true,
-  freeStartHourEgypt: 9, // Fixed 09:00 AM Cairo Time
-  freeEndHourEgypt: 12,  // Fixed 12:00 PM (12:00 noon) Cairo Time
+  freeStartHourEgypt: 10, // Morning Session starts 10:30 AM Cairo Time
+  freeEndHourEgypt: 13,   // Morning Session ends 01:00 PM (13:00) Cairo Time
   freeBotConsecutiveLosses: 0,
   freeBotCooldownUntil: 0,
+  morningGreetingSentDate: '',
   freeBot12ReportSentDate: '',
   vipClosingReportSentDate: '',
   freeWinIcon: '✅ ربح',
@@ -664,6 +675,9 @@ function enforceDailySignalReset(): boolean {
     autoPilot.freeBotDailyTargetReached = false;
     autoPilot.freeBotCelebrationSentDate = '';
     autoPilot.freeBotStoppedForToday = false;
+    autoPilot.freeBot12ReportSentDate = '';
+    autoPilot.vipMorningReportSentDate = '';
+    autoPilot.morningGreetingSentDate = '';
     changed = true;
   }
 
@@ -677,36 +691,80 @@ function getCurrentEgyptHour(): number {
   return getEgyptHourFromDate(new Date());
 }
 
-/**
- * Returns the current minute (0-59) in Egypt Time (Africa/Cairo)
- */
-function getCurrentEgyptMinute(): number {
+function getEgyptMinuteFromDate(dateObj: Date): number {
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: 'Africa/Cairo',
       minute: 'numeric'
-    }).formatToParts(new Date());
+    }).formatToParts(dateObj);
     const minPart = parts.find(p => p.type === 'minute')?.value;
     const m = parseInt(minPart || '0', 10);
-    return isNaN(m) ? new Date().getMinutes() : m;
+    return isNaN(m) ? dateObj.getMinutes() : m;
   } catch (_e) {
-    return new Date().getMinutes();
+    return dateObj.getMinutes();
   }
 }
 
+function getCairoMinutesOfDay(dateObj: Date = new Date()): number {
+  return getEgyptHourFromDate(dateObj) * 60 + getEgyptMinuteFromDate(dateObj);
+}
+
+const MORNING_START_MIN = 10 * 60 + 30; // 10:30 AM Cairo
+const MORNING_ACTIVE_MIN = 10 * 60 + 38; // 10:38 AM (8-min warmup)
+const MORNING_END_MIN = 13 * 60; // 01:00 PM (13:00) Cairo
+const EVENING_START_MIN = 16 * 60 + 30; // 04:30 PM (16:30) Cairo
+const EVENING_ACTIVE_MIN = 16 * 60 + 40; // 04:40 PM (10-min warmup)
+const EVENING_END_MIN = 20 * 60; // 08:00 PM (20:00) Cairo
+
+function isCairoInMorningSession(dateObj: Date = new Date()): boolean {
+  const m = getCairoMinutesOfDay(dateObj);
+  return m >= MORNING_START_MIN && m < MORNING_END_MIN;
+}
+
+function isCairoInEveningSession(dateObj: Date = new Date()): boolean {
+  const m = getCairoMinutesOfDay(dateObj);
+  return m >= EVENING_START_MIN && m < EVENING_END_MIN;
+}
+
 /**
- * Returns whether the bots are currently in their 10-minute warmup / scanning delay window.
- * 1) At the start of the daily session (10:00 AM to 10:10 AM Cairo time).
- * 2) Or during the first 10 minutes after the engine / autopilot has been started.
+ * Returns the current minute (0-59) in Egypt Time (Africa/Cairo)
+ */
+function getCurrentEgyptMinute(): number {
+  return getEgyptMinuteFromDate(new Date());
+}
+
+/**
+ * Returns whether the bots are currently in their preparation / 6-pair scanning delay window:
+ * 1) Morning Session preparation (10:30 AM to 10:38 AM Cairo time).
+ * 2) Evening Live Session preparation (04:30 PM to 04:40 PM Cairo time).
  */
 function getWarmupStatus(): { isWarmup: boolean; minutesRemaining: number; reason: string } {
-  // Continuous operation without morning warmup delays (09:00 AM to 09:00 PM uninterrupted)
+  if (!isGlobalForexMarketOpen()) {
+    return { isWarmup: false, minutesRemaining: 0, reason: '' };
+  }
+  const cairoMins = getCairoMinutesOfDay();
+  if (cairoMins >= MORNING_START_MIN && cairoMins < MORNING_ACTIVE_MIN) {
+    const minsLeft = Math.max(1, MORNING_ACTIVE_MIN - cairoMins);
+    return {
+      isWarmup: true,
+      minutesRemaining: minsLeft,
+      reason: `☀️ صباح الخير — نستعد الآن ونمسح الأزواج الستة (متبقي ${minsLeft} دقيقة قبل صدور أول إشارة)`
+    };
+  }
+  if (cairoMins >= EVENING_START_MIN && cairoMins < EVENING_ACTIVE_MIN) {
+    const minsLeft = Math.max(1, EVENING_ACTIVE_MIN - cairoMins);
+    return {
+      isWarmup: true,
+      minutesRemaining: minsLeft,
+      reason: `🔴 استعداد البث المباشر — مسح السوق في الأزواج الستة (متبقي ${minsLeft} دقيقة)`
+    };
+  }
   return { isWarmup: false, minutesRemaining: 0, reason: '' };
 }
 
 /**
- * Free Channel Bot Target Status (Win Rate 70% to 75% Target)
- * Reaching 70% - 75%+ with at least 3 completed trades triggers immediate shutdown of signals for today and sends the celebration report!
+ * Free Channel & Morning Session Target Status (Win Rate 60%+ Target)
+ * Reaching 60%+ win rate with at least 2 completed trades triggers immediate shutdown of signals for the morning session and sends the closing report!
  */
 function getFreeBotTargetStatus(): {
   todayWins: number;
@@ -725,8 +783,7 @@ function getFreeBotTargetStatus(): {
     const d = new Date(s.createdAt);
     if (isNaN(d.getTime())) return false;
     if (getCurrentEgyptDateString(d) !== todayEgypt) return false;
-    const h = getEgyptHourFromDate(d);
-    return h >= 10 && h < 12; // Morning session 10:00 - 12:00 Cairo Time
+    return isCairoInMorningSession(d); // Morning session 10:30 AM - 01:00 PM Cairo Time
   }).sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
   const is0Gale = !autoPilot.oneGaleEnabled;
@@ -735,53 +792,59 @@ function getFreeBotTargetStatus(): {
   const totalCompleted = wins + losses;
   const winRate = totalCompleted > 0 ? Math.round((wins / totalCompleted) * 100) : 0;
 
-  const isAlreadyStoppedToday =
-    autoPilot.freeBotCelebrationSentDate === todayEgypt ||
-    autoPilot.freeBot12ReportSentDate === todayEgypt ||
-    autoPilot.freeBotDailyTargetReached === true ||
-    Boolean(autoPilot.freeBotStoppedForToday);
+  const currentCairoMins = getCairoMinutesOfDay();
 
-  // Target Criteria strictly per user specification & infographic:
-  // "جميعهم نكتفي بنسبة من 65% حتى 70% وأكثر من الربح وأيهما أسبق إما النسبة او الساعة 12 ظهراً"
-  // 1. If 2-0 from start: 100% win rate (>= 65%-70%)
+  // Guard against stale stop latches before morning session ends (13:00):
+  // If ZERO trades have completed in the 10:30-13:00 window, the morning session CANNOT be finished yet.
+  if (currentCairoMins < MORNING_END_MIN && totalCompleted === 0) {
+    autoPilot.freeBotDailyTargetReached = false;
+    autoPilot.freeBotStoppedForToday = false;
+    if (autoPilot.freeBotCelebrationSentDate === todayEgypt) autoPilot.freeBotCelebrationSentDate = '';
+    if (autoPilot.freeBot12ReportSentDate === todayEgypt) autoPilot.freeBot12ReportSentDate = '';
+    if (autoPilot.vipMorningReportSentDate === todayEgypt) autoPilot.vipMorningReportSentDate = '';
+  }
+
+  const isAlreadyStoppedToday =
+    (totalCompleted > 0 || currentCairoMins >= MORNING_END_MIN) && (
+      autoPilot.freeBotCelebrationSentDate === todayEgypt ||
+      autoPilot.freeBot12ReportSentDate === todayEgypt ||
+      autoPilot.freeBotDailyTargetReached === true ||
+      Boolean(autoPilot.freeBotStoppedForToday)
+    );
+
+  // Target Criteria per user specification: "اذا حققت 60% نتوقف"
+  // Stops cleanly upon achieving >= 60% win rate with at least 2 decisive trades (e.g. 2-0=100%, 2-1=67%, 3-2=60%, 3-1=75%)
   const isFirstTwoWins =
     todaySignals.length >= 2 &&
     (todaySignals[0].status === 'WIN' || (!is0Gale && todaySignals[0].status === 'WIN_GALE1')) &&
     (todaySignals[1].status === 'WIN' || (!is0Gale && todaySignals[1].status === 'WIN_GALE1'));
 
-  // 2. If 3 WIN and 1 LOSS (3-1 = 75% win rate): Stop immediately!
-  const isThreeOneRatio = wins >= 3 && losses <= 1;
-
-  // 3. General ceiling: at least 3 trades with win rate between 65% and 70%+
   const isTargetRatioAchieved =
     (wins >= 2 && losses === 0) ||
-    isThreeOneRatio ||
-    (totalCompleted >= 3 && winRate >= 65 && wins > losses);
+    (totalCompleted >= 2 && winRate >= 60 && wins > losses);
 
-  const isTargetReached = isAlreadyStoppedToday || isFirstTwoWins || isThreeOneRatio || isTargetRatioAchieved;
+  const isTargetReached = isAlreadyStoppedToday || isFirstTwoWins || isTargetRatioAchieved;
 
   if (isTargetReached && (!autoPilot.freeBotDailyTargetReached || !autoPilot.freeBotStoppedForToday)) {
     autoPilot.freeBotDailyTargetReached = true;
     autoPilot.freeBotStoppedForToday = true;
   }
 
-  const currentEgyptH = getCurrentEgyptHour();
-  const endHour = autoPilot.freeEndHourEgypt || 12;
-  const isSessionClosed = currentEgyptH >= endHour;
+  const isSessionClosed = currentCairoMins >= MORNING_END_MIN;
   const isCooldownActive = Boolean(autoPilot.freeBotCooldownUntil && Date.now() < autoPilot.freeBotCooldownUntil);
   const cooldownMinsRemaining = isCooldownActive
     ? Math.max(1, Math.ceil(((autoPilot.freeBotCooldownUntil || 0) - Date.now()) / 60000))
     : 0;
 
   const statusDescription = isTargetReached
-    ? `تم تحقيق الهدف بنجاح (${winRate}% - ${wins} ربح / ${losses} خسارة) — تم إيقاف بث القناة العامة نهائياً لليوم 🎯🛑`
+    ? `تم تحقيق الهدف بنجاح (${winRate}% - ${wins} ربح / ${losses} خسارة) — تم إيقاف بث الجلسة الصباحية لليوم 🎯🛑`
     : isSessionClosed
-    ? `انتهت جلسة القناة العامة الرسمية (12:00 ظهراً) — تم إيقاف البوت`
+    ? `انتهت جلسة التداول الصباحية الرسمية (01:00 ظهراً) — تم إيقاف البوت`
     : isCooldownActive
-    ? `توقف مؤقت لمدة 30 دقيقة بسبب 3 خسائر متتالية لإعادة قراءة السوق (متبقي ${cooldownMinsRemaining} دقيقة)`
-    : currentEgyptH < 9
-    ? `قبل موعد انطلاق الصفقات اليومية (تبدأ الساعة 09:00 صباحاً بتوقيت مصر)`
-    : `جاري العمل للوصول لنسبة 65%+ قبل 12:00 ظهراً (الحالي: ${winRate}% | ${wins} ربح : ${losses} خسارة)`;
+    ? `توقف مؤقت لإعادة قراءة السوق (متبقي ${cooldownMinsRemaining} دقيقة)`
+    : currentCairoMins < MORNING_START_MIN
+    ? `قبل موعد انطلاق الجلسة الصباحية (تبدأ الساعة 10:30 صباحاً بتوقيت مصر)`
+    : `جاري العمل للوصول لنسبة 60%+ قبل 01:00 ظهراً (الحالي: ${winRate}% | ${wins} ربح : ${losses} خسارة)`;
 
   return {
     todayWins: wins,
@@ -849,8 +912,8 @@ export function getEveningLiveSessionStatus(): {
   // 2. Net +2 wins (wins - losses >= 2)
   const isNetTwoWins = (wins - losses) >= 2;
 
-  // 3. Win rate reached 65% to 70%+ (minimum 2 decisive trades)
-  const isWinRateTarget = total >= 2 && winRate >= 65 && wins > losses;
+  // 3. Win rate reached 60%+ (minimum 2 decisive trades)
+  const isWinRateTarget = total >= 2 && winRate >= 60 && wins > losses;
 
   const isTargetAchieved = (wins >= 2 && losses === 0) || isTwoConsecutiveWins || isNetTwoWins || isWinRateTarget;
 
@@ -868,35 +931,33 @@ export function getEveningLiveSessionStatus(): {
 }
 
 /**
- * Checks whether the Evening Live Broadcast (18:00 to 19:00 Cairo time, 1 hour duration) is active right now.
+ * Checks whether the Evening Live Broadcast (04:30 PM / 16:30 to 08:00 PM / 20:00 Cairo time) is active right now.
  */
 export function isEveningLiveNow(): boolean {
   if (!isGlobalForexMarketOpen()) return false;
-  const cairoHour = getCurrentEgyptHour();
-  return cairoHour >= 18 && cairoHour < 19;
+  return isCairoInEveningSession();
 }
 
 /**
  * Checks whether VIP Bot is active right now:
- * 1) Morning Session: 10:00 AM to 12:00 PM Cairo Time (Stops on 65%-70%+ win rate or at 12:00 PM)
- * 2) Evening Live Session: 06:00 PM (18:00) to 07:00 PM (19:00) Cairo Time (Stops on 65%-70%+ or after 1 hour)
+ * 1) Morning Session: 10:30 AM to 01:00 PM Cairo Time (Stops on 60%+ win rate or at 01:00 PM)
+ * 2) Evening Live Session: 04:30 PM (16:30) to 08:00 PM (20:00) Cairo Time (Stops on 60%+ or at 08:00 PM)
  */
 export function isVipBotActiveNow(): boolean {
   if (!autoPilot.vipEnabled) return false;
   if (!isGlobalForexMarketOpen()) return false;
-  const cairoHour = getCurrentEgyptHour();
   const todayEgypt = getCurrentEgyptDateString(new Date());
 
-  // 1. Morning Session: 10:00 AM to 12:00 PM
-  if (cairoHour >= 10 && cairoHour < 12) {
+  // 1. Morning Session: 10:30 AM to 01:00 PM
+  if (isCairoInMorningSession()) {
     if (autoPilot.vipMorningReportSentDate === todayEgypt) return false;
     const freeStatus = getFreeBotTargetStatus();
     if (freeStatus.isTargetReached) return false;
     return true;
   }
 
-  // 2. Evening Live Session: 18:00 to 19:00 (06:00 PM to 07:00 PM)
-  if (cairoHour >= 18 && cairoHour < 19) {
+  // 2. Evening Live Session: 04:30 PM to 08:00 PM (16:30 to 20:00)
+  if (isCairoInEveningSession()) {
     if (liveBroadcastSession.closingReportSentDate === todayEgypt) return false;
     const liveStatus = getEveningLiveSessionStatus();
     if (liveStatus.isSessionFinished) return false;
@@ -907,10 +968,10 @@ export function isVipBotActiveNow(): boolean {
 }
 
 /**
- * Computes exact Working and Lock Status for the Quotex Robot based on the unified schedule:
- * - Morning Session: 10:00 AM to 12:00 PM (Free + VIP + Robot active simultaneously with unified MPB)
- * - Evening Live Broadcast: 06:00 PM to 07:00 PM (VIP + Robot active with live title)
- * - Target: 65% to 70%+ win rate or time expiration, then stops and sends report.
+ * Computes exact Working and Lock Status for the Quotex Robot based on the unified high-liquidity schedule:
+ * - Morning Session (London): 10:30 AM to 01:00 PM (with 8-min readiness scan 10:30-10:38)
+ * - Evening Live Broadcast (NY/London Overlap): 04:30 PM to 08:00 PM (with 10-min scan 16:30-16:40)
+ * - Target: 60%+ win rate or time expiration, then stops and sends report.
  */
 export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
   isActive: boolean;
@@ -920,9 +981,9 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
   workingHoursText: string;
   nextSessionText: string;
 } {
-  const cairoHour = getCurrentEgyptHour();
+  const cairoMins = getCairoMinutesOfDay();
   const isMarketOpen = isGlobalForexMarketOpen();
-  const title = 'استراتيجية MPB الموحدة (4 مؤشرات | 3 من 4 | تنفيذ فوري 5 ثوانٍ ⚡)';
+  const title = 'استراتيجية MPB الموحدة + الفلاتر المؤسسية (تنفيذ فوري 5 ثوانٍ ⚡)';
 
   if (!isMarketOpen) {
     return {
@@ -936,21 +997,22 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
   }
 
   const todayEgypt = getCurrentEgyptDateString(new Date());
+  const scheduleSummary = 'الجلسة الصباحية: 10:30 ص - 01:00 م | البث المباشر: 04:30 م - 08:00 م';
 
-  // 1. Before Morning Session (< 10:00 AM)
-  if (cairoHour < 10) {
+  // 1. Before Morning Session (< 10:30 AM)
+  if (cairoMins < MORNING_START_MIN) {
     return {
       isActive: false,
       isLocked: true,
-      lockReason: 'الروبوت في وضع الاستعداد — تبدأ الجلسة الصباحية الرسمية الساعة 10:00 صباحاً بتوقيت مصر.',
+      lockReason: 'الروبوت في وضع الاستعداد — تبدأ الجلسة الصباحية الرسمية الساعة 10:30 صباحاً بتوقيت مصر.',
       strategyTitle: title,
-      workingHoursText: 'الجلسة الصباحية: 10:00 ص - 12:00 م | البث المباشر: 06:00 م - 07:00 م',
-      nextSessionText: 'تبدأ الجلسة الصباحية اليوم في تمام الساعة 10:00 صباحاً بتوقيت مصر'
+      workingHoursText: scheduleSummary,
+      nextSessionText: 'تبدأ الجلسة الصباحية اليوم في تمام الساعة 10:30 صباحاً بتوقيت مصر'
     };
   }
 
-  // 2. Morning Session (10:00 AM to 12:00 PM)
-  if (cairoHour >= 10 && cairoHour < 12) {
+  // 2. Morning Session (10:30 AM to 01:00 PM)
+  if (cairoMins >= MORNING_START_MIN && cairoMins < MORNING_END_MIN) {
     const freeStatus = getFreeBotTargetStatus();
     const isMorningFinished = freeStatus.isTargetReached ||
       autoPilot.freeBotStoppedForToday ||
@@ -961,10 +1023,21 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
       return {
         isActive: false,
         isLocked: true,
-        lockReason: 'تم تحقيق المستهدف الربحي (65% - 70%+) واختتام الجلسة الصباحية بنجاح 🎯',
+        lockReason: 'تم تحقيق المستهدف الربحي (60%+) واختتام الجلسة الصباحية بنجاح 🎯',
         strategyTitle: title,
-        workingHoursText: 'الجلسة الصباحية: 10:00 ص - 12:00 م | البث المباشر: 06:00 م - 07:00 م',
-        nextSessionText: 'نلتقي في البث المباشر الحي مع أبوسليم الساعة 06:00 مساءً بتوقيت مصر 🔴'
+        workingHoursText: scheduleSummary,
+        nextSessionText: 'نلتقي في جلسة ذروة السيولة والبث المباشر الساعة 04:30 عصراً بتوقيت مصر 🔴'
+      };
+    }
+
+    if (cairoMins < MORNING_ACTIVE_MIN) {
+      return {
+        isActive: true,
+        isLocked: false,
+        lockReason: '',
+        strategyTitle: title,
+        workingHoursText: '☀️ جاري الاستعداد ومسح الأزواج الستة (10:30 - 10:38 ص) — تنطلق أول إشارة خلال دقائق ⚡',
+        nextSessionText: 'جاري مسح الأزواج الستة قبل صدور أول إشارة'
       };
     }
 
@@ -973,25 +1046,25 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
       isLocked: false,
       lockReason: '',
       strategyTitle: title,
-      workingHoursText: 'الجلسة الصباحية جارية (10:00 ص - 12:00 م) — تنفيذ فوري 5 ثوانٍ ⚡',
+      workingHoursText: 'الجلسة الصباحية جارية (10:30 ص - 01:00 م) — تنفيذ فوري 5 ثوانٍ ⚡',
       nextSessionText: 'الجلسة الصباحية نشطة حالياً'
     };
   }
 
-  // 3. Midday Pause (12:00 PM to 06:00 PM / 18:00)
-  if (cairoHour >= 12 && cairoHour < 18) {
+  // 3. Midday Lull Pause (01:00 PM to 04:30 PM)
+  if (cairoMins >= MORNING_END_MIN && cairoMins < EVENING_START_MIN) {
     return {
       isActive: false,
       isLocked: true,
-      lockReason: 'انتهت الجلسة الصباحية الرسمية (الساعة 12:00 ظهراً). الروبوت في استراحة بانتظار البث المباشر.',
+      lockReason: 'انتهت الجلسة الصباحية الرسمية (01:00 ظهراً). الروبوت في استراحة بانتظار ذروة السيولة المسائية.',
       strategyTitle: title,
-      workingHoursText: 'الجلسة الصباحية: 10:00 ص - 12:00 م | البث المباشر: 06:00 م - 07:00 م',
-      nextSessionText: 'يبدأ البث المباشر الحي مع أبوسليم اليوم الساعة 06:00 مساءً بتوقيت مصر 🔴'
+      workingHoursText: scheduleSummary,
+      nextSessionText: 'تبدأ جلسة البث المباشر وتداخل نيويورك اليوم الساعة 04:30 عصراً بتوقيت مصر 🔴'
     };
   }
 
-  // 4. Evening Live Broadcast Session (06:00 PM to 07:00 PM / 18:00 to 19:00)
-  if (cairoHour >= 18 && cairoHour < 19) {
+  // 4. Evening Live Broadcast Session (04:30 PM to 08:00 PM / 16:30 to 20:00)
+  if (cairoMins >= EVENING_START_MIN && cairoMins < EVENING_END_MIN) {
     const liveStatus = getEveningLiveSessionStatus();
     const isEveningFinished = liveStatus.isSessionFinished || liveBroadcastSession.closingReportSentDate === todayEgypt;
 
@@ -999,10 +1072,21 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
       return {
         isActive: false,
         isLocked: true,
-        lockReason: 'تم تحقيق هدف البث المباشر واختتام الجلسة بنجاح 🔴',
+        lockReason: 'تم تحقيق هدف البث المباشر (60%+) واختتام الجلسة بنجاح 🔴',
         strategyTitle: title,
-        workingHoursText: 'البث المباشر: 06:00 م - 07:00 م (ساعة كاملة)',
-        nextSessionText: 'نلتقي غداً في تمام الساعة 10:00 صباحاً بتوقيت مصر 🤝'
+        workingHoursText: 'البث المباشر: 04:30 م - 08:00 م بتوقيت مصر',
+        nextSessionText: 'نلتقي غداً في تمام الساعة 10:30 صباحاً بتوقيت مصر 🤝'
+      };
+    }
+
+    if (cairoMins < EVENING_ACTIVE_MIN) {
+      return {
+        isActive: true,
+        isLocked: false,
+        lockReason: '',
+        strategyTitle: title,
+        workingHoursText: '🔴 جاري الاستعداد ومسح الأزواج الستة (04:30 - 04:40 م) — تنطلق أول إشارة خلال دقائق ⚡',
+        nextSessionText: 'جاري مسح سيولة تداخل لندن ونيويورك'
       };
     }
 
@@ -1011,19 +1095,19 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
       isLocked: false,
       lockReason: '',
       strategyTitle: title,
-      workingHoursText: '🔴 بث مباشر حي مع ابوسليم (06:00 م - 07:00 م) — تنفيذ فوري 5 ثوانٍ ⚡',
+      workingHoursText: '🔴 بث مباشر حي مع ابوسليم (04:30 م - 08:00 م) — تنفيذ فوري 5 ثوانٍ ⚡',
       nextSessionText: 'جلسة البث المباشر نشطة حالياً'
     };
   }
 
-  // 5. After 07:00 PM (>= 19:00)
+  // 5. After 08:00 PM (>= 20:00)
   return {
     isActive: false,
     isLocked: true,
-    lockReason: 'انتهت جلسات التداول الرسمية لليوم (الختام الساعة 07:00 مساءً). شكراً لكم.',
+    lockReason: 'انتهت جلسات التداول الرسمية لليوم (الختام الساعة 08:00 مساءً لحماية رأس المال من ضعف السيولة الليلية).',
     strategyTitle: title,
-    workingHoursText: 'الجلسة الصباحية: 10:00 ص - 12:00 م | البث المباشر: 06:00 م - 07:00 م',
-    nextSessionText: 'تبدأ الجلسة الصباحية غداً في تمام الساعة 10:00 صباحاً بتوقيت مصر 🤝'
+    workingHoursText: scheduleSummary,
+    nextSessionText: 'تبدأ الجلسة الصباحية غداً في تمام الساعة 10:30 صباحاً بتوقيت مصر 🤝'
   };
 }
 
@@ -1037,10 +1121,6 @@ function isFloatingRobotActiveNow(): boolean {
 
 /**
  * Sends celebratory closing report to Free Telegram Channel when target is achieved:
- * Strictly complies with instructions:
- * - NO mention of target percentages (no 65% to 70% or 80%).
- * - Only sends exact wins, losses, and win rate %.
- * - Highlights VIP channel continuation until 12:00 PM, 06:00 PM Live broadcast, and robot active.
  */
 async function checkAndSendFreeBotTargetCelebration(): Promise<boolean> {
   const status = getFreeBotTargetStatus();
@@ -1071,8 +1151,8 @@ async function checkAndSendFreeBotTargetCelebration(): Promise<boolean> {
     `🛑 تم الاكتفاء بهذا القدر وإيقاف بث إشارات القناة العامة لهذا اليوم بنجاح تام.`,
     ``,
     `👑 تنويه هام لجميع المتابعين:`,
-    `• قناة VIP الخاصة على تليجرام مستمرة في العمل واستقبال الصفقات حتى الساعة 12:00 ظهراً.`,
-    `• وتعاود بث إشاراتها من جديد في بث مباشر حصري الساعة 06:00 مساءً بتوقيت مصر.`,
+    `• قناة VIP الخاصة على تليجرام تستكمل جلساتها حتى الساعة 01:00 ظهراً.`,
+    `• وتعاود بث إشاراتها من جديد في بث مباشر حصري (ذروة السيولة) من الساعة 04:30 عصراً حتى 08:00 مساءً بتوقيت مصر.`,
     `• روبوت التداول الآلي (Quotex Pro Bot) يعمل بشكل آلي كامل وفوري طوال فترة عمل قناة VIP الخاصة.`,
     ``,
     `🔗 للانضمام لقناة VIP والحصول على الروبوت الآلي:`,
@@ -1116,24 +1196,23 @@ function getEgyptHourFromDate(dateObj: Date): number {
 
 /**
  * Checks whether a signal was created strictly within Egypt trading hours.
- * (From 09:00 AM up to 09:00 PM Cairo Time)
+ * (From 10:00 AM up to 09:00 PM Cairo Time)
  */
 function isSignalWithinEgyptTradingHours(dateObj: Date): boolean {
   const h = getEgyptHourFromDate(dateObj);
-  return h >= 9 && h < 21;
+  return h >= 10 && h < 21;
 }
 
 /**
  * Checks whether the Free Bot is currently enabled and inside its allowed Cairo working hours:
- * Morning Session: 10:00 AM to 12:00 PM (10:00 - 12:00 Cairo Time)
- * Stops when 65% - 70%+ win rate is achieved, or at 12:00 PM noon.
+ * Morning Session: 10:30 AM to 01:00 PM Cairo Time
+ * Stops when 60%+ win rate is achieved, or at 01:00 PM.
  */
 function isFreeBotActiveNow(_cfg: AutoPilotConfig): boolean {
   if (!isGlobalForexMarketOpen()) return false;
-  const cairoHour = getCurrentEgyptHour();
   const todayEgypt = getCurrentEgyptDateString(new Date());
 
-  if (cairoHour < 10 || cairoHour >= 12) return false;
+  if (!isCairoInMorningSession()) return false;
 
   const freeStatus = getFreeBotTargetStatus();
   if (
@@ -1458,17 +1537,17 @@ let autoPilot: AutoPilotConfig = { ...defaultAutoPilot };
 let robotSettings: QuotexRobotSettings = { ...defaultRobotSettings };
 let liveBroadcastSession: LiveBroadcastSessionConfig = {
   enabled: true,
-  startHourEgypt: 18, // 6:00 PM Cairo
-  preScanMinutes: 10, // 10 minutes pre-scan
-  minWinRateTarget: 70, // 70%
+  startHourEgypt: 16, // 04:30 PM Cairo (16:30 - 20:00)
+  preScanMinutes: 10, // 10 minutes pre-scan (16:30 - 16:40)
+  minWinRateTarget: 60, // 60%
   maxWinRateTarget: 75, // 75%
   stopConsecutiveLosses: 3, // 3 consecutive losses
-  sessionDurationMinutes: 60, // 60 minutes from first signal
+  sessionDurationMinutes: 210, // 3.5 hours window (16:30 - 20:00)
   firstSignalTimestamp: undefined,
   initialNoticeSentDate: '',
   activeDate: '',
   status: 'IDLE',
-  statusNote: 'جلسة البث الحي مبرمجة يومياً الساعة 06:00 مساءً مع فترة مسح 10 دقائق (إلى قناة VIP فقط)',
+  statusNote: 'جلسة البث الحي مبرمجة يومياً من الساعة 04:30 عصراً حتى 08:00 مساءً بتوقيت مصر (مع التوقف عند 60%+)',
   wins: 0,
   losses: 0,
   consecutiveLosses: 0,
@@ -1628,7 +1707,9 @@ function applyParsedState(parsed: Partial<PersistedState>) {
   if (parsed.liveBroadcastSession) {
     liveBroadcastSession = {
       ...liveBroadcastSession,
-      ...parsed.liveBroadcastSession
+      ...parsed.liveBroadcastSession,
+      startHourEgypt: 16,
+      sessionDurationMinutes: Math.max(210, Number(parsed.liveBroadcastSession.sessionDurationMinutes || 210))
     };
   }
   if (parsed.robotSettings) {
@@ -1777,8 +1858,9 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       vipWinImageUrl: parsed.autopilot.vipWinImageUrl !== undefined ? parsed.autopilot.vipWinImageUrl : (autoPilot.vipWinImageUrl || ''),
       vipWinGale1ImageUrl: parsed.autopilot.vipWinGale1ImageUrl !== undefined ? parsed.autopilot.vipWinGale1ImageUrl : (autoPilot.vipWinGale1ImageUrl || ''),
       vipLossImageUrl: parsed.autopilot.vipLossImageUrl !== undefined ? parsed.autopilot.vipLossImageUrl : (autoPilot.vipLossImageUrl || ''),
-      freeStartHourEgypt: Number(parsed.autopilot.freeStartHourEgypt ?? autoPilot.freeStartHourEgypt ?? 9),
-      freeEndHourEgypt: Number(parsed.autopilot.freeEndHourEgypt ?? autoPilot.freeEndHourEgypt ?? 15),
+      freeStartHourEgypt: 10,
+      freeEndHourEgypt: 13,
+      morningGreetingSentDate: parsed.autopilot.morningGreetingSentDate || autoPilot.morningGreetingSentDate || '',
       oneGaleEnabled:
         typeof parsed.autopilot.oneGaleEnabled === 'boolean'
           ? parsed.autopilot.oneGaleEnabled
@@ -1806,6 +1888,24 @@ function applyParsedState(parsed: Partial<PersistedState>) {
         ? parsed.autopilot.customPairsList.filter((p: string) => p !== 'USD/JPY' && !p.includes('USDJPY'))
         : (autoPilot.customPairsList || ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'GBP/JPY', 'AUD/USD', 'USD/CHF', 'USD/CAD', 'EUR/GBP'])
     };
+
+    // Heal stale stop latches if current morning session (10:30-13:00) has 0 completed trades
+    const todayEgyptHydrate = getCurrentEgyptDateString(new Date());
+    const morningCompletedHydrate = signalsStore.filter(s => {
+      if (!s.createdAt || s.status === 'PENDING') return false;
+      if (s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'))) return false;
+      if (!s.telegramMessageId && !s.vipTelegramMessageId) return false;
+      const d = new Date(s.createdAt);
+      if (isNaN(d.getTime()) || getCurrentEgyptDateString(d) !== todayEgyptHydrate) return false;
+      return isCairoInMorningSession(d);
+    }).length;
+    if (getCairoMinutesOfDay() < MORNING_END_MIN && morningCompletedHydrate === 0) {
+      autoPilot.freeBotDailyTargetReached = false;
+      autoPilot.freeBotStoppedForToday = false;
+      if (autoPilot.freeBotCelebrationSentDate === todayEgyptHydrate) autoPilot.freeBotCelebrationSentDate = '';
+      if (autoPilot.freeBot12ReportSentDate === todayEgyptHydrate) autoPilot.freeBot12ReportSentDate = '';
+      if (autoPilot.vipMorningReportSentDate === todayEgyptHydrate) autoPilot.vipMorningReportSentDate = '';
+    }
   }
   if (parsed.forexNews && Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0) {
     const canonicalMap = new Map(INITIAL_WEEKLY_FOREX_NEWS.map(n => [n.id, n]));
@@ -2159,162 +2259,160 @@ async function saveState(): Promise<boolean> {
       };
 
       const cloudPayload = JSON.stringify(sanitizedCloudState);
+      const firestoreWrites: Promise<any>[] = [];
+
       if (cloudPayload.length <= 495000) {
         const docRef = doc(serverFirestoreDb, 'system_state', 'zad_main_state_v1');
-        await setDoc(docRef, {
-          updatedAt: nowIso,
-          payload: cloudPayload
-        });
+        firestoreWrites.push(setDoc(docRef, { updatedAt: nowIso, payload: cloudPayload }));
       }
 
-      // Persist dedicated platform_plans doc to Firestore for 100% guarantee against accidental overwrite
-      try {
-        const plansDocRef = doc(serverFirestoreDb, 'system_state', 'platform_plans');
-        await setDoc(plansDocRef, {
-          updatedAt: nowIso,
-          payload: JSON.stringify(plansStore)
-        });
-      } catch (errPlans) {
-        console.warn('Could not write dedicated platform_plans doc:', errPlans);
-      }
+      const plansDocRef = doc(serverFirestoreDb, 'system_state', 'platform_plans');
+      firestoreWrites.push(
+        setDoc(plansDocRef, { updatedAt: nowIso, payload: JSON.stringify(plansStore) }).catch(errPlans => {
+          console.warn('Could not write dedicated platform_plans doc:', errPlans);
+        })
+      );
 
-      // Persist dedicated platform_contact_links doc to Firestore
-      try {
-        const linksDocRef = doc(serverFirestoreDb, 'system_state', 'platform_contact_links');
-        await setDoc(linksDocRef, {
-          updatedAt: nowIso,
-          payload: JSON.stringify(contactLinksStore)
-        });
-      } catch (errLinks) {
-        console.warn('Could not write dedicated platform_contact_links doc:', errLinks);
-      }
+      const linksDocRef = doc(serverFirestoreDb, 'system_state', 'platform_contact_links');
+      firestoreWrites.push(
+        setDoc(linksDocRef, { updatedAt: nowIso, payload: JSON.stringify(contactLinksStore) }).catch(errLinks => {
+          console.warn('Could not write dedicated platform_contact_links doc:', errLinks);
+        })
+      );
 
-      // Persist dedicated telegram_bot_state doc to Firestore for 100% two-way sync with fx.zadtoo.com
-      try {
-        const botDocRef = doc(serverFirestoreDb, 'system_state', 'telegram_bot_state');
-        await setDoc(botDocRef, {
+      const botDocRef = doc(serverFirestoreDb, 'system_state', 'telegram_bot_state');
+      firestoreWrites.push(
+        setDoc(botDocRef, {
           updatedAt: nowIso,
           payload: JSON.stringify({
             config: telegramBotConfigStore,
             users: telegramBotUsersStore.slice(0, 500)
           })
-        });
-      } catch (errBot) {
-        console.warn('Could not write dedicated telegram_bot_state doc:', errBot);
-      }
+        }).catch(errBot => {
+          console.warn('Could not write dedicated telegram_bot_state doc:', errBot);
+        })
+      );
 
-      // Also publish lightweight public live feed for Quotex Robot (zero-cookie direct stream)
-      try {
-        const workingStatus = getRobotWorkingStatusForMode('VIP_WITH_MPB');
-        const isRobotActive = workingStatus.isActive;
-        const activeSig = (isRobotActive && isGlobalForexMarketOpen())
-          ? (getLiveRobotActiveSignal('VIP_WITH_MPB') || getLiveRobotActiveSignal('PUBLIC_CLASSIC'))
-          : null;
-        const todayStr = getCurrentEgyptDateString(new Date());
-        const todayTradingSignals = signalsStore.filter(s => {
-          if (!s.createdAt) return false;
-          const d = new Date(s.createdAt);
-          if (isNaN(d.getTime())) return false;
-          return getCurrentEgyptDateString(d) === todayStr;
-        });
-        const todayDirectWins = todayTradingSignals.filter(s => s.status === 'WIN').length;
-        const todayNoGaleLosses = todayTradingSignals.filter(
-          s => s.status === 'LOSS' || s.status === 'WIN_GALE1'
-        ).length;
-        const totalFinished = todayDirectWins + todayNoGaleLosses;
-        const winRateNoGale = totalFinished > 0 ? Math.round((todayDirectWins / totalFinished) * 100) : 100;
-
-        const authorizedKeysMap: Record<string, any> = {
-          'QX-ADMIN-MASTER-TEST': {
-            name: 'حساب المشرف التجريبي (Master)',
-            brokerId: 'ADMIN-PRO',
-            authorized: true,
-            daysLeft: 999,
-            error: ''
-          }
-        };
-
-        for (const sub of subscribersStore) {
-          const exp = sub.robotExpiryDate || sub.expiryDate || '2099-12-31';
-          const isAct = (sub.status as string).toUpperCase() === 'ACTIVE' && new Date(exp).getTime() > Date.now();
-          const days = Math.max(0, Math.ceil((new Date(exp).getTime() - Date.now()) / (1000 * 60 * 60 * 24)));
-          const payload = {
-            name: sub.name,
-            brokerId: sub.brokerAccountId || '',
-            authorized: isAct,
-            daysLeft: days,
-            error: !isAct ? 'انتهى الاشتراك' : ''
-          };
-          if (sub.robotApiKey) authorizedKeysMap[sub.robotApiKey.toUpperCase()] = payload;
-          if (sub.brokerAccountId) authorizedKeysMap[sub.brokerAccountId.toUpperCase()] = payload;
-        }
-
-        const safeAllowedPairs = (autoPilot.allowedPairs || ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'AUD/USD', 'USD/CAD', 'GBP/JPY'])
-          .filter(p => p !== 'USD/JPY' && !p.includes('USDJPY'));
-
-        const liveFeedPayload = {
-          ok: true,
-          updatedAt: nowIso,
-          serverEpochSeconds: Math.floor(Date.now() / 1000),
-          marketOpen: isGlobalForexMarketOpen(),
-          isMarketOpen: isGlobalForexMarketOpen(),
-          isTradingHours: isRobotActive,
-          isLockedOutsideHours: workingStatus.isLocked,
-          lockReason: workingStatus.lockReason,
-          workingHoursText: workingStatus.workingHoursText,
-          nextSessionText: workingStatus.nextSessionText,
-          isWarmup: false,
-          warmupMinutesRemaining: 0,
-          tradingHoursMessage: workingStatus.isLocked
-            ? workingStatus.lockReason
-            : `ساعات التداول النشطة (${workingStatus.workingHoursText})`,
-          statsNoMartingale: {
-            wins: todayDirectWins,
-            losses: todayNoGaleLosses,
-            winRate: winRateNoGale
-          },
-          activeSignal: (activeSig && activeSig.asset !== 'USD/JPY' && !activeSig.asset.includes('USDJPY')) ? {
-            id: activeSig.id,
-            asset: activeSig.asset,
-            direction: activeSig.direction,
-            timeframe: activeSig.timeframe,
-            entryMinute: activeSig.entryMinute,
-            entryTime: activeSig.entryTime,
-            targetEntryTimestamp: activeSig.targetEntryTimestamp,
-            secondsUntilEntry: activeSig.targetEntryTimestamp
-              ? Math.round(activeSig.targetEntryTimestamp - Date.now() / 1000)
-              : 0,
-            status: activeSig.status === 'WIN' ? 'WIN' : (activeSig.status === 'WIN_GALE1' || activeSig.status === 'LOSS') ? 'LOSS' : activeSig.status,
-            livePrice: activeSig.livePrice,
-            rsiValue: activeSig.rsiValue,
-            instantExecution5s: true,
-            strategyType: activeSig.strategyType || 'MOMENTUM_PAUSE_BREAKOUT',
-            strategyEngineMode: 'VIP_WITH_MPB',
-            strategyVariant: activeSig.strategyVariant || 'WITH_MPB',
-            successRateText: activeSig.successRateText || '94%',
-            entryPriceNumeric: activeSig.entryPriceNumeric,
-            qualityScore: activeSig.qualityScore || 92
-          } : null,
-          authorizedKeys: authorizedKeysMap,
-          targetPair: autoPilot.pairSelectionMode === 'fixed_single' ? (autoPilot.primaryFixedPair || 'EUR/JPY') : (safeAllowedPairs[0] || 'EUR/JPY'),
-          pairSelectionMode: autoPilot.pairSelectionMode || 'custom_list',
-          allowedPairs: safeAllowedPairs
-        };
-
-        const feedDocRef = doc(serverFirestoreDb, 'robot_feed', 'live');
-        await setDoc(feedDocRef, {
-          updatedAt: nowIso,
-          payload: JSON.stringify(liveFeedPayload),
-          signal: activeSig || null
-        });
-      } catch (_e) {
-        // Ignore
-      }
+      firestoreWrites.push(publishRobotLiveFeedDoc(nowIso));
+      await Promise.allSettled(firestoreWrites);
       return true;
     }
     return true;
   } catch (_e) {
     return true;
+  }
+}
+
+async function publishRobotLiveFeedDoc(customIso?: string): Promise<void> {
+  if (!serverFirestoreDb) return;
+  try {
+    const nowIso = customIso || new Date().toISOString();
+    const workingStatus = getRobotWorkingStatusForMode('VIP_WITH_MPB');
+    const isRobotActive = workingStatus.isActive;
+    const activeSig = (isRobotActive && isGlobalForexMarketOpen())
+      ? (getLiveRobotActiveSignal('VIP_WITH_MPB') || getLiveRobotActiveSignal('PUBLIC_CLASSIC'))
+      : null;
+    const todayStr = getCurrentEgyptDateString(new Date());
+    const todayTradingSignals = signalsStore.filter(s => {
+      if (!s.createdAt) return false;
+      const d = new Date(s.createdAt);
+      if (isNaN(d.getTime())) return false;
+      return getCurrentEgyptDateString(d) === todayStr;
+    });
+    const todayDirectWins = todayTradingSignals.filter(s => s.status === 'WIN').length;
+    const todayNoGaleLosses = todayTradingSignals.filter(
+      s => s.status === 'LOSS' || s.status === 'WIN_GALE1'
+    ).length;
+    const totalFinished = todayDirectWins + todayNoGaleLosses;
+    const winRateNoGale = totalFinished > 0 ? Math.round((todayDirectWins / totalFinished) * 100) : 100;
+
+    const authorizedKeysMap: Record<string, any> = {
+      'QX-ADMIN-MASTER-TEST': {
+        name: 'حساب المشرف التجريبي (Master)',
+        brokerId: 'ADMIN-PRO',
+        authorized: true,
+        daysLeft: 999,
+        error: ''
+      }
+    };
+
+    for (const sub of subscribersStore) {
+      const exp = sub.robotExpiryDate || sub.expiryDate || '2099-12-31';
+      const isAct = (sub.status as string).toUpperCase() === 'ACTIVE' && new Date(exp).getTime() > Date.now();
+      const days = Math.max(0, Math.ceil((new Date(exp).getTime() - Date.now()) / (1000 * 60 * 60 * 24)));
+      const payload = {
+        name: sub.name,
+        brokerId: sub.brokerAccountId || '',
+        authorized: isAct,
+        daysLeft: days,
+        error: !isAct ? 'انتهى الاشتراك' : ''
+      };
+      if (sub.robotApiKey) authorizedKeysMap[sub.robotApiKey.toUpperCase()] = payload;
+      if (sub.brokerAccountId) authorizedKeysMap[sub.brokerAccountId.toUpperCase()] = payload;
+    }
+
+    const safeAllowedPairs = (autoPilot.allowedPairs || ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'AUD/USD', 'USD/CAD', 'GBP/JPY'])
+      .filter(p => p !== 'USD/JPY' && !p.includes('USDJPY'));
+
+    const nowMs = Date.now();
+    const liveFeedPayload = {
+      ok: true,
+      updatedAt: nowIso,
+      serverEpochMs: nowMs,
+      serverEpochSeconds: Math.floor(nowMs / 1000),
+      marketOpen: isGlobalForexMarketOpen(),
+      isMarketOpen: isGlobalForexMarketOpen(),
+      isTradingHours: isRobotActive,
+      isLockedOutsideHours: workingStatus.isLocked,
+      lockReason: workingStatus.lockReason,
+      workingHoursText: workingStatus.workingHoursText,
+      nextSessionText: workingStatus.nextSessionText,
+      isWarmup: false,
+      warmupMinutesRemaining: 0,
+      tradingHoursMessage: workingStatus.isLocked
+        ? workingStatus.lockReason
+        : `ساعات التداول النشطة (${workingStatus.workingHoursText})`,
+      statsNoMartingale: {
+        wins: todayDirectWins,
+        losses: todayNoGaleLosses,
+        winRate: winRateNoGale
+      },
+      activeSignal: (activeSig && activeSig.asset !== 'USD/JPY' && !activeSig.asset.includes('USDJPY')) ? {
+        id: activeSig.id,
+        asset: activeSig.asset,
+        direction: activeSig.direction,
+        timeframe: activeSig.timeframe,
+        entryMinute: activeSig.entryMinute,
+        entryTime: activeSig.entryTime,
+        targetEntryTimestamp: activeSig.targetEntryTimestamp,
+        secondsUntilEntry: activeSig.targetEntryTimestamp
+          ? Math.round(activeSig.targetEntryTimestamp - nowMs / 1000)
+          : 0,
+        status: activeSig.status === 'WIN' ? 'WIN' : (activeSig.status === 'WIN_GALE1' || activeSig.status === 'LOSS') ? 'LOSS' : activeSig.status,
+        livePrice: activeSig.livePrice,
+        rsiValue: activeSig.rsiValue,
+        instantExecution5s: true,
+        strategyType: activeSig.strategyType || 'MOMENTUM_PAUSE_BREAKOUT',
+        strategyEngineMode: 'VIP_WITH_MPB',
+        strategyVariant: activeSig.strategyVariant || 'WITH_MPB',
+        successRateText: activeSig.successRateText || '94%',
+        entryPriceNumeric: activeSig.entryPriceNumeric,
+        qualityScore: activeSig.qualityScore || 92
+      } : null,
+      authorizedKeys: authorizedKeysMap,
+      targetPair: autoPilot.pairSelectionMode === 'fixed_single' ? (autoPilot.primaryFixedPair || 'EUR/JPY') : (safeAllowedPairs[0] || 'EUR/JPY'),
+      pairSelectionMode: autoPilot.pairSelectionMode || 'custom_list',
+      allowedPairs: safeAllowedPairs
+    };
+
+    const feedDocRef = doc(serverFirestoreDb, 'robot_feed', 'live');
+    await setDoc(feedDocRef, {
+      updatedAt: nowIso,
+      payload: JSON.stringify(liveFeedPayload),
+      signal: activeSig || null
+    });
+  } catch (_e) {
+    // Ignore
   }
 }
 
@@ -2868,6 +2966,238 @@ export function calculateATR(
   return prevAtr;
 }
 
+/**
+ * Calculates Exponential Moving Average (EMA) for a numeric series
+ */
+export function calculateEMA(values: number[], period: number): number {
+  if (values.length === 0) return 0;
+  if (values.length < period) {
+    return values.reduce((a, b) => a + b, 0) / values.length;
+  }
+  const k = 2 / (period + 1);
+  let ema = 0;
+  for (let i = 0; i < period; i++) {
+    ema += values[i];
+  }
+  ema /= period;
+  for (let i = period; i < values.length; i++) {
+    ema = values[i] * k + ema * (1 - k);
+  }
+  return ema;
+}
+
+/**
+ * Aggregates M1 candles into M5 candles in-memory and computes:
+ * - EMA 50 on M1 (institutional trend baseline)
+ * - Higher Timeframe M5 Trend direction via EMA 9 vs EMA 20 on M5
+ */
+export function evaluateHigherTimeframeM5Trend(
+  candles: { timestamp?: number; open: number; high: number; low: number; close: number }[]
+): {
+  htfM5Trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  ema50M1: number;
+  ema20M5: number;
+  m5BarCount: number;
+} {
+  const m1Closes = candles.map(c => c.close);
+  const ema50M1 = calculateEMA(m1Closes, 50);
+
+  if (candles.length < 15) {
+    return {
+      htfM5Trend: 'NEUTRAL',
+      ema50M1,
+      ema20M5: candles.length > 0 ? candles[candles.length - 1].close : 0,
+      m5BarCount: 0
+    };
+  }
+
+  const m5Buckets = new Map<number, { open: number; high: number; low: number; close: number }>();
+  const hasTimestamps = candles.some(c => typeof c.timestamp === 'number' && c.timestamp > 0);
+
+  candles.forEach((c, idx) => {
+    const key = hasTimestamps && c.timestamp && c.timestamp > 0
+      ? Math.floor(c.timestamp / 300)
+      : Math.floor(idx / 5);
+    const existing = m5Buckets.get(key);
+    if (!existing) {
+      m5Buckets.set(key, { open: c.open, high: c.high, low: c.low, close: c.close });
+    } else {
+      existing.high = Math.max(existing.high, c.high);
+      existing.low = Math.min(existing.low, c.low);
+      existing.close = c.close;
+    }
+  });
+
+  const m5Bars = Array.from(m5Buckets.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(entry => entry[1]);
+
+  const m5Closes = m5Bars.map(b => b.close);
+  if (m5Closes.length < 10) {
+    return {
+      htfM5Trend: 'NEUTRAL',
+      ema50M1,
+      ema20M5: m5Closes[m5Closes.length - 1] || 0,
+      m5BarCount: m5Bars.length
+    };
+  }
+
+  const periodSlow = Math.min(20, m5Closes.length);
+  const periodFast = Math.min(9, m5Closes.length);
+  const ema20M5 = calculateEMA(m5Closes, periodSlow);
+  const ema9M5 = calculateEMA(m5Closes, periodFast);
+  const ema20M5Prev = calculateEMA(m5Closes.slice(0, -1), Math.min(periodSlow, m5Closes.length - 1));
+  const lastM5Close = m5Closes[m5Closes.length - 1];
+
+  let htfM5Trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL' = 'NEUTRAL';
+  if (lastM5Close > ema20M5 && (ema9M5 >= ema20M5 || ema20M5 >= ema20M5Prev)) {
+    htfM5Trend = 'BULLISH';
+  } else if (lastM5Close < ema20M5 && (ema9M5 <= ema20M5 || ema20M5 <= ema20M5Prev)) {
+    htfM5Trend = 'BEARISH';
+  }
+
+  return {
+    htfM5Trend,
+    ema50M1,
+    ema20M5,
+    m5BarCount: m5Bars.length
+  };
+}
+
+/**
+ * Calculates Wilder's ADX (14) with +DI and -DI to detect dead ranging/choppy markets
+ */
+export function calculateADX(
+  candles: { high: number; low: number; close: number }[],
+  period = 14
+): {
+  adx: number;
+  plusDi: number;
+  minusDi: number;
+  insufficientData: boolean;
+} {
+  if (candles.length < period + 2) {
+    return { adx: 25, plusDi: 20, minusDi: 20, insufficientData: true };
+  }
+
+  const trList: number[] = [];
+  const plusDmList: number[] = [];
+  const minusDmList: number[] = [];
+
+  for (let i = 1; i < candles.length; i++) {
+    const cur = candles[i];
+    const prev = candles[i - 1];
+    const hl = cur.high - cur.low;
+    const hc = Math.abs(cur.high - prev.close);
+    const lc = Math.abs(cur.low - prev.close);
+    trList.push(Math.max(hl, hc, lc));
+
+    const upMove = cur.high - prev.high;
+    const downMove = prev.low - cur.low;
+    plusDmList.push(upMove > downMove && upMove > 0 ? upMove : 0);
+    minusDmList.push(downMove > upMove && downMove > 0 ? downMove : 0);
+  }
+
+  if (trList.length < period) {
+    return { adx: 25, plusDi: 20, minusDi: 20, insufficientData: true };
+  }
+
+  let tr14 = 0;
+  let plusDm14 = 0;
+  let minusDm14 = 0;
+  for (let i = 0; i < period; i++) {
+    tr14 += trList[i];
+    plusDm14 += plusDmList[i];
+    minusDm14 += minusDmList[i];
+  }
+
+  const dxList: number[] = [];
+  let lastPlusDi = 0;
+  let lastMinusDi = 0;
+
+  const computeStep = () => {
+    lastPlusDi = tr14 > 0 ? (100 * plusDm14) / tr14 : 0;
+    lastMinusDi = tr14 > 0 ? (100 * minusDm14) / tr14 : 0;
+    const diSum = lastPlusDi + lastMinusDi;
+    const dx = diSum > 0 ? (100 * Math.abs(lastPlusDi - lastMinusDi)) / diSum : 0;
+    dxList.push(dx);
+  };
+
+  computeStep();
+  for (let i = period; i < trList.length; i++) {
+    tr14 = tr14 - tr14 / period + trList[i];
+    plusDm14 = plusDm14 - plusDm14 / period + plusDmList[i];
+    minusDm14 = minusDm14 - minusDm14 / period + minusDmList[i];
+    computeStep();
+  }
+
+  let adx = 0;
+  if (dxList.length >= period) {
+    let sumDx = 0;
+    for (let i = 0; i < period; i++) sumDx += dxList[i];
+    adx = sumDx / period;
+    for (let i = period; i < dxList.length; i++) {
+      adx = (adx * (period - 1) + dxList[i]) / period;
+    }
+  } else if (dxList.length > 0) {
+    adx = dxList.reduce((a, b) => a + b, 0) / dxList.length;
+  }
+
+  return {
+    adx: Number(adx.toFixed(1)),
+    plusDi: Number(lastPlusDi.toFixed(1)),
+    minusDi: Number(lastMinusDi.toFixed(1)),
+    insufficientData: false
+  };
+}
+
+/**
+ * Calculates Bollinger Bands (20, 2) and %B position
+ */
+export function calculateBollingerBands(
+  closes: number[],
+  period = 20,
+  stdMult = 2
+): {
+  upper: number;
+  middle: number;
+  lower: number;
+  percentB: number;
+  bandWidthRatio: number;
+  insufficientData: boolean;
+} {
+  if (closes.length < period) {
+    const last = closes[closes.length - 1] || 0;
+    return {
+      upper: last,
+      middle: last,
+      lower: last,
+      percentB: 0.5,
+      bandWidthRatio: 0.001,
+      insufficientData: true
+    };
+  }
+  const slice = closes.slice(-period);
+  const middle = slice.reduce((a, b) => a + b, 0) / period;
+  const variance = slice.reduce((sum, val) => sum + (val - middle) * (val - middle), 0) / period;
+  const stdDev = Math.sqrt(variance);
+  const upper = middle + stdMult * stdDev;
+  const lower = middle - stdMult * stdDev;
+  const span = Math.max(1e-9, upper - lower);
+  const lastClose = closes[closes.length - 1];
+  const percentB = (lastClose - lower) / span;
+  const bandWidthRatio = span / Math.max(1e-9, middle);
+
+  return {
+    upper,
+    middle,
+    lower,
+    percentB: Number(percentB.toFixed(3)),
+    bandWidthRatio,
+    insufficientData: false
+  };
+}
+
 export interface MomentumPauseBreakoutResult {
   isDetected: boolean;
   direction: 'CALL' | 'PUT' | 'NONE';
@@ -3058,26 +3388,132 @@ export interface FourIndicatorConfluenceResult {
   isSignalTriggered: boolean;
   matchedList: string[];
   summary: string;
+  adxValue?: number;
+  plusDi?: number;
+  minusDi?: number;
+  ema50M1?: number;
+  emaM5Trend?: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  bollingerPercentB?: number;
+  institutionalFilterBlocked?: boolean;
+  institutionalFilterReason?: string;
 }
 
 /**
- * 4-Indicator Confluence Evaluator:
- * Supports two VIP modes based on user selection:
- * - Option 2 (requireMpb = true): MPB is mandatory + at least 2 supporting indicators (Total >= 3).
- * - Option 3 (requireMpb = false): Any 3 of the 4 indicators (MPB, ATR, RSI, Supertrend) agree in the same direction.
+ * 4-Indicator Confluence Evaluator + Institutional Quality Filters:
+ * Core 4 pillars: MPB, ATR(14), RSI(14), Supertrend(10,3).
+ * Institutional confirmation guards (applied to all channels & Quotex Robot):
+ * 1) ADX (14) >= 18 + DI bias (filters out dead choppy sideways markets)
+ * 2) EMA 50 (M1) + M5 Higher-Timeframe Trend Alignment (blocks counter-trend traps unless verified extreme S/R bounce)
+ * 3) Bollinger Bands (20, 2) + Counter-Wick Rejection Guard (blocks overextended tops/bottoms & >55% counter rejection wicks)
  */
 export function evaluateFourIndicatorConfluence(
-  candles: { open: number; high: number; low: number; close: number }[],
+  candles: { timestamp?: number; open: number; high: number; low: number; close: number }[],
   isJpy = false,
-  requireMpb = true
+  requireMpb = true,
+  srContext?: { isTestingSupport?: boolean; isTestingResistance?: boolean }
 ): FourIndicatorConfluenceResult {
   const momentumPause = detectMomentumPauseBreakout(candles, 14);
   const atr = calculateATR(candles, 14);
   const closes = candles.map(c => c.close);
   const rsi = calculateRSI(closes, 14);
   const supertrend = calculateSuperTrend(candles, 10, 3);
+  const adxData = calculateADX(candles, 14);
+  const bbData = calculateBollingerBands(closes, 20, 2);
+  const htfData = evaluateHigherTimeframeM5Trend(candles);
 
-  const minAtr = isJpy ? 0.015 : 0.00010;
+  const lastCandle = candles[candles.length - 1] || { open: 0, high: 0, low: 0, close: 0 };
+  const lastRange = Math.max(1e-9, lastCandle.high - lastCandle.low);
+  const upperWickRatio = (lastCandle.high - Math.max(lastCandle.open, lastCandle.close)) / lastRange;
+  const lowerWickRatio = (Math.min(lastCandle.open, lastCandle.close) - lastCandle.low) / lastRange;
+
+  const evaluateInstitutionalGuard = (
+    dir: 'CALL' | 'PUT',
+    hasMpbInDir: boolean
+  ): { ok: boolean; blockReason?: string; bonuses: string[] } => {
+    const bonuses: string[] = [];
+
+    // Guard 1: ADX (14) Sideways Chop Filter
+    if (!adxData.insufficientData && adxData.adx < 18) {
+      return {
+        ok: false,
+        blockReason: `فلتر ADX حجب الإشارة: السوق عرضي ضعيف (${adxData.adx} < 18)`,
+        bonuses
+      };
+    }
+
+    // Guard 2: EMA 50 (M1) + Higher-Timeframe M5 Trend Alignment
+    const isVerifiedExtremeSupportBounce = dir === 'CALL' && Boolean(srContext?.isTestingSupport) && rsi <= 32;
+    const isVerifiedExtremeResistanceBounce = dir === 'PUT' && Boolean(srContext?.isTestingResistance) && rsi >= 68;
+
+    if (dir === 'CALL' && !isVerifiedExtremeSupportBounce) {
+      if (lastCandle.close < htfData.ema50M1 && htfData.htfM5Trend === 'BEARISH') {
+        return {
+          ok: false,
+          blockReason: `فلتر الاتجاه العام (EMA 50 + M5): السعر أدنى المتوسط واتجاه 5 دقائق هابط`,
+          bonuses
+        };
+      }
+    } else if (dir === 'PUT' && !isVerifiedExtremeResistanceBounce) {
+      if (lastCandle.close > htfData.ema50M1 && htfData.htfM5Trend === 'BULLISH') {
+        return {
+          ok: false,
+          blockReason: `فلتر الاتجاه العام (EMA 50 + M5): السعر أعلى المتوسط واتجاه 5 دقائق صاعد`,
+          bonuses
+        };
+      }
+    }
+
+    // Guard 3: Bollinger Bands Overextension + Long Counter-Wick Rejection Guard
+    if (dir === 'CALL') {
+      if (upperWickRatio >= 0.55) {
+        return {
+          ok: false,
+          blockReason: `رفض ذيل علوي قوي (${Math.round(upperWickRatio * 100)}%) — ضغط بيعي مضاد`,
+          bonuses
+        };
+      }
+      if (!bbData.insufficientData && bbData.percentB >= 1.02 && !hasMpbInDir) {
+        return {
+          ok: false,
+          blockReason: `تشبع سعري فوق البولنجر العلوي (${Math.round(bbData.percentB * 100)}%B) — احتمال ارتداد`,
+          bonuses
+        };
+      }
+    } else {
+      if (lowerWickRatio >= 0.55) {
+        return {
+          ok: false,
+          blockReason: `رفض ذيل سفلي قوي (${Math.round(lowerWickRatio * 100)}%) — ضغط شرائي مضاد`,
+          bonuses
+        };
+      }
+      if (!bbData.insufficientData && bbData.percentB <= -0.02 && !hasMpbInDir) {
+        return {
+          ok: false,
+          blockReason: `تشبع سعري أسفل البولنجر السفلي (${Math.round(bbData.percentB * 100)}%B) — احتمال ارتداد`,
+          bonuses
+        };
+      }
+    }
+
+    // Add institutional confirmation tags for Telegram & UI when strongly aligned
+    if (dir === 'CALL' && lastCandle.close > htfData.ema50M1 && htfData.htfM5Trend === 'BULLISH') {
+      bonuses.push(`فلتر الاتجاه العام EMA 50 + M5 (ترند صاعد متوافق 📈)`);
+    } else if (dir === 'PUT' && lastCandle.close < htfData.ema50M1 && htfData.htfM5Trend === 'BEARISH') {
+      bonuses.push(`فلتر الاتجاه العام EMA 50 + M5 (ترند هابط متوافق 📉)`);
+    }
+
+    if (!adxData.insufficientData && adxData.adx >= 20) {
+      const diAligned = dir === 'CALL' ? adxData.plusDi >= adxData.minusDi : adxData.minusDi >= adxData.plusDi;
+      if (diAligned) {
+        bonuses.push(`مؤشر قوة الاتجاه ADX (${adxData.adx} زخم ترند نقي ✅)`);
+      }
+    }
+
+    return { ok: true, bonuses };
+  };
+
+  const minAtr = isJpy ? 0.022 : 0.00014;
   const isAtrHealthy = atr >= minAtr;
 
   if (requireMpb) {
@@ -3097,7 +3533,13 @@ export function evaluateFourIndicatorConfluence(
         candidateDirection: null,
         isSignalTriggered: false,
         matchedList: [],
-        summary: `الشرط الأساسي MPB غير محقق: ${momentumPause.summary}`
+        summary: `الشرط الأساسي MPB غير محقق: ${momentumPause.summary}`,
+        adxValue: adxData.adx,
+        plusDi: adxData.plusDi,
+        minusDi: adxData.minusDi,
+        ema50M1: htfData.ema50M1,
+        emaM5Trend: htfData.htfM5Trend,
+        bollingerPercentB: bbData.percentB
       };
     }
 
@@ -3118,10 +3560,10 @@ export function evaluateFourIndicatorConfluence(
       matchedList.push(`مؤشر ATR (${atr.toFixed(5)} سيولة وزخم نشط)`);
     }
 
-    // Pillar 3: RSI (14) Momentum Alignment
+    // Pillar 3: RSI (14) Momentum Alignment (strictly excludes neutral chop)
     const rsiMatched = testDirection === 'CALL'
-      ? (rsi >= 48 || (rsi <= 35 && rsi >= 20))
-      : (rsi <= 52 || (rsi >= 65 && rsi <= 80));
+      ? (rsi >= 50 || (rsi <= 34 && rsi >= 22))
+      : (rsi <= 50 || (rsi >= 66 && rsi <= 78));
     if (rsiMatched) {
       additionalCount += 1;
       matchedList.push(`مؤشر RSI (${rsi.toFixed(1)} ${testDirection === 'CALL' ? 'ميل صعودي' : 'ميل هبوطي'})`);
@@ -3136,12 +3578,22 @@ export function evaluateFourIndicatorConfluence(
       matchedList.push(`مؤشر Supertrend (${supertrend.trend === 'BULLISH' ? 'صاعد أخضر 🟢' : 'هابط أحمر 🔴'})`);
     }
 
-    const isSignalTriggered = additionalCount >= 2;
+    const coreTriggered = additionalCount >= 2;
     const supportingCount = 1 + additionalCount;
+    const guard = coreTriggered
+      ? evaluateInstitutionalGuard(testDirection, true)
+      : { ok: true, bonuses: [] as string[] };
 
-    const summary = isSignalTriggered
-      ? `${supportingCount} من 4 مؤشرات متوافقة (شرط MPB الأساسي + ${additionalCount} مؤشرات إضافية: ${matchedList.slice(1).join(' + ')})`
-      : `شرط MPB محقق ولكن توفر مؤشر إضافي واحد فقط (${additionalCount} من 3 — المطلوب 2 إضافيان)`;
+    const isSignalTriggered = coreTriggered && guard.ok;
+    const finalMatchedList = isSignalTriggered && guard.bonuses.length > 0
+      ? [...matchedList, ...guard.bonuses]
+      : matchedList;
+
+    const summary = !coreTriggered
+      ? `شرط MPB محقق ولكن توفر مؤشر إضافي واحد فقط (${additionalCount} من 3 — المطلوب 2 إضافيان)`
+      : !guard.ok
+      ? `تم حجب الإشارة لحماية الجودة: ${guard.blockReason}`
+      : `${supportingCount} من 4 مؤشرات متوافقة (شرط MPB الأساسي + ${additionalCount} مؤشرات إضافية: ${matchedList.slice(1).join(' + ')})`;
 
     return {
       momentumPause,
@@ -3152,24 +3604,32 @@ export function evaluateFourIndicatorConfluence(
       superTrendMatched: stMatched,
       superTrendDirection: supertrend.trend,
       supportingCount,
-      candidateDirection: testDirection,
+      candidateDirection: isSignalTriggered ? testDirection : null,
       isSignalTriggered,
-      matchedList,
-      summary
+      matchedList: finalMatchedList,
+      summary,
+      adxValue: adxData.adx,
+      plusDi: adxData.plusDi,
+      minusDi: adxData.minusDi,
+      ema50M1: htfData.ema50M1,
+      emaM5Trend: htfData.htfM5Trend,
+      bollingerPercentB: bbData.percentB,
+      institutionalFilterBlocked: coreTriggered && !guard.ok,
+      institutionalFilterReason: guard.blockReason
     };
   } else {
     // ========================================================
     // OPTION 3: VIP without MPB (Any 3 of the 4 indicators agree)
     // ========================================================
-    // Evaluate CALL Direction Matches:
     const callMatched: string[] = [];
-    if (momentumPause.isDetected && momentumPause.direction === 'CALL') {
+    const callHasMpb = momentumPause.isDetected && momentumPause.direction === 'CALL';
+    if (callHasMpb) {
       callMatched.push(`مؤشر MPB (اختراق صاعد ⬆️)`);
     }
     if (isAtrHealthy) {
       callMatched.push(`مؤشر ATR (${atr.toFixed(5)} سيولة نشطة)`);
     }
-    const rsiCall = (rsi >= 48 || (rsi <= 35 && rsi >= 20));
+    const rsiCall = (rsi >= 50 || (rsi <= 34 && rsi >= 22));
     if (rsiCall) {
       callMatched.push(`مؤشر RSI (${rsi.toFixed(1)} ميل صعودي)`);
     }
@@ -3178,15 +3638,15 @@ export function evaluateFourIndicatorConfluence(
       callMatched.push(`مؤشر Supertrend (صاعد أخضر 🟢)`);
     }
 
-    // Evaluate PUT Direction Matches:
     const putMatched: string[] = [];
-    if (momentumPause.isDetected && momentumPause.direction === 'PUT') {
+    const putHasMpb = momentumPause.isDetected && momentumPause.direction === 'PUT';
+    if (putHasMpb) {
       putMatched.push(`مؤشر MPB (كسر هابط ⬇️)`);
     }
     if (isAtrHealthy) {
       putMatched.push(`مؤشر ATR (${atr.toFixed(5)} سيولة نشطة)`);
     }
-    const rsiPut = (rsi <= 52 || (rsi >= 65 && rsi <= 80));
+    const rsiPut = (rsi <= 50 || (rsi >= 66 && rsi <= 78));
     if (rsiPut) {
       putMatched.push(`مؤشر RSI (${rsi.toFixed(1)} ميل هبوطي)`);
     }
@@ -3198,21 +3658,39 @@ export function evaluateFourIndicatorConfluence(
     let candidateDirection: 'CALL' | 'PUT' | null = null;
     let chosenList: string[] = [];
     let supportingCount = 0;
+    let guardResult: { ok: boolean; blockReason?: string; bonuses: string[] } = { ok: true, bonuses: [] };
 
     if (callMatched.length >= 3 && callMatched.length >= putMatched.length) {
-      candidateDirection = 'CALL';
-      chosenList = callMatched;
-      supportingCount = callMatched.length;
-    } else if (putMatched.length >= 3) {
-      candidateDirection = 'PUT';
-      chosenList = putMatched;
-      supportingCount = putMatched.length;
+      guardResult = evaluateInstitutionalGuard('CALL', callHasMpb);
+      if (guardResult.ok) {
+        candidateDirection = 'CALL';
+        chosenList = callMatched;
+        supportingCount = callMatched.length;
+      }
+    }
+    if (!candidateDirection && putMatched.length >= 3) {
+      const putGuard = evaluateInstitutionalGuard('PUT', putHasMpb);
+      if (putGuard.ok) {
+        candidateDirection = 'PUT';
+        chosenList = putMatched;
+        supportingCount = putMatched.length;
+        guardResult = putGuard;
+      } else if (!guardResult.blockReason) {
+        guardResult = putGuard;
+      }
     }
 
     const isSignalTriggered = candidateDirection !== null;
+    const finalChosenList = isSignalTriggered && guardResult.bonuses.length > 0
+      ? [...chosenList, ...guardResult.bonuses]
+      : chosenList;
     const hasMpbInMatch = chosenList.some(m => m.includes('MPB'));
+    const blockedByGuard = !isSignalTriggered && (callMatched.length >= 3 || putMatched.length >= 3) && !guardResult.ok;
+
     const summary = isSignalTriggered
       ? `${supportingCount} من 4 مؤشرات متوافقة (${hasMpbInMatch ? 'مع مؤشر MPB الأساسي محقق ✅' : 'توافق 3 مؤشرات فنية بدون MPB ⚡'}: ${chosenList.join(' + ')})`
+      : blockedByGuard
+      ? `تم حجب الإشارة لحماية الجودة: ${guardResult.blockReason}`
       : `لا يوجد توافق 3 مؤشرات حالياً (CALL: ${callMatched.length}/4, PUT: ${putMatched.length}/4 — المطلوب 3 مؤشرات على الأقل)`;
 
     return {
@@ -3226,8 +3704,16 @@ export function evaluateFourIndicatorConfluence(
       supportingCount,
       candidateDirection,
       isSignalTriggered,
-      matchedList: chosenList,
-      summary
+      matchedList: finalChosenList,
+      summary,
+      adxValue: adxData.adx,
+      plusDi: adxData.plusDi,
+      minusDi: adxData.minusDi,
+      ema50M1: htfData.ema50M1,
+      emaM5Trend: htfData.htfM5Trend,
+      bollingerPercentB: bbData.percentB,
+      institutionalFilterBlocked: blockedByGuard,
+      institutionalFilterReason: guardResult.blockReason
     };
   }
 }
@@ -3293,11 +3779,14 @@ async function scanRealGlobalForexMarket(
     const yahooSymbol = `${pair.replace('/', '')}=X`;
     try {
       const url = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooSymbol}?interval=1m&range=1d`;
+      const yahooCtrl = new AbortController();
+      const yahooTimeout = setTimeout(() => yahooCtrl.abort(), 2400);
       const res = await fetch(url, {
+        signal: yahooCtrl.signal,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-      });
+      }).finally(() => clearTimeout(yahooTimeout));
       if (!res.ok) return;
       const data = (await res.json()) as any;
       const result = data?.chart?.result?.[0];
@@ -3481,14 +3970,60 @@ async function scanRealGlobalForexMarket(
       }
 
       const requireMpb = false; // استراتيجية الروبوت الثانية MPB تقبل الإشارة مع توافر 3 شروط سواء بالشرط الأساسي أو بدونه
-      const fourConfluence = evaluateFourIndicatorConfluence(validCandles, isJpy, requireMpb);
+      const fourConfluence = evaluateFourIndicatorConfluence(validCandles, isJpy, requireMpb, {
+        isTestingSupport: srAnalysis.isTestingSupport,
+        isTestingResistance: srAnalysis.isTestingResistance
+      });
+
+      const adx14 = fourConfluence.adxValue ?? 25;
+      const htfM5Trend = fourConfluence.emaM5Trend ?? 'NEUTRAL';
+      const ema50M1 = fourConfluence.ema50M1 ?? currentPrice;
+      const bollingerPercentB = fourConfluence.bollingerPercentB ?? 0.5;
+
+      // Apply the same institutional filters to classic mode signals too
+      if (signalReady === 'CALL') {
+        const isExtremeSupportBounce = srAnalysis.isTestingSupport && rsi <= 32;
+        if (adx14 < 18) {
+          signalReady = null;
+          reason = `فلتر ADX حجب الإشارة: السوق عرضي ضعيف (${adx14} < 18)`;
+        } else if (!isExtremeSupportBounce && currentPrice < ema50M1 && htfM5Trend === 'BEARISH') {
+          signalReady = null;
+          reason = `فلتر الاتجاه العام (EMA 50 + M5): ترند 5 دقائق هابط`;
+        } else if (upperWickRatio >= 0.55 || bollingerPercentB >= 1.02) {
+          signalReady = null;
+          reason = `فلتر التشبع والرفض السعري: ذيل علوي أو تشبع فوق البولنجر`;
+        }
+      } else if (signalReady === 'PUT') {
+        const isExtremeResistanceBounce = srAnalysis.isTestingResistance && rsi >= 68;
+        if (adx14 < 18) {
+          signalReady = null;
+          reason = `فلتر ADX حجب الإشارة: السوق عرضي ضعيف (${adx14} < 18)`;
+        } else if (!isExtremeResistanceBounce && currentPrice > ema50M1 && htfM5Trend === 'BULLISH') {
+          signalReady = null;
+          reason = `فلتر الاتجاه العام (EMA 50 + M5): ترند 5 دقائق صاعد`;
+        } else if (lowerWickRatio >= 0.55 || bollingerPercentB <= -0.02) {
+          signalReady = null;
+          reason = `فلتر التشبع والرفض السعري: ذيل سفلي أو تشبع أسفل البولنجر`;
+        }
+      }
 
       // If VIP mode is active and fourIndicatorConfluence is triggered, promote this as active signalReady
-      if (robotSettings.strategyEngineMode !== 'PUBLIC_CLASSIC' && fourConfluence.isSignalTriggered && fourConfluence.candidateDirection) {
-        signalReady = fourConfluence.candidateDirection;
-        trend = fourConfluence.candidateDirection === 'CALL' ? 'BULLISH' : 'BEARISH';
-        qualityScore = Math.max(qualityScore, 75 + fourConfluence.supportingCount * 6);
-        reason = fourConfluence.summary;
+      if (robotSettings.strategyEngineMode !== 'PUBLIC_CLASSIC') {
+        if (fourConfluence.isSignalTriggered && fourConfluence.candidateDirection) {
+          signalReady = fourConfluence.candidateDirection;
+          trend = fourConfluence.candidateDirection === 'CALL' ? 'BULLISH' : 'BEARISH';
+          const adxBonus = adx14 >= 22 ? 4 : 0;
+          const m5AlignedBonus =
+            (signalReady === 'CALL' && htfM5Trend === 'BULLISH' && currentPrice > ema50M1) ||
+            (signalReady === 'PUT' && htfM5Trend === 'BEARISH' && currentPrice < ema50M1)
+              ? 4
+              : 0;
+          qualityScore = Math.min(100, Math.max(qualityScore, 75 + fourConfluence.supportingCount * 5 + adxBonus + m5AlignedBonus));
+          reason = fourConfluence.summary;
+        } else if (fourConfluence.institutionalFilterBlocked) {
+          signalReady = null;
+          reason = fourConfluence.institutionalFilterReason || fourConfluence.summary;
+        }
       }
 
       snapshots.push({
@@ -3548,8 +4083,17 @@ async function scanRealGlobalForexMarket(
           candidateDirection: fourConfluence.candidateDirection,
           isSignalTriggered: fourConfluence.isSignalTriggered,
           matchedList: fourConfluence.matchedList,
-          summary: fourConfluence.summary
+          summary: fourConfluence.summary,
+          adxValue: fourConfluence.adxValue,
+          emaM5Trend: fourConfluence.emaM5Trend,
+          bollingerPercentB: fourConfluence.bollingerPercentB,
+          institutionalFilterBlocked: fourConfluence.institutionalFilterBlocked,
+          institutionalFilterReason: fourConfluence.institutionalFilterReason
         },
+        htfM5Trend,
+        ema50M1,
+        adx14,
+        bollingerPercentB,
         wickRatio: signalReady === 'CALL' ? lowerWickRatio : upperWickRatio,
         isNewsSpike,
         updatedAt: new Date().toISOString()
@@ -4894,24 +5438,24 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
         ? `🤖 <b>روبوت التداول الآلي الذكي ZAD FX:</b>\n\n` +
           `🌟 <b>المواصفات والآلية:</b>\n` +
           `• يعمل كإضافة تداول مباشر على منصة كيوتكس (Quotex).\n` +
-          `• يدمج 4 مؤشرات فنية: (Momentum Pause + ATR + RSI + SuperTrend).\n` +
+          `• يدمج 4 مؤشرات أساسية (MPB + ATR + RSI + SuperTrend) مع فلاتر مؤسسية (EMA 50 + M5 + ADX + Bollinger).\n` +
           `• يمسح 6 أزواج بالتوازي في نفس اللحظة.\n` +
           `• يصدر الصفقة وينفذها بتأكيد 5 ثوانٍ قبل فتح الشمعة بدقة 00.00.\n\n` +
           `⏰ <b>فترات العمل اليومية (توقيت القاهرة):</b>\n` +
-          `• الفترة الصباحية (جميع القنوات والروبوت): 10:00 ص إلى 12:00 ظهراً\n` +
-          `• جلسة البث المباشر مع أبوسليم (VIP والروبوت): 06:00 م إلى 07:00 م\n` +
-          `🎯 <i>الاكتفاء بنسبة 65% حتى 70%+ من الأرباح لحماية رأس المال.</i>\n\n` +
+          `• الفترة الصباحية (جميع القنوات والروبوت): 10:30 ص إلى 01:00 ظهراً (أول 8 دقائق مسح واستعداد)\n` +
+          `• جلسة البث المباشر مع أبوسليم (VIP والروبوت): 04:30 عصراً إلى 08:00 مساءً\n` +
+          `🎯 <i>الاكتفاء بنسبة 60%+ من الأرباح لحماية رأس المال.</i>\n\n` +
           `📹 يمكنك مشاهدة الفيديو التوضيحي لشرح طريقة التثبيت على متصفح Kiwi أو الكمبيوتر عبر الزر أدناه:`
         : `🤖 <b>ZAD FX Automated Trading Robot:</b>\n\n` +
           `🌟 <b>Key Features:</b>\n` +
           `• Executes directly on the Quotex platform via smart userscript.\n` +
-          `• Fuses 4 indicators: Momentum Pause + ATR + RSI + SuperTrend.\n` +
+          `• Fuses 4 core indicators (MPB + ATR + RSI + SuperTrend) with institutional filters (EMA 50 + M5 + ADX + Bollinger).\n` +
           `• Scans 6 currency pairs simultaneously.\n` +
           `• 5-second pre-candle confirmation at 00.00.\n\n` +
           `⏰ <b>Daily Trading Hours (Cairo Time):</b>\n` +
-          `• Morning Session (All Channels & Robot): 10:00 AM - 12:00 PM\n` +
-          `• Live Broadcast Session with Abu Salim (VIP & Robot): 06:00 PM - 07:00 PM\n` +
-          `🎯 <i>Target: 65% to 70%+ win rate capital preservation limit.</i>\n\n` +
+          `• Morning Session (All Channels & Robot): 10:30 AM - 01:00 PM (first 8 mins readiness scan)\n` +
+          `• Live Broadcast Session with Abu Salim (VIP & Robot): 04:30 PM - 08:00 PM\n` +
+          `🎯 <i>Target: 60%+ win rate capital preservation limit.</i>\n\n` +
           `📹 Click below to watch the setup tutorial video on Kiwi browser or PC:`;
 
       const buttons = isAr
@@ -6102,16 +6646,20 @@ async function dispatchVipMomentumPauseSignal(
 
   const now = new Date();
   const currentSec = now.getSeconds();
-  const secondsRemainingInCurrentMinute = 60 - currentSec;
 
-  // Entry is targeted at :00 seconds (exact open of the upcoming 1-minute candle)
-  // When fired at :55s, remaining time is ~5 seconds.
+  // Auto signals must arrive cleanly at least 4s BEFORE :00.00; never target a candle in the past!
+  if (isAuto && (currentSec >= 57 || currentSec <= 3)) {
+    return { ok: false, error: 'تم تجاوز ثانية الإرسال الآمن لهذه الشمعة — انتظار الدقيقة التالية لتطابق التوقيت 100%' };
+  }
+
+  // Always target an upcoming :00.00 boundary with at least 4s head start (never minutesAhead=0 in the past!)
+  const minutesAhead = currentSec >= 56 ? 2 : 1;
   const targetEntryDate = new Date(
     now.getFullYear(),
     now.getMonth(),
     now.getDate(),
     now.getHours(),
-    now.getMinutes() + (secondsRemainingInCurrentMinute <= 1 ? 0 : 1),
+    now.getMinutes() + minutesAhead,
     0,
     0
   );
@@ -6146,30 +6694,38 @@ async function dispatchVipMomentumPauseSignal(
     }
   }
 
-  // 4. Cross-Instance Cloud Firestore Mutex Lock (Ensures only 1 instance can dispatch VIP signals):
+  // 4. Atomic Cloud Firestore Transaction Mutex Lock (Guarantees ONLY 1 container between ais-dev & ais-pre can dispatch!):
   if (serverFirestoreDb) {
     try {
       const vipLockRef = doc(serverFirestoreDb, 'system_state', 'vip_mpb_lock');
-      const snap = await getDoc(vipLockRef);
-      if (snap.exists()) {
-        const lockData = snap.data();
-        if (lockData && typeof lockData.lockedUntil === 'number' && Date.now() < lockData.lockedUntil) {
-          const remSec = Math.ceil((lockData.lockedUntil - Date.now()) / 1000);
-          return {
-            ok: false,
-            error: `تم إرسال إشارة VIP من سيرفر مشترك (متبقي في التبريد ${remSec} ثانية لمنع تكرار الرسائل)`
-          };
+      const lockOutcome = await runTransaction(serverFirestoreDb, async (tx) => {
+        const snap = await tx.get(vipLockRef);
+        if (snap.exists()) {
+          const lockData = snap.data();
+          if (lockData && lockData.targetEntryTimestamp === targetEntryTimestamp) {
+            return { ok: false, reason: 'already_claimed_minute' as const, remSec: 180 };
+          }
+          if (lockData && typeof lockData.lockedUntil === 'number' && Date.now() < lockData.lockedUntil) {
+            const remSec = Math.ceil((lockData.lockedUntil - Date.now()) / 1000);
+            return { ok: false, reason: 'cooldown' as const, remSec };
+          }
         }
+        tx.set(vipLockRef, {
+          lockedUntil: Date.now() + 180_000,
+          targetEntryTimestamp,
+          asset: candidate.pair,
+          lockedAt: new Date().toISOString()
+        }, { merge: true });
+        return { ok: true, reason: 'acquired' as const, remSec: 0 };
+      });
+      if (!lockOutcome.ok) {
+        return {
+          ok: false,
+          error: `تم إرسال إشارة VIP من سيرفر مشترك (متبقي في التبريد ${lockOutcome.remSec} ثانية لمنع تكرار الرسائل)`
+        };
       }
-      // Claim the lock immediately for 180 seconds
-      await setDoc(vipLockRef, {
-        lockedUntil: Date.now() + 180_000,
-        targetEntryTimestamp,
-        asset: candidate.pair,
-        lockedAt: new Date().toISOString()
-      }, { merge: true });
     } catch (_e) {
-      // Ignore Firestore network hiccups and proceed
+      // Ignore Firestore transient hiccup and rely on in-memory + signalsStore guards
     }
   }
 
@@ -6180,17 +6736,23 @@ async function dispatchVipMomentumPauseSignal(
   const freeToken = (autoPilot.botToken || '').trim();
   const freeChat = (autoPilot.chatId || '').trim();
 
-  const cairoHour = getCurrentEgyptHour();
-  const isMorning = cairoHour >= 10 && cairoHour < 12;
+  const isMorning = isCairoInMorningSession();
   const isEveningLive = isEveningLiveNow();
   const effectiveVariant: 'WITH_MPB' | 'WITHOUT_MPB' = explicitVariant || 'WITH_MPB';
 
   const isOption2 = effectiveVariant === 'WITH_MPB';
 
-  // Calculate estimated success probability based on indicators confluence:
+  // Calculate estimated success probability based on indicators confluence & institutional alignment:
   let successPercent = 85 + (confluence.supportingCount || 3) * 2;
   if (isOption2) successPercent += 3;
   if (confluence.momentumPause?.isContinuation) successPercent += 2;
+  if ((confluence.adxValue ?? 0) >= 22) successPercent += 1;
+  if (
+    (direction === 'CALL' && confluence.emaM5Trend === 'BULLISH') ||
+    (direction === 'PUT' && confluence.emaM5Trend === 'BEARISH')
+  ) {
+    successPercent += 2;
+  }
   successPercent = Math.min(95, Math.max(86, successPercent));
 
   const dirSymbol = direction === 'CALL' ? 'صعود 🟢 ⬆️ (CALL)' : 'هبوط 🔴 ⬇️ (PUT)';
@@ -6209,13 +6771,19 @@ async function dispatchVipMomentumPauseSignal(
     ? `🎯 نوع الاستراتيجية: مؤشر VIP مع MPB (الشرط الأساسي محقق 💎)`
     : `⚡ نوع الاستراتيجية: مؤشر VIP بدون MPB (توافق 3 مؤشرات ⚡)`;
 
+  const tierLabel = (confluence.supportingCount || 0) >= 4
+    ? '💎 تصنيف الإشارة: فئة النخبة (توافق 4 من 4 مؤشرات بالكامل ✅)'
+    : '⚡ تصنيف الإشارة: جودة عالية (توافق 3 من 4 مؤشرات قوية ✅)';
+
   const formattedMessage = [
     headerTitle,
     strategyVariantTitle,
+    tierLabel,
     `━━━━━━━━━━━━━━━━━━━━`,
     `📊 الزوج: ${candidate.pair} (🌐)`,
     `🎯 الاتجاه: ${dirSymbol}`,
-    `⏱️ وقت الدخول: :${entryMinute} (تنفيذ فوري خلال 5 ثوانٍ ⚡)`,
+    `⏱️ وقت الدخول: :${entryMinute} (تنفيذ فوري عند :00.00 ⚡)`,
+    `💰 العائد المتوقع على المنصة: 85%+ (صفقة مباشرة بدون مضاعفات Zero Gale)`,
     `🎯 قوة ونسبة نجاح الإشارة المتوقعة: ${successPercent}% 📈`,
     `📈 التوافق الفني (${confluence.supportingCount} من 4 مؤشرات معتمدة ✅):`,
     `${matchedListStr}`,
@@ -6253,25 +6821,32 @@ async function dispatchVipMomentumPauseSignal(
     autoSent: isAuto
   };
 
-  // 1. INSTANT PARALLEL DELIVERY: Add to signal store & sync to Quotex Floating Robot feed FIRST!
-  // Zero latency: Robot receives the signal at :55s without waiting for Telegram network latency!
+  // 1. ZERO-LATENCY SIMULTANEOUS DELIVERY:
+  // Update signalsStore in memory (instant /api/quotex-robot/feed) AND push robot_feed/live + Telegram in parallel FIRST!
   signalsStore = [
     newSignal,
     ...signalsStore.filter(s => s.id !== newSignal.id && s.targetEntryTimestamp !== targetEntryTimestamp)
   ].slice(0, 50);
 
   lastDispatchedEpochMinute = targetEntryTimestamp;
-  await saveState();
+  if (isEveningLive) {
+    liveBroadcastSession.status = 'ACTIVE_BROADCAST';
+    liveBroadcastSession.lastDispatchedAt = new Date().toISOString();
+    if (!liveBroadcastSession.firstSignalTimestamp) {
+      liveBroadcastSession.firstSignalTimestamp = Date.now();
+    }
+  }
 
   let vipTelegramMessageId: number | undefined;
   let freeTelegramMessageId: number | undefined;
   let telegramError: string | undefined;
 
-  // 2. Deliver to Telegram channels in parallel
-  const telegramDeliveries: Promise<any>[] = [];
+  const parallelDeliveries: Promise<any>[] = [
+    publishRobotLiveFeedDoc().catch(() => {})
+  ];
 
   if (activeVipToken && activeVipChat) {
-    telegramDeliveries.push(
+    parallelDeliveries.push(
       sendTelegramMessage(activeVipToken, activeVipChat, formattedMessage)
         .then(res => {
           if (res.ok && res.result?.message_id) {
@@ -6287,9 +6862,9 @@ async function dispatchVipMomentumPauseSignal(
     );
   }
 
-  // During Morning Session (10:00 to 12:00), deliver simultaneously to Free Channel as well!
+  // During Morning Session (11:00 to 12:00), deliver simultaneously to Free Channel as well!
   if (isMorning && freeToken && freeChat && !autoPilot.freeBotStoppedForToday) {
-    telegramDeliveries.push(
+    parallelDeliveries.push(
       sendTelegramMessage(freeToken, freeChat, formattedMessage)
         .then(res => {
           if (res.ok && res.result?.message_id) {
@@ -6301,16 +6876,14 @@ async function dispatchVipMomentumPauseSignal(
     );
   }
 
-  // Await Telegram dispatches in background without delaying signal registration
-  Promise.allSettled(telegramDeliveries).then(async () => {
-    if (vipTelegramMessageId || freeTelegramMessageId) {
-      const storedSig = signalsStore.find(s => s.id === newSignal.id);
-      if (storedSig) {
-        if (vipTelegramMessageId) storedSig.vipTelegramMessageId = vipTelegramMessageId;
-        if (freeTelegramMessageId) storedSig.telegramMessageId = freeTelegramMessageId;
-      }
-      await saveState();
+  // Wait for Telegram + Robot cloud feed in parallel, then persist full state without delaying signal delivery
+  Promise.allSettled(parallelDeliveries).then(async () => {
+    const storedSig = signalsStore.find(s => s.id === newSignal.id);
+    if (storedSig) {
+      if (vipTelegramMessageId) storedSig.vipTelegramMessageId = vipTelegramMessageId;
+      if (freeTelegramMessageId) storedSig.telegramMessageId = freeTelegramMessageId;
     }
+    await saveState();
   });
 
   // Evaluate trade outcome after candle finishes (68 seconds)
@@ -6375,6 +6948,7 @@ async function dispatchVipMomentumPauseSignal(
 
 let isScanningVipMomentumPause = false;
 let lastVipDispatchedMinute = '';
+let lastPreWarmScanAtMs = 0;
 
 async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
   if (isScanningVipMomentumPause) return;
@@ -6382,20 +6956,36 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
 
   try {
     if (!isGlobalForexMarketOpen()) return;
-    const cairoHour = getCurrentEgyptHour();
-    const cairoMinute = getCurrentEgyptMinute();
+    const cairoMins = getCairoMinutesOfDay();
 
-    // Unified Session Hours strictly per infographic and prompt:
-    // 1) Morning Session: 10:00 AM to 12:00 PM (Cairo Time), last entry at 11:57 so trade finishes before 12:00:00
-    // 2) Evening Live Broadcast: 06:00 PM to 07:00 PM (18:00 to 19:00 Cairo Time), last entry at 18:57 so trade finishes before 19:00:00
-    const isMorning = cairoHour >= 10 && (cairoHour < 11 || (cairoHour === 11 && cairoMinute < 57));
-    const isEveningLive = cairoHour === 18 && cairoMinute < 57;
+    // At 10:30 AM Cairo Time, dispatch morning greeting & readiness notice (Free + VIP)
+    if (isCairoInMorningSession()) {
+      await checkAndSendMorningOpeningGreeting();
+    }
+
+    // Unified High-Liquidity Session Hours:
+    // 1) Morning Session: 10:30 AM to 01:00 PM (with 8-min readiness scan 10:30-10:38), last entry 12:57
+    // 2) Evening Live Broadcast: 04:30 PM to 08:00 PM (16:40 to 19:57), last entry 19:57
+    const isMorning = cairoMins >= MORNING_ACTIVE_MIN && cairoMins < MORNING_END_MIN - 3;
+    const isEveningLive = cairoMins >= EVENING_ACTIVE_MIN && cairoMins < EVENING_END_MIN - 3;
+
+    // Background 6-pair scanning during preparation warmup (10:30 - 10:38 / 16:30 - 16:40) without issuing any signal
+    const isInPreparationWindow =
+      (cairoMins >= MORNING_START_MIN && cairoMins < MORNING_ACTIVE_MIN) ||
+      (cairoMins >= EVENING_START_MIN && cairoMins < EVENING_ACTIVE_MIN);
+    if (isInPreparationWindow) {
+      if (Date.now() - lastPreWarmScanAtMs > 25_000) {
+        lastPreWarmScanAtMs = Date.now();
+        await scanRealGlobalForexMarket(false);
+      }
+      return;
+    }
 
     if (!isMorning && !isEveningLive) return;
 
     const todayEgypt = getCurrentEgyptDateString(new Date());
 
-    // Morning Session stopping condition check:
+    // Morning Session stopping condition check (60%+ target or stopped):
     if (isMorning) {
       const freeStatus = getFreeBotTargetStatus();
       if (
@@ -6409,22 +6999,43 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
       }
     }
 
-    // Evening Session stopping condition check:
+    // Evening Session stopping condition check & immediate PRE_SCANNING -> ACTIVE transition:
     if (isEveningLive) {
       if (liveBroadcastSession.closingReportSentDate === todayEgypt) return;
       const liveStatus = getEveningLiveSessionStatus();
       if (liveStatus.isSessionFinished) return;
+      if (liveBroadcastSession.status === 'PRE_SCANNING' || liveBroadcastSession.status === 'IDLE') {
+        liveBroadcastSession.status = 'ACTIVE_BROADCAST';
+      }
+      if (liveStatus.totalLive > (liveBroadcastSession.totalTrades || 0)) {
+        liveBroadcastSession.wins = liveStatus.liveWins;
+        liveBroadcastSession.losses = liveStatus.liveLosses;
+        liveBroadcastSession.totalTrades = liveStatus.totalLive;
+        liveBroadcastSession.winRate = liveStatus.winRate;
+      }
     }
-
-    // Always ensure fresh state from Cloud Firestore before checking cooldown or signals
-    await loadStateFromCloudAndDisk();
 
     const now = new Date();
     const sec = now.getSeconds();
 
-    // Strict 5-second Instant Execution Window (:54 to :56 seconds):
-    // Dispatches precisely 5 seconds before candle boundary at :00!
-    if (sec < 54 || sec > 56) return;
+    // Pre-warm Yahoo HTTP connections and market cache at :43-:46 so dispatch at :49-:53 executes in < 1s
+    if (sec >= 43 && sec <= 46) {
+      if (Date.now() - lastPreWarmScanAtMs > 18_000) {
+        lastPreWarmScanAtMs = Date.now();
+        await loadStateFromCloudAndDisk();
+        await scanRealGlobalForexMarket(false);
+      }
+      return;
+    }
+
+    // Strict 7-to-11 second Synchronized Pre-Open Window (:49 to :53 seconds):
+    // Guarantees BOTH Telegram and Floating Robot receive the signal WELL BEFORE :00.00 on the same minute!
+    if (sec < 49 || sec > 53) return;
+
+    // Ensure fresh state from Cloud Firestore without overflowing into :57+
+    await loadStateFromCloudAndDisk();
+    const secAfterLoad = new Date().getSeconds();
+    if (secAfterLoad < 49 || secAfterLoad > 55) return;
 
     // Prevent duplicate firing in the exact same minute
     const currentMinuteKey = `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}-${now.getUTCHours()}:${now.getUTCMinutes()}`;
@@ -6479,18 +7090,19 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
       allowed.some(p => p === s.pair || p.replace('/', '') === s.pair.replace('/', ''))
     );
 
-    // Filter snapshots that strictly meet the 4-indicator confluence rules (at least 3 supporting indicators)
+    // Filter snapshots that strictly meet high-quality confluence & institutional rules (excluding news spikes & sideways chop)
     const qualifyingSnapshots = allowedSnapshots.filter(s => {
+      if (s.isNewsSpike) return false;
+      if (s.adx14 !== undefined && s.adx14 < 18) return false;
       const conf = s.fourIndicatorConfluence;
-      return (
-        conf &&
-        conf.isSignalTriggered &&
-        conf.candidateDirection &&
-        (conf.supportingCount || 0) >= 3
-      );
+      if (!conf || conf.institutionalFilterBlocked || !conf.isSignalTriggered || !conf.candidateDirection) return false;
+      const count = conf.supportingCount || 0;
+      if (count >= 4) return true;
+      // If 3/4 indicators, require healthy ATR + (MPB confirmed OR Supertrend + RSI confirmed)
+      return count === 3 && conf.atrMatched && (conf.momentumPauseMatched || (conf.superTrendMatched && conf.rsiMatched));
     });
 
-    // Real Technical Scanning: If no genuine 3-indicator confluence exists, DO NOT send random or forced signals!
+    // Real Technical Scanning: If no genuine high-quality confluence exists, DO NOT send weak or forced signals!
     if (qualifyingSnapshots.length === 0) {
       return;
     }
@@ -6500,21 +7112,32 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
     let targetDir: 'CALL' | 'PUT' = 'CALL';
     let confPayload: any = null;
 
-    // Last dispatched assets to encourage natural rotation across all 6 pairs instead of sticking to one pair
+    // Last dispatched assets to encourage natural rotation within the strongest quality tier
     const recentDispatched = signalsStore.slice(0, 4).map(s => s.asset);
     const lastDispatchedAsset = signalsStore[0]?.asset || '';
 
-    // Sort by supporting indicator count then quality score
-    const sorted = qualifyingSnapshots.sort((a, b) => {
-      const countA = a.fourIndicatorConfluence?.supportingCount || 0;
-      const countB = b.fourIndicatorConfluence?.supportingCount || 0;
-      if (countB !== countA) return countB - countA;
-      return (b.qualityScore || 0) - (a.qualityScore || 0);
-    });
+    const computeTierScore = (s: LivePairSnapshot): number => {
+      const c = s.fourIndicatorConfluence;
+      const count = c?.supportingCount || 0;
+      const hasMpb = Boolean(c?.momentumPauseMatched && s.momentumPauseBreakout?.isDetected);
+      const srBonus = s.supportResistance?.isConfirmed ? 150 : 0;
+      const adxBonus = (s.adx14 ?? 0) >= 22 ? 250 : 0;
+      const dir = c?.candidateDirection;
+      const emaM5Aligned =
+        (dir === 'CALL' && s.htfM5Trend === 'BULLISH' && s.price > (s.ema50M1 || 0)) ||
+        (dir === 'PUT' && s.htfM5Trend === 'BEARISH' && s.price < (s.ema50M1 || Number.MAX_VALUE));
+      const m5Bonus = emaM5Aligned ? 200 : 0;
+      return (count >= 4 ? 1000 : 0) + (hasMpb ? 350 : 0) + srBonus + adxBonus + m5Bonus + (s.qualityScore || 0);
+    };
 
-    // Pair rotation: pick pair not used recently among the 6 pairs
-    const freshPairCandidate = sorted.find(s => !recentDispatched.includes(s.pair));
-    const alternate = sorted.find(s => s.pair !== lastDispatchedAsset);
+    // Sort strictly by quality tier descending
+    const sorted = qualifyingSnapshots.sort((a, b) => computeTierScore(b) - computeTierScore(a));
+    const topTierFloor = computeTierScore(sorted[0]) - 150;
+    const topTierCandidates = sorted.filter(s => computeTierScore(s) >= topTierFloor);
+
+    // Pair rotation within the highest quality tier (never sacrifice a 4/4 setup for a weak 3/4 pair)
+    const freshPairCandidate = topTierCandidates.find(s => !recentDispatched.includes(s.pair));
+    const alternate = topTierCandidates.find(s => s.pair !== lastDispatchedAsset);
     selectedCandidate = freshPairCandidate || alternate || sorted[0];
 
     const conf = selectedCandidate.fourIndicatorConfluence!;
@@ -6534,11 +7157,18 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
       candidateDirection: targetDir,
       isSignalTriggered: true,
       matchedList: conf.matchedList,
-      summary: conf.summary
+      summary: conf.summary,
+      adxValue: selectedCandidate.adx14,
+      emaM5Trend: selectedCandidate.htfM5Trend,
+      bollingerPercentB: selectedCandidate.bollingerPercentB
     };
 
     if (selectedCandidate && confPayload) {
-      console.log(`[VIP MPB Engine ⚡] Confirmed 5s signal on ${selectedCandidate.pair} (${targetDir}) [${chosenVariant}] at second :${sec}. Dispatching for :00 open...`);
+      const secBeforeDispatch = new Date().getSeconds();
+      if (secBeforeDispatch >= 57 || secBeforeDispatch <= 3) {
+        return; // Async scan took too long; skip cleanly to keep Telegram & Robot 100% synced
+      }
+      console.log(`[VIP MPB Engine ⚡] Confirmed signal on ${selectedCandidate.pair} (${targetDir}) [${chosenVariant}] at second :${secBeforeDispatch}. Dispatching for :00 open...`);
 
       lastVipDispatchedMinute = currentMinuteKey;
 
@@ -6627,11 +7257,40 @@ async function handleVipBotTradeOutcome(sig: SignalItem, status: 'WIN' | 'WIN_GA
  * - In case of win: congratulations! In case of loss/modest: comforting message and reassurance.
  */
 let lastLiveClosingReportAttemptMs = 0;
+
+/**
+ * Atomic Cloud Firestore notice lock so ais-dev and published ais-pre never send duplicate
+ * morning greetings, evening intros, or closing reports to Telegram.
+ */
+async function claimTelegramDailyNoticeLock(noticeKey: string): Promise<boolean> {
+  if (!serverFirestoreDb) return true;
+  try {
+    const noticeRef = doc(serverFirestoreDb, 'system_state', 'zad_telegram_notices_v1');
+    return await runTransaction(serverFirestoreDb, async (tx) => {
+      const snap = await tx.get(noticeRef);
+      const data = snap.exists() ? (snap.data() || {}) : {};
+      if (data[noticeKey]) {
+        return false;
+      }
+      tx.set(noticeRef, { [noticeKey]: new Date().toISOString() }, { merge: true });
+      return true;
+    });
+  } catch (_e) {
+    return true;
+  }
+}
+
 async function sendLiveBroadcastClosingReport(_reason?: string): Promise<void> {
   const todayEgypt = getCurrentEgyptDateString(new Date());
   if (liveBroadcastSession.closingReportSentDate === todayEgypt) return;
   if (Date.now() - lastLiveClosingReportAttemptMs < 45_000) return;
   lastLiveClosingReportAttemptMs = Date.now();
+  await loadStateFromCloudAndDisk();
+  if (liveBroadcastSession.closingReportSentDate === todayEgypt) return;
+  if (!(await claimTelegramDailyNoticeLock(`evening_closing_${todayEgypt}`))) {
+    liveBroadcastSession.closingReportSentDate = todayEgypt;
+    return;
+  }
 
   const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
   const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
@@ -6645,13 +7304,21 @@ async function sendLiveBroadcastClosingReport(_reason?: string): Promise<void> {
     : (liveBroadcastSession.losses || 0);
   const totalDecisive = wins + losses;
   const winRate = totalDecisive > 0 ? Math.round((wins / totalDecisive) * 100) : (liveBroadcastSession.winRate || 0);
-  const isWin = totalDecisive > 0 && (liveStatus.isProfitable || wins >= 2 || winRate >= 65);
+  const isWin = totalDecisive > 0 && (liveStatus.isProfitable || wins >= 2 || winRate >= 60);
+
+  const todayLiveSignals = signalsStore.filter(s => {
+    if (!s.createdAt || s.status === 'PENDING') return false;
+    if (!s.isLiveBroadcast && !(s.payout && s.payout.includes('بث حي'))) return false;
+    const d = new Date(s.createdAt);
+    return !isNaN(d.getTime()) && getCurrentEgyptDateString(d) === todayEgypt;
+  });
+  const livePairHighlights = buildSessionPairHighlightsText(todayLiveSignals);
 
   let msg = '';
   if (isWin) {
     msg = [
       '🔴 التقرير الختامي لجلسة البث المباشر الحي مع أبوسليم | ZAD FX 🔴',
-      `📅 التاريخ: ${todayEgypt} (جلسة البث المباشر 06:00 م - 07:00 م ⚡)`,
+      `📅 التاريخ: ${todayEgypt} (جلسة البث المباشر 04:30 م - 08:00 م ⚡)`,
       '━━━━━━━━━━━━━━━━━━━',
       '🎉 ألف مبروك لجميع أعضاء VIP وروبوت كيوتكس الأبطال تحقيق مستهدف البث المباشر بنجاح! 🏆💰',
       '',
@@ -6659,16 +7326,17 @@ async function sendLiveBroadcastClosingReport(_reason?: string): Promise<void> {
       `✅ عدد الصفقات الرابحة: ${wins}`,
       `❌ عدد الصفقات الخاسرة: ${losses}`,
       `🎯 نسبة النجاح المحققة: ${winRate}%`,
+      ...(livePairHighlights ? [livePairHighlights] : []),
       '━━━━━━━━━━━━━━━━━━━',
       '🛑 شكراً لكم، نكتفي بهذا القدر المميز لحماية رأس المال والأرباح.',
-      'نلتقي غداً في تمام الساعة 10:00 صباحاً بتوقيت مصر مع انطلاق الجلسة الصباحية 🤝💎',
+      'نلتقي غداً في تمام الساعة 10:30 صباحاً بتوقيت مصر مع انطلاق الجلسة الصباحية 🤝💎',
       '━━━━━━━━━━━━━━━━━━━',
       `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
     ].join('\n');
   } else {
     msg = [
       '🔴 التقرير الختامي لجلسة البث المباشر الحي مع أبوسليم | ZAD FX 🔴',
-      `📅 التاريخ: ${todayEgypt} (جلسة البث المباشر 06:00 م - 07:00 م ⚡)`,
+      `📅 التاريخ: ${todayEgypt} (جلسة البث المباشر 04:30 م - 08:00 م ⚡)`,
       '━━━━━━━━━━━━━━━━━━━',
       '🤝 نطمئن جميع أبطالنا وأعضاء VIP الكرام ونقول لكم: القادم غداً أفضل بإذن الله تعالى.',
       'السوق واجه بعض التذبذبات، والتزامنا الصارم بإدارة رأس المال (1%-2%) هو حمايتنا الدائمة.',
@@ -6677,8 +7345,9 @@ async function sendLiveBroadcastClosingReport(_reason?: string): Promise<void> {
       `✅ عدد الصفقات الرابحة: ${wins}`,
       `❌ عدد الصفقات الخاسرة: ${losses}`,
       `🎯 نسبة النجاح المحققة: ${winRate}%`,
+      ...(livePairHighlights ? [livePairHighlights] : []),
       '━━━━━━━━━━━━━━━━━━━',
-      'شكراً لكم ونلتقي غداً في تمام الساعة 10:00 صباحاً بتوقيت مصر مع أقوى الصفقات 🤝🛡️',
+      'شكراً لكم ونلتقي غداً في تمام الساعة 10:30 صباحاً بتوقيت مصر مع أقوى الصفقات 🤝🛡️',
       '━━━━━━━━━━━━━━━━━━━━',
       `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
     ].join('\n');
@@ -6792,7 +7461,7 @@ async function handleLiveBroadcastSignalOutcome(sig: SignalItem, status: 'WIN' |
 async function dispatchLiveBroadcastAutomatedSignal(candidate: LivePairSnapshot): Promise<{ ok: boolean; signal?: SignalItem; error?: string }> {
   const now = new Date();
   const secondsRemainingInCurrentMinute = 60 - now.getSeconds();
-  const minutesAhead = secondsRemainingInCurrentMinute <= 1 ? 0 : 1;
+  const minutesAhead = secondsRemainingInCurrentMinute <= 4 ? 2 : 1;
   const targetEntryDate = new Date(
     now.getFullYear(),
     now.getMonth(),
@@ -6966,13 +7635,12 @@ async function checkLiveBroadcastEveningSession(): Promise<void> {
   }
 
   const todayEgypt = getCurrentEgyptDateString(new Date());
-  const cairoH = getCurrentEgyptHour();
-  const cairoM = getCurrentEgyptMinute();
+  const cairoMins = getCairoMinutesOfDay();
 
   if (liveBroadcastSession.activeDate !== todayEgypt) {
     liveBroadcastSession.activeDate = todayEgypt;
     liveBroadcastSession.status = 'IDLE';
-    liveBroadcastSession.statusNote = 'الجلسة في وضع الاستعداد بانتظار موعد الساعة 06:00 مساءً (مسح 10 دقائق)';
+    liveBroadcastSession.statusNote = 'الجلسة في وضع الاستعداد بانتظار موعد الساعة 04:30 عصراً (مسح 10 دقائق)';
     liveBroadcastSession.wins = 0;
     liveBroadcastSession.losses = 0;
     liveBroadcastSession.consecutiveLosses = 0;
@@ -7033,68 +7701,63 @@ async function checkLiveBroadcastEveningSession(): Promise<void> {
     liveBroadcastSession.status === 'STOPPED_BAD_MARKET' ||
     liveBroadcastSession.status === 'STOPPED_SESSION_COMPLETED'
   ) {
-    // Guarantee closing report is never missed even if session stopped early or server restarted before 19:00
+    // Guarantee closing report is never missed even if session stopped early or server restarted before 20:00
     if (
       liveBroadcastSession.closingReportSentDate !== todayEgypt &&
-      (liveBroadcastSession.status !== 'STOPPED_BAD_MARKET' || cairoH >= 19)
+      (liveBroadcastSession.status !== 'STOPPED_BAD_MARKET' || cairoMins >= EVENING_END_MIN)
     ) {
       await sendLiveBroadcastClosingReport('ensure_closing_report');
     }
     return;
   }
 
-  // Before 18:00 (6:00 PM)
-  if (cairoH < (liveBroadcastSession.startHourEgypt || 18)) {
+  // Before 16:30 (04:30 PM)
+  if (cairoMins < EVENING_START_MIN) {
     liveBroadcastSession.status = 'IDLE';
-    liveBroadcastSession.statusNote = 'الجلسة مبرمجة لتبدأ الساعة 06:00 مساءً بتوقيت القاهرة مع فترة مسح 10 دقائق';
+    liveBroadcastSession.statusNote = 'الجلسة مبرمجة لتبدأ الساعة 04:30 عصراً بتوقيت القاهرة (04:30 م - 08:00 م)';
     return;
   }
 
-  // At 19:00 (07:00 PM Egypt Time): Strictly conclude evening live session and send closing report
-  if (cairoH >= 19) {
+  // At 20:00 (08:00 PM Egypt Time): Strictly conclude evening live session and send closing report
+  if (cairoMins >= EVENING_END_MIN) {
     if (liveBroadcastSession.closingReportSentDate !== todayEgypt) {
       liveBroadcastSession.status = 'STOPPED_SESSION_COMPLETED';
-      liveBroadcastSession.statusNote = '🛑 تم اختتام جلسة البث المباشر (الساعة 07:00 م) وإرسال تقرير الختام للأعضاء.';
-      await sendLiveBroadcastClosingReport('session_time_ended_19');
+      liveBroadcastSession.statusNote = '🛑 تم اختتام جلسة البث المباشر (الساعة 08:00 م) وإرسال تقرير الختام للأعضاء.';
+      await sendLiveBroadcastClosingReport('session_time_ended_20');
     }
     return;
   }
 
-  // Check 60-minute duration stopping condition from the first signal dispatched:
-  if (
-    liveBroadcastSession.firstSignalTimestamp &&
-    Date.now() >= liveBroadcastSession.firstSignalTimestamp + (liveBroadcastSession.sessionDurationMinutes || 60) * 60 * 1000
-  ) {
-    liveBroadcastSession.status = 'STOPPED_SESSION_COMPLETED';
-    liveBroadcastSession.statusNote = '🛑 تم اختتام جلسة البث الحي بعد مرور 60 دقيقة من انطلاق أول صفقة وإرسال تقرير الختام للأعضاء.';
-    await sendLiveBroadcastClosingReport('60_minutes');
-    return;
-  }
-
-  // 18:00 to 18:10 -> Send introductory message and start 10-minute deep scanning phase
-  if (cairoH === (liveBroadcastSession.startHourEgypt || 18) && cairoM < (liveBroadcastSession.preScanMinutes || 10)) {
+  // 16:30 to 16:40 -> Send introductory message and start 10-minute deep scanning phase
+  if (cairoMins >= EVENING_START_MIN && cairoMins < EVENING_ACTIVE_MIN) {
     liveBroadcastSession.status = 'PRE_SCANNING';
-    const minsLeft = (liveBroadcastSession.preScanMinutes || 10) - cairoM;
+    const minsLeft = Math.max(1, EVENING_ACTIVE_MIN - cairoMins);
     liveBroadcastSession.statusNote = `🔍 فترة المسح الفني لفرص السوق العالمي جارية قبل البث (متبقي ${minsLeft} دقيقة حتى بداية إرسال الصفقات)`;
 
-    // Send introductory notice strictly to VIP channel and Quotex Robot at 18:00
+    // Send introductory notice strictly to VIP channel and Quotex Robot at 16:30
     if (liveBroadcastSession.initialNoticeSentDate !== todayEgypt) {
-      liveBroadcastSession.initialNoticeSentDate = todayEgypt;
-      const introMsg = [
-        '🔴 بث مباشر حي مع ابوسليم 🔴 (Live Session ⚡)',
-        '━━━━━━━━━━━━━━━━━━━',
-        'نقول بسم الله ونبدأ بعد قليل ⏱️',
-        'استعدوا يا أبطال 🚀',
-        '━━━━━━━━━━━━━━━━━━━',
-        'البث المباشر يعمل حصرياً على قناة VIP وروبوت التداول الآلي (06:00 م - 07:00 م) ⚡'
-      ].join('\n');
+      await loadStateFromCloudAndDisk();
+      if (liveBroadcastSession.initialNoticeSentDate !== todayEgypt) {
+        const claimed = await claimTelegramDailyNoticeLock(`evening_intro_${todayEgypt}`);
+        liveBroadcastSession.initialNoticeSentDate = todayEgypt;
+        if (claimed) {
+          const introMsg = [
+            '🔴 بث مباشر حي مع ابوسليم 🔴 (Live Session ⚡)',
+            '━━━━━━━━━━━━━━━━━━━',
+            'نقول بسم الله ونبدأ بعد 10 دقائق ⏱️',
+            'استعدوا يا أبطال 🚀',
+            '━━━━━━━━━━━━━━━━━━━',
+            'البث المباشر يعمل على قناة VIP وروبوت التداول الآلي (04:30 م - 08:00 م بتوقيت مصر) مع توقف ذكي عند تحقيق 60%+ ⚡'
+          ].join('\n');
 
-      const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
-      const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
-      if (vipToken && vipChat) {
-        sendTelegramMessage(vipToken, vipChat, introMsg).catch(() => {});
+          const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
+          const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
+          if (vipToken && vipChat) {
+            sendTelegramMessage(vipToken, vipChat, introMsg).catch(() => {});
+          }
+          await saveState();
+        }
       }
-      await saveState();
     }
 
     try {
@@ -7400,14 +8063,83 @@ async function dispatchEndOfDayReportToTelegram(
 }
 
 /**
- * Unified Morning Session Closing Report (10:00 AM to 12:00 PM Cairo Time):
- * - Stops either when 65%-70%+ win rate is achieved, OR at 12:00 PM noon.
- * - Dispatched simultaneously to Free Channel (@ZadNBFX) and VIP Channel (-1004323890544).
- * - If winning (winRate >= 65%): congratulations and praise!
- * - If loss or draw: comforting reassurance ("نطمئنكم ونقول لكم القادم غداً أفضل إن شاء الله").
- * - Free channel stops for the day; VIP channel and robot resume at 06:00 PM for Abu Salim's Live Broadcast.
+ * Dispatches the 11:00 AM Morning Opening Greeting & Readiness Notice once per day to Free & VIP Channels:
+ * - "صباح الخير، يوم جميل بإذن الله — نستعد..."
+ * - Announces 6-pair scanning & 5-10 minute preparation before first signal.
  */
-async function checkAndSendMorningSessionClosingReport(forceNoon = false): Promise<boolean> {
+async function checkAndSendMorningOpeningGreeting(): Promise<boolean> {
+  if (!isGlobalForexMarketOpen()) return false;
+  if (!isCairoInMorningSession()) return false;
+
+  const todayEgypt = getCurrentEgyptDateString(new Date());
+  if (autoPilot.morningGreetingSentDate === todayEgypt) {
+    return false;
+  }
+
+  await loadStateFromCloudAndDisk();
+  if (autoPilot.morningGreetingSentDate === todayEgypt) {
+    return false;
+  }
+  if (!(await claimTelegramDailyNoticeLock(`morning_greeting_${todayEgypt}`))) {
+    autoPilot.morningGreetingSentDate = todayEgypt;
+    return false;
+  }
+
+  // Mark early to prevent concurrent duplicate sends & clear morning session locks for a fresh 10:30 AM start
+  autoPilot.morningGreetingSentDate = todayEgypt;
+  autoPilot.freeBotDailyTargetReached = false;
+  autoPilot.freeBotStoppedForToday = false;
+  autoPilot.freeBotCelebrationSentDate = '';
+  autoPilot.freeBot12ReportSentDate = '';
+  autoPilot.vipMorningReportSentDate = '';
+
+  const freeToken = (autoPilot.botToken || '').trim();
+  const freeChat = (autoPilot.chatId || '').trim();
+  const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
+  const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
+
+  const greetingText = [
+    `☀️ صباح الخير، يوم جميل بإذن الله 🌹✨`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `🚀 نستعد الآن لانطلاق جلسة التداول الصباحية الرسمية (10:30 ص - 01:00 ظهراً بتوقيت مصر).`,
+    `🔍 يتم الآن مسح السوق وفحص السيولة في الأزواج الستة المعتمدة:`,
+    `📊 EUR/USD • EUR/JPY • GBP/USD • AUD/USD • USD/CAD • GBP/JPY`,
+    `⏳ فترة الاستعداد: 5 إلى 10 دقائق قبل صدور أول إشارة بإذن الله لضمان أعلى دقة.`,
+    `━━━━━━━━━━━━━━━━━━━━`,
+    `💡 جهزوا الأزواج الستة مفتوحة على منصة كيوتكس والتزموا بإدارة رأس المال.`
+  ].join('\n');
+
+  const deliveries: Promise<any>[] = [];
+  if (freeToken && freeChat) {
+    deliveries.push(
+      sendTelegramMessage(freeToken, freeChat, greetingText)
+        .then(r => {
+          if (r.ok) console.log(`[Morning Greeting ☀️] Sent 10:30 AM greeting to Free channel (${todayEgypt}).`);
+        })
+        .catch(() => {})
+    );
+  }
+  if (vipToken && vipChat) {
+    deliveries.push(
+      sendTelegramMessage(vipToken, vipChat, greetingText)
+        .then(r => {
+          if (r.ok) console.log(`[Morning Greeting ☀️] Sent 10:30 AM greeting to VIP channel (${todayEgypt}).`);
+        })
+        .catch(() => {})
+    );
+  }
+
+  await Promise.allSettled(deliveries);
+  await saveState();
+  return true;
+}
+
+/**
+ * Unified Morning Session Closing Report (10:30 AM to 01:00 PM Cairo Time):
+ * - Stops either when 60%+ win rate is achieved, OR at 01:00 PM.
+ * - Dispatched simultaneously to Free Channel (@ZadNBFX) and VIP Channel.
+ */
+async function checkAndSendMorningSessionClosingReport(forceClose = false): Promise<boolean> {
   const todayEgypt = getCurrentEgyptDateString(new Date());
   const freeAlreadySent =
     autoPilot.freeBot12ReportSentDate === todayEgypt ||
@@ -7418,16 +8150,23 @@ async function checkAndSendMorningSessionClosingReport(forceNoon = false): Promi
     return false; // Already sent to both channels today
   }
 
-  const currentH = getCurrentEgyptHour();
+  const currentCairoMins = getCairoMinutesOfDay();
   const status = getFreeBotTargetStatus();
 
-  // If not forced by noon (12:00 PM) and target not yet reached, wait for trades
-  if (!forceNoon && !status.isTargetReached && currentH < 12) {
+  // If not forced by closing time (01:00 PM) and target not yet reached, wait for trades
+  if (!forceClose && !status.isTargetReached && currentCairoMins < MORNING_END_MIN) {
     return false;
   }
 
-  // Must have at least 1 completed signal today to end early before 12:00 PM
-  if (status.totalCompleted === 0 && currentH < 12) {
+  // Must have at least 1 completed signal today to end early before 01:00 PM
+  if (status.totalCompleted === 0 && currentCairoMins < MORNING_END_MIN) {
+    return false;
+  }
+
+  if (!(await claimTelegramDailyNoticeLock(`morning_closing_${todayEgypt}`))) {
+    autoPilot.freeBotCelebrationSentDate = todayEgypt;
+    autoPilot.freeBot12ReportSentDate = todayEgypt;
+    autoPilot.vipMorningReportSentDate = todayEgypt;
     return false;
   }
 
@@ -7439,39 +8178,51 @@ async function checkAndSendMorningSessionClosingReport(forceNoon = false): Promi
   const wins = status.todayWins;
   const losses = status.todayLosses;
   const winRate = status.winRate;
-  const isWin = status.totalCompleted > 0 && (winRate >= 65 || (wins >= 2 && losses === 0) || wins > losses);
+  const isWin = status.totalCompleted > 0 && (winRate >= 60 || (wins >= 2 && losses === 0) || wins > losses);
+
+  const morningSignalsToday = signalsStore.filter(s => {
+    if (!s.createdAt || s.status === 'PENDING') return false;
+    if (s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'))) return false;
+    if (!s.telegramMessageId && !s.vipTelegramMessageId) return false;
+    const d = new Date(s.createdAt);
+    if (isNaN(d.getTime()) || getCurrentEgyptDateString(d) !== todayEgypt) return false;
+    return isCairoInMorningSession(d);
+  });
+  const morningPairHighlights = buildSessionPairHighlightsText(morningSignalsToday);
 
   let reportText = '';
   if (isWin) {
     reportText = [
       `🎯 التقرير الختامي للجلسة الصباحية الرسمية | ZAD FX 🎯`,
-      `📅 التاريخ: ${todayEgypt} (الفترة من 10:00 ص حتى 12:00 ظهراً ⚡)`,
+      `📅 التاريخ: ${todayEgypt} (الفترة من 10:30 ص حتى 01:00 ظهراً ⚡)`,
       `━━━━━━━━━━━━━━━━━━━━`,
       `🎉 نبارك لجميع الأعضاء والمتابعين الكرام تحقيق المستهدف الربحي بنجاح! 🎉`,
       `✅ عدد الصفقات الرابحة: ${wins}`,
       `❌ عدد الصفقات الخاسرة: ${losses}`,
       `📈 نسبة النجاح المحققة: ${winRate}%`,
+      ...(morningPairHighlights ? [morningPairHighlights] : []),
       `━━━━━━━━━━━━━━━━━━━━`,
       `🛑 تم الاكتفاء بهذا القدر المميز من الأرباح لحماية رأس المال.`,
-      `• القناة العامة: تتوقف عن العمل لليوم، ونلتقي بكم غداً في تمام الساعة 10:00 صباحاً 🤝`,
-      `• القناة الخاصة والروبوت: موعدنا يتجدد في البث المباشر الحي مع أبوسليم الساعة 06:00 مساءً بتوقيت مصر 🔴⚡`,
+      `• القناة العامة: تتوقف عن العمل لليوم، ونلتقي بكم غداً في تمام الساعة 10:30 صباحاً 🤝`,
+      `• القناة الخاصة والروبوت: موعدنا يتجدد في البث المباشر الحي مع أبوسليم الساعة 04:30 عصراً بتوقيت مصر 🔴⚡`,
       `━━━━━━━━━━━━━━━━━━━━`,
       `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
     ].join('\n');
   } else {
     reportText = [
       `🎯 التقرير الختامي للجلسة الصباحية الرسمية | ZAD FX 🎯`,
-      `📅 التاريخ: ${todayEgypt} (الفترة من 10:00 ص حتى 12:00 ظهراً ⚡)`,
+      `📅 التاريخ: ${todayEgypt} (الفترة من 10:30 ص حتى 01:00 ظهراً ⚡)`,
       `━━━━━━━━━━━━━━━━━━━━`,
       `🤝 نطمئن جميع متابعينا وأعضائنا الأعزاء ونقول لكم: القادم غداً أفضل بإذن الله تعالى.`,
       `📊 نتائج الجلسة الصباحية:`,
       `✅ عدد الصفقات الرابحة: ${wins}`,
       `❌ عدد الصفقات الخاسرة: ${losses}`,
       `🎯 نسبة النجاح: ${winRate}%`,
+      ...(morningPairHighlights ? [morningPairHighlights] : []),
       `━━━━━━━━━━━━━━━━━━━━`,
       `💡 الالتزام الصارم بإدارة رأس المال (1% إلى 2%) هو سر النجاح والاستمرارية دائماً.`,
-      `• القناة العامة: تتوقف عن العمل لليوم ونلتقي بكم غداً في تمام الساعة 10:00 صباحاً 🤝`,
-      `• القناة الخاصة والروبوت: نلتقي معكم في البث المباشر الحي مع أبوسليم الساعة 06:00 مساءً بتوقيت مصر 🔴⚡`,
+      `• القناة العامة: تتوقف عن العمل لليوم ونلتقي بكم غداً في تمام الساعة 10:30 صباحاً 🤝`,
+      `• القناة الخاصة والروبوت: نلتقي معكم في البث المباشر الحي مع أبوسليم الساعة 04:30 عصراً بتوقيت مصر 🔴⚡`,
       `━━━━━━━━━━━━━━━━━━━━`,
       `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
     ].join('\n');
@@ -7513,11 +8264,11 @@ async function checkAndSendMorningSessionClosingReport(forceNoon = false): Promi
 }
 
 /**
- * Dispatches Free Channel 12:00 PM (noon) closing report:
+ * Dispatches Free Channel 01:00 PM (13:00) closing report:
  */
 async function checkAndSendFreeBot12Report(): Promise<void> {
-  const currentH = getCurrentEgyptHour();
-  if (currentH >= 12) {
+  const currentCairoMins = getCairoMinutesOfDay();
+  if (currentCairoMins >= MORNING_END_MIN) {
     await checkAndSendMorningSessionClosingReport(true);
   } else {
     await checkAndSendMorningSessionClosingReport(false);
@@ -7528,8 +8279,8 @@ async function checkAndSendFreeBot12Report(): Promise<void> {
  * Dispatches the VIP Channel Morning Session Report:
  */
 async function checkAndSendVipMorning12Report(): Promise<void> {
-  const currentH = getCurrentEgyptHour();
-  if (currentH >= 12) {
+  const currentCairoMins = getCairoMinutesOfDay();
+  if (currentCairoMins >= MORNING_END_MIN) {
     await checkAndSendMorningSessionClosingReport(true);
   } else {
     await checkAndSendMorningSessionClosingReport(false);
@@ -7537,15 +8288,55 @@ async function checkAndSendVipMorning12Report(): Promise<void> {
 }
 
 /**
- * Dispatches the VIP Channel 03:00 PM (15:00 Cairo time) End-of-Session Report:
- * - If win rate is good (wins > losses or winRate >= 60%): Congratulations message!
- * - If draw/loss/modest: Comforting message reassuring members about tomorrow and capital preservation.
+ * Builds best-performing pair highlights for session closing reports
  */
+function buildSessionPairHighlightsText(targetSignals: SignalItem[]): string {
+  if (!Array.isArray(targetSignals) || targetSignals.length === 0) return '';
+  const pairMap: Record<string, { pair: string; wins: number; losses: number; total: number }> = {};
+  for (const s of targetSignals) {
+    if (!s || s.status === 'PENDING' || s.status === 'DRAW') continue;
+    const cleanPair = (s.asset || 'EUR/USD').replace(/OTC/gi, '').trim();
+    if (!pairMap[cleanPair]) {
+      pairMap[cleanPair] = { pair: cleanPair, wins: 0, losses: 0, total: 0 };
+    }
+    const entry = pairMap[cleanPair];
+    entry.total += 1;
+    if (s.status === 'WIN') entry.wins += 1;
+    else entry.losses += 1;
+  }
+  const rows = Object.values(pairMap)
+    .filter(r => r.total > 0)
+    .map(r => {
+      const rate = Math.round((r.wins / r.total) * 100);
+      const net = r.wins * 0.85 - r.losses;
+      return { ...r, winRate: rate, net };
+    })
+    .sort((a, b) => {
+      if (b.net !== a.net) return b.net - a.net;
+      if (b.winRate !== a.winRate) return b.winRate - a.winRate;
+      return b.wins - a.wins;
+    });
+
+  if (rows.length === 0) return '';
+  const top = rows[0];
+  const lines: string[] = [];
+  if (top.wins > 0) {
+    lines.push(`🏆 أفضل زوج أداءً في الجلسة: ${top.pair} (نسبة نجاح ${top.winRate}% — ${top.wins} ربح ✅)`);
+  }
+  const totalWins = rows.reduce((acc, r) => acc + r.wins, 0);
+  const totalLosses = rows.reduce((acc, r) => acc + r.losses, 0);
+  const netReturnPct = Number(((totalWins * 0.85 - totalLosses) * 2).toFixed(1));
+  if (netReturnPct > 0) {
+    lines.push(`💵 صافي نمو المحفظة التقديري (بالتزام 2% لكل صفقة): +${netReturnPct}% 📈`);
+  }
+  return lines.join('\n');
+}
+
 async function checkAndSendVipClosingReport(): Promise<void> {
   const todayEgypt = getCurrentEgyptDateString(new Date());
   if (autoPilot.vipClosingReportSentDate === todayEgypt || liveBroadcastSession.closingReportSentDate === todayEgypt) return;
-  const currentH = getCurrentEgyptHour();
-  if (currentH < 19) return; // Closes at 07:00 PM (19:00)
+  const currentCairoMins = getCairoMinutesOfDay();
+  if (currentCairoMins < EVENING_END_MIN) return; // Closes at 08:00 PM (20:00)
 
   const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
   const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
@@ -7570,33 +8361,36 @@ async function checkAndSendVipClosingReport(): Promise<void> {
   if (total === 0) return;
 
   const isGoodWin = total >= 2 && winRate >= 60 && wins > losses;
+  const vipPairHighlights = buildSessionPairHighlightsText(dayVipSignals);
 
   let message = '';
   if (isGoodWin) {
     message = [
       '👑 التقرير الختامي لقناة VIP الخاصة وروبوت كيوتكس | ZAD FX 👑',
-      `📅 التاريخ: ${todayEgypt} (ختام جلسة اليوم الرسمية 07:00 مساءً بتوقيت مصر)`,
+      `📅 التاريخ: ${todayEgypt} (ختام جلسة اليوم الرسمية 08:00 مساءً بتوقيت مصر)`,
       '━━━━━━━━━━━━━━━━━━━━',
       '🎉 ألف مبروك لجميع أعضاء ومتاجري قناة VIP وروبوت كيوتكس الأبطال!',
       'جلسة تداول مميزة وأرباح مباركة بفضل الله تعالى 💰🏆',
       `📊 نتائج جلسة VIP اليوم:`,
       `✅ صفقات رابحة: ${wins}`,
-      `❌ صفقات تعويضية: ${losses}`,
+      `❌ صفقات خاسرة: ${losses}`,
       `🎯 نسبة النجاح: ${winRate}%`,
+      ...(vipPairHighlights ? [vipPairHighlights] : []),
       '━━━━━━━━━━━━━━━━━━━━',
-      'بارك الله في أرباحكم جميعاً ونلتقي غداً في تمام الساعة 10:00 صباحاً مع انطلاق الصفقات الجديدة 🤝✨'
+      'بارك الله في أرباحكم جميعاً ونلتقي غداً في تمام الساعة 10:30 صباحاً مع انطلاق الصفقات الجديدة 🤝✨'
     ].join('\n');
   } else {
     message = [
       '🛡️ التقرير الختامي لقناة VIP الخاصة وروبوت كيوتكس | ZAD FX 🛡️',
-      `📅 التاريخ: ${todayEgypt} (ختام جلسة اليوم الرسمية 07:00 مساءً بتوقيت مصر)`,
+      `📅 التاريخ: ${todayEgypt} (ختام جلسة اليوم الرسمية 08:00 مساءً بتوقيت مصر)`,
       '━━━━━━━━━━━━━━━━━━━━',
       'تم بحمد الله اختتام جلسة اليوم الرسمية.',
       'نطمئنكم جميعاً بأن الغد قادم بإذن الله وسيحمل فرصاً أجمل وأرباحاً أفضل بكثير 🤝✨',
-      'السوق اليوم واجه تقلبات وارتدادات خارجة عن المألوف، والتزامنا الصارم بإدارة رأس المال (1%) هو درعنا الحقيقي الذي يحمي محافظكم دائماً في الأيام المتقلبة.',
-      `📊 نتائج الجلسة: ${wins} صفقة رابحة | ${losses} صفقات تعويضية`,
+      'السوق اليوم واجه تقلبات وارتدادات خارجة عن المألوف، والتزامنا الصارم بإدارة رأس المال (1%-2%) هو درعنا الحقيقي الذي يحمي محافظكم دائماً في الأيام المتقلبة.',
+      `📊 نتائج الجلسة: ${wins} صفقة رابحة | ${losses} صفقة خاسرة (نسبة النجاح ${winRate}%)`,
+      ...(vipPairHighlights ? [vipPairHighlights] : []),
       '━━━━━━━━━━━━━━━━━━━━',
-      'راحة اليوم والاستعداد للغد هو جوهر النجاح والاستمرارية.. نراكم غداً في تمام الساعة 10:00 صباحاً بأقوى الفرص إن شاء الله 🛡️'
+      'راحة اليوم والاستعداد للغد هو جوهر النجاح والاستمرارية.. نراكم غداً في تمام الساعة 10:30 صباحاً بأقوى الفرص إن شاء الله 🛡️'
     ].join('\n');
   }
 
@@ -7700,7 +8494,10 @@ async function checkFocusedGlobalMarketAutoPilot() {
       await saveState();
     }
 
-    // 1. 6:00 PM Live Broadcast Evening Session (18:00 Egypt time, VIP only, 10-min pre-scan, 60 minutes duration, dynamic stop on 70%-75% or 3 consecutive losses)
+    // 0. 11:00 AM Morning Opening Greeting & 6-Pair Readiness Scan
+    await checkAndSendMorningOpeningGreeting();
+
+    // 1. 6:00 PM Live Broadcast Evening Session (18:00 Egypt time, VIP only, 10-min pre-scan, 60 minutes duration, dynamic stop on 60%+ or 3 consecutive losses)
     await checkLiveBroadcastEveningSession();
 
     // 2. Free Bot 12:00 PM (noon) closing report dispatcher (if target was not reached before 12:00 PM)
@@ -8631,10 +9428,11 @@ async function startServer() {
       nextSessionText: workingStatus.nextSessionText,
       isWarmup: warmup.isWarmup,
       warmupMinutesRemaining: warmup.minutesRemaining,
+      warmupReason: warmup.reason || '',
       tradingHoursMessage: isLocked
         ? workingStatus.lockReason
         : warmup.isWarmup
-        ? `جاري مسح سيولة السوق والإحماء (${warmup.minutesRemaining} دقيقة متبقية)...`
+        ? (warmup.reason || `جاري مسح سيولة السوق والإحماء (${warmup.minutesRemaining} دقيقة متبقية)...`)
         : `ساعات التداول نشطة (${workingStatus.workingHoursText})`,
       freeBotStatus: {
         isTargetReached: freeBotStatus.isTargetReached,
@@ -8645,7 +9443,7 @@ async function startServer() {
       },
       vipBotStatus: {
         isActive: isVipActive,
-        hoursText: 'الجلسة الصباحية: 10:00 ص - 12:00 م | البث المباشر: 06:00 م - 07:00 م'
+        hoursText: 'الجلسة الصباحية: 10:30 ص - 01:00 م | البث المباشر: 04:30 م - 08:00 م'
       },
       robotConfig: {
         title: robotSettings.robotTitle,
@@ -9049,6 +9847,11 @@ async function startServer() {
     signalsStore = [];
     autoPilot.totalAutoSent = 0;
     autoPilot.lastResetEgyptDate = todayEgypt;
+    autoPilot.freeBotDailyTargetReached = false;
+    autoPilot.freeBotStoppedForToday = false;
+    autoPilot.freeBotCelebrationSentDate = '';
+    autoPilot.freeBot12ReportSentDate = '';
+    autoPilot.vipMorningReportSentDate = '';
     if (dailyStatsStore[todayEgypt] && !dailyStatsStore[todayEgypt].manualOverride) {
       dailyStatsStore[todayEgypt] = {
         date: todayEgypt,
@@ -9510,16 +10313,17 @@ async function startServer() {
 
       if (type === 'signal') {
         const now = new Date();
-        const nextMin = String((now.getMinutes() + 1) % 60).padStart(2, '0');
+        const minutesAhead = now.getSeconds() >= 56 ? 2 : 1;
         const targetEntryDate = new Date(
           now.getFullYear(),
           now.getMonth(),
           now.getDate(),
           now.getHours(),
-          now.getMinutes() + 1,
+          now.getMinutes() + minutesAhead,
           0,
           0
         );
+        const nextMin = String(targetEntryDate.getMinutes()).padStart(2, '0');
         const targetEntryTimestamp = Math.floor(targetEntryDate.getTime() / 1000);
         const entryMinute = nextMin;
 
