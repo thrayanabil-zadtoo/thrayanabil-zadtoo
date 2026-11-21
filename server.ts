@@ -3410,7 +3410,12 @@ export function evaluateFourIndicatorConfluence(
   candles: { timestamp?: number; open: number; high: number; low: number; close: number }[],
   isJpy = false,
   requireMpb = true,
-  srContext?: { isTestingSupport?: boolean; isTestingResistance?: boolean }
+  srContext?: {
+    isTestingSupport?: boolean;
+    isTestingResistance?: boolean;
+    isBullishReversal?: boolean;
+    isBearishReversal?: boolean;
+  }
 ): FourIndicatorConfluenceResult {
   const momentumPause = detectMomentumPauseBreakout(candles, 14);
   const atr = calculateATR(candles, 14);
@@ -3426,71 +3431,172 @@ export function evaluateFourIndicatorConfluence(
   const upperWickRatio = (lastCandle.high - Math.max(lastCandle.open, lastCandle.close)) / lastRange;
   const lowerWickRatio = (Math.min(lastCandle.open, lastCandle.close) - lastCandle.low) / lastRange;
 
+  // Anti-DRAW / Dead Market / Friday Thin-Liquidity Checks
+  const recentFive = candles.slice(-5);
+  const minBodyFloor = isJpy ? 0.0025 : 0.000025;
+  const deadDojiCount = recentFive.filter(c => Math.abs(c.close - c.open) < minBodyFloor).length;
+  const lastBody = Math.abs(lastCandle.close - lastCandle.open);
+  const minEntryCandleBody = Math.max(atr * 0.16, isJpy ? 0.003 : 0.00003);
+  const nowUtc = new Date();
+  const isFridayLateThinSession = nowUtc.getUTCDay() === 5 && nowUtc.getUTCHours() >= 16;
+
   const evaluateInstitutionalGuard = (
     dir: 'CALL' | 'PUT',
     hasMpbInDir: boolean
   ): { ok: boolean; blockReason?: string; bonuses: string[] } => {
     const bonuses: string[] = [];
 
-    // Guard 1: ADX (14) Sideways Chop Filter
-    if (!adxData.insufficientData && adxData.adx < 18) {
+    // Guard 0: Anti-DRAW Dead Candles / Doji & Entry Candle Direction Guard
+    if (deadDojiCount >= 2) {
       return {
         ok: false,
-        blockReason: `فلتر ADX حجب الإشارة: السوق عرضي ضعيف (${adxData.adx} < 18)`,
+        blockReason: `حماية من التعادل: رصد ${deadDojiCount} شموع ميتة (دوجي) في آخر 5 دقائق`,
+        bonuses
+      };
+    }
+    if (lastBody < minEntryCandleBody) {
+      return {
+        ok: false,
+        blockReason: `شمعة الدخول ضعيفة أو شبه صامتة (حماية من التعادل والانزلاق)`,
+        bonuses
+      };
+    }
+    if (dir === 'CALL' && lastCandle.close <= lastCandle.open) {
+      return {
+        ok: false,
+        blockReason: `شمعة الدخول لم تؤكد الإغلاق الصاعد (تجنب الدخول ضد زخم الشمعة الحالية)`,
+        bonuses
+      };
+    }
+    if (dir === 'PUT' && lastCandle.close >= lastCandle.open) {
+      return {
+        ok: false,
+        blockReason: `شمعة الدخول لم تؤكد الإغلاق الهابط (تجنب الدخول ضد زخم الشمعة الحالية)`,
+        bonuses
+      };
+    }
+    if (isFridayLateThinSession && !hasMpbInDir) {
+      return {
+        ok: false,
+        blockReason: `حماية سيولة مساء الجمعة: يشترط اختراق MPB مؤكد قبل الإغلاق الأسبوعي`,
         bonuses
       };
     }
 
-    // Guard 2: EMA 50 (M1) + Higher-Timeframe M5 Trend Alignment
-    const isVerifiedExtremeSupportBounce = dir === 'CALL' && Boolean(srContext?.isTestingSupport) && rsi <= 32;
-    const isVerifiedExtremeResistanceBounce = dir === 'PUT' && Boolean(srContext?.isTestingResistance) && rsi >= 68;
+    // Verified S/R extreme reversal exceptions (only allowed on confirmed S/R + candle reversal + non-runaway ADX)
+    const isVerifiedExtremeSupportBounce =
+      dir === 'CALL' &&
+      Boolean(srContext?.isTestingSupport) &&
+      (rsi <= 32 || Boolean(srContext?.isBullishReversal)) &&
+      lastCandle.close > lastCandle.open;
+    const isVerifiedExtremeResistanceBounce =
+      dir === 'PUT' &&
+      Boolean(srContext?.isTestingResistance) &&
+      (rsi >= 68 || Boolean(srContext?.isBearishReversal)) &&
+      lastCandle.close < lastCandle.open;
 
-    if (dir === 'CALL' && !isVerifiedExtremeSupportBounce) {
-      if (lastCandle.close < htfData.ema50M1 && htfData.htfM5Trend === 'BEARISH') {
+    // Guard 1: ADX (14) Sideways Chop Filter (>= 21 normal, >= 24 late Friday) + Mandatory DI Bias
+    const minAdxRequired = isFridayLateThinSession ? 24 : 21;
+    if (!adxData.insufficientData && adxData.adx < minAdxRequired) {
+      return {
+        ok: false,
+        blockReason: `فلتر ADX حجب الإشارة: السوق عرضي ضعيف (${adxData.adx} < ${minAdxRequired})`,
+        bonuses
+      };
+    }
+    if (dir === 'CALL' && !adxData.insufficientData && adxData.plusDi <= adxData.minusDi) {
+      if (!(isVerifiedExtremeSupportBounce && adxData.adx <= 32)) {
         return {
           ok: false,
-          blockReason: `فلتر الاتجاه العام (EMA 50 + M5): السعر أدنى المتوسط واتجاه 5 دقائق هابط`,
+          blockReason: `فلتر ADX (+DI/-DI): قوة البائعين (${adxData.minusDi}) تفوق المشترين (${adxData.plusDi})`,
           bonuses
         };
       }
-    } else if (dir === 'PUT' && !isVerifiedExtremeResistanceBounce) {
-      if (lastCandle.close > htfData.ema50M1 && htfData.htfM5Trend === 'BULLISH') {
+    } else if (dir === 'PUT' && !adxData.insufficientData && adxData.minusDi <= adxData.plusDi) {
+      if (!(isVerifiedExtremeResistanceBounce && adxData.adx <= 32)) {
         return {
           ok: false,
-          blockReason: `فلتر الاتجاه العام (EMA 50 + M5): السعر أعلى المتوسط واتجاه 5 دقائق صاعد`,
+          blockReason: `فلتر ADX (+DI/-DI): قوة المشترين (${adxData.plusDi}) تفوق البائعين (${adxData.minusDi})`,
           bonuses
         };
       }
     }
 
-    // Guard 3: Bollinger Bands Overextension + Long Counter-Wick Rejection Guard
+    // Guard 2: Strict EMA 50 (M1) + Higher-Timeframe M5 Trend Alignment (NO && loophole)
+    if (dir === 'CALL' && !isVerifiedExtremeSupportBounce) {
+      if (htfData.htfM5Trend === 'BEARISH') {
+        return {
+          ok: false,
+          blockReason: `فلتر الاتجاه العام (M5): اتجاه 5 دقائق هابط ومخالف للصفقة`,
+          bonuses
+        };
+      }
+      if (lastCandle.close <= htfData.ema50M1) {
+        return {
+          ok: false,
+          blockReason: `فلتر EMA 50: السعر ما زال أسفل المتوسط المؤسسي 50`,
+          bonuses
+        };
+      }
+      if (htfData.htfM5Trend === 'NEUTRAL' && !hasMpbInDir && !srContext?.isTestingSupport) {
+        return {
+          ok: false,
+          blockReason: `اتجاه 5 دقائق محايد بدون اختراق MPB أو ارتداد دعم مؤكد`,
+          bonuses
+        };
+      }
+    } else if (dir === 'PUT' && !isVerifiedExtremeResistanceBounce) {
+      if (htfData.htfM5Trend === 'BULLISH') {
+        return {
+          ok: false,
+          blockReason: `فلتر الاتجاه العام (M5): اتجاه 5 دقائق صاعد ومخالف للصفقة`,
+          bonuses
+        };
+      }
+      if (lastCandle.close >= htfData.ema50M1) {
+        return {
+          ok: false,
+          blockReason: `فلتر EMA 50: السعر ما زال أعلى المتوسط المؤسسي 50`,
+          bonuses
+        };
+      }
+      if (htfData.htfM5Trend === 'NEUTRAL' && !hasMpbInDir && !srContext?.isTestingResistance) {
+        return {
+          ok: false,
+          blockReason: `اتجاه 5 دقائق محايد بدون كسر MPB أو ارتداد مقاومة مؤكدة`,
+          bonuses
+        };
+      }
+    }
+
+    // Guard 3: Bollinger Bands Overextension + Counter-Wick Rejection Guard
     if (dir === 'CALL') {
-      if (upperWickRatio >= 0.55) {
+      if (upperWickRatio >= 0.48) {
         return {
           ok: false,
           blockReason: `رفض ذيل علوي قوي (${Math.round(upperWickRatio * 100)}%) — ضغط بيعي مضاد`,
           bonuses
         };
       }
-      if (!bbData.insufficientData && bbData.percentB >= 1.02 && !hasMpbInDir) {
+      if (!bbData.insufficientData && (bbData.percentB >= 1.08 || (bbData.percentB >= 0.98 && !hasMpbInDir))) {
         return {
           ok: false,
-          blockReason: `تشبع سعري فوق البولنجر العلوي (${Math.round(bbData.percentB * 100)}%B) — احتمال ارتداد`,
+          blockReason: `تشبع سعري عند البولنجر العلوي (${Math.round(bbData.percentB * 100)}%B) — احتمال ارتداد`,
           bonuses
         };
       }
     } else {
-      if (lowerWickRatio >= 0.55) {
+      if (lowerWickRatio >= 0.48) {
         return {
           ok: false,
           blockReason: `رفض ذيل سفلي قوي (${Math.round(lowerWickRatio * 100)}%) — ضغط شرائي مضاد`,
           bonuses
         };
       }
-      if (!bbData.insufficientData && bbData.percentB <= -0.02 && !hasMpbInDir) {
+      if (!bbData.insufficientData && (bbData.percentB <= -0.08 || (bbData.percentB <= 0.02 && !hasMpbInDir))) {
         return {
           ok: false,
-          blockReason: `تشبع سعري أسفل البولنجر السفلي (${Math.round(bbData.percentB * 100)}%B) — احتمال ارتداد`,
+          blockReason: `تشبع سعري عند البولنجر السفلي (${Math.round(bbData.percentB * 100)}%B) — احتمال ارتداد`,
           bonuses
         };
       }
@@ -3503,8 +3609,8 @@ export function evaluateFourIndicatorConfluence(
       bonuses.push(`فلتر الاتجاه العام EMA 50 + M5 (ترند هابط متوافق 📉)`);
     }
 
-    if (!adxData.insufficientData && adxData.adx >= 20) {
-      const diAligned = dir === 'CALL' ? adxData.plusDi >= adxData.minusDi : adxData.minusDi >= adxData.plusDi;
+    if (!adxData.insufficientData && adxData.adx >= minAdxRequired) {
+      const diAligned = dir === 'CALL' ? adxData.plusDi > adxData.minusDi : adxData.minusDi > adxData.plusDi;
       if (diAligned) {
         bonuses.push(`مؤشر قوة الاتجاه ADX (${adxData.adx} زخم ترند نقي ✅)`);
       }
@@ -3513,7 +3619,7 @@ export function evaluateFourIndicatorConfluence(
     return { ok: true, bonuses };
   };
 
-  const minAtr = isJpy ? 0.022 : 0.00014;
+  const minAtr = isJpy ? 0.024 : 0.00015;
   const isAtrHealthy = atr >= minAtr;
 
   if (requireMpb) {
@@ -3560,10 +3666,10 @@ export function evaluateFourIndicatorConfluence(
       matchedList.push(`مؤشر ATR (${atr.toFixed(5)} سيولة وزخم نشط)`);
     }
 
-    // Pillar 3: RSI (14) Momentum Alignment (strictly excludes neutral chop)
+    // Pillar 3: RSI (14) Momentum Alignment (strictly excludes overextended extremes & neutral chop)
     const rsiMatched = testDirection === 'CALL'
-      ? (rsi >= 50 || (rsi <= 34 && rsi >= 22))
-      : (rsi <= 50 || (rsi >= 66 && rsi <= 78));
+      ? ((rsi >= 52 && rsi <= 72) || (rsi <= 34 && rsi >= 18 && Boolean(srContext?.isTestingSupport)))
+      : ((rsi <= 48 && rsi >= 28) || (rsi >= 66 && rsi <= 82 && Boolean(srContext?.isTestingResistance)));
     if (rsiMatched) {
       additionalCount += 1;
       matchedList.push(`مؤشر RSI (${rsi.toFixed(1)} ${testDirection === 'CALL' ? 'ميل صعودي' : 'ميل هبوطي'})`);
@@ -3619,17 +3725,27 @@ export function evaluateFourIndicatorConfluence(
     };
   } else {
     // ========================================================
-    // OPTION 3: VIP without MPB (Any 3 of the 4 indicators agree)
+    // OPTION 3 (HARDENED): Requires >= 3 of 4 indicators AND a real Entry Trigger (MPB Breakout OR Confirmed S/R Reversal)
+    // Never fires blindly on ATR + Supertrend + RSI alone!
     // ========================================================
     const callMatched: string[] = [];
     const callHasMpb = momentumPause.isDetected && momentumPause.direction === 'CALL';
+    const callHasSrTrigger =
+      Boolean(srContext?.isTestingSupport) &&
+      (Boolean(srContext?.isBullishReversal) || rsi <= 36);
+    const callHasTrigger = callHasMpb || callHasSrTrigger;
+
     if (callHasMpb) {
       callMatched.push(`مؤشر MPB (اختراق صاعد ⬆️)`);
+    } else if (callHasSrTrigger) {
+      callMatched.push(`ارتداد دعم مؤكد S/R ✅`);
     }
     if (isAtrHealthy) {
       callMatched.push(`مؤشر ATR (${atr.toFixed(5)} سيولة نشطة)`);
     }
-    const rsiCall = (rsi >= 50 || (rsi <= 34 && rsi >= 22));
+    const rsiCall =
+      (rsi >= 52 && rsi <= 72) ||
+      (rsi <= 34 && rsi >= 18 && Boolean(srContext?.isTestingSupport));
     if (rsiCall) {
       callMatched.push(`مؤشر RSI (${rsi.toFixed(1)} ميل صعودي)`);
     }
@@ -3640,13 +3756,22 @@ export function evaluateFourIndicatorConfluence(
 
     const putMatched: string[] = [];
     const putHasMpb = momentumPause.isDetected && momentumPause.direction === 'PUT';
+    const putHasSrTrigger =
+      Boolean(srContext?.isTestingResistance) &&
+      (Boolean(srContext?.isBearishReversal) || rsi >= 64);
+    const putHasTrigger = putHasMpb || putHasSrTrigger;
+
     if (putHasMpb) {
       putMatched.push(`مؤشر MPB (كسر هابط ⬇️)`);
+    } else if (putHasSrTrigger) {
+      putMatched.push(`ارتداد مقاومة مؤكدة S/R ✅`);
     }
     if (isAtrHealthy) {
       putMatched.push(`مؤشر ATR (${atr.toFixed(5)} سيولة نشطة)`);
     }
-    const rsiPut = (rsi <= 50 || (rsi >= 66 && rsi <= 78));
+    const rsiPut =
+      (rsi <= 48 && rsi >= 28) ||
+      (rsi >= 66 && rsi <= 82 && Boolean(srContext?.isTestingResistance));
     if (rsiPut) {
       putMatched.push(`مؤشر RSI (${rsi.toFixed(1)} ميل هبوطي)`);
     }
@@ -3660,7 +3785,10 @@ export function evaluateFourIndicatorConfluence(
     let supportingCount = 0;
     let guardResult: { ok: boolean; blockReason?: string; bonuses: string[] } = { ok: true, bonuses: [] };
 
-    if (callMatched.length >= 3 && callMatched.length >= putMatched.length) {
+    const callCoreEligible = callHasTrigger && callMatched.length >= 3;
+    const putCoreEligible = putHasTrigger && putMatched.length >= 3;
+
+    if (callCoreEligible && (!putCoreEligible || callMatched.length >= putMatched.length)) {
       guardResult = evaluateInstitutionalGuard('CALL', callHasMpb);
       if (guardResult.ok) {
         candidateDirection = 'CALL';
@@ -3668,7 +3796,7 @@ export function evaluateFourIndicatorConfluence(
         supportingCount = callMatched.length;
       }
     }
-    if (!candidateDirection && putMatched.length >= 3) {
+    if (!candidateDirection && putCoreEligible) {
       const putGuard = evaluateInstitutionalGuard('PUT', putHasMpb);
       if (putGuard.ok) {
         candidateDirection = 'PUT';
@@ -3685,13 +3813,19 @@ export function evaluateFourIndicatorConfluence(
       ? [...chosenList, ...guardResult.bonuses]
       : chosenList;
     const hasMpbInMatch = chosenList.some(m => m.includes('MPB'));
-    const blockedByGuard = !isSignalTriggered && (callMatched.length >= 3 || putMatched.length >= 3) && !guardResult.ok;
+    const blockedByGuard = !isSignalTriggered && (callCoreEligible || putCoreEligible) && !guardResult.ok;
+    const missingTriggerOnly =
+      !isSignalTriggered &&
+      !blockedByGuard &&
+      ((callMatched.length >= 3 && !callHasTrigger) || (putMatched.length >= 3 && !putHasTrigger));
 
     const summary = isSignalTriggered
-      ? `${supportingCount} من 4 مؤشرات متوافقة (${hasMpbInMatch ? 'مع مؤشر MPB الأساسي محقق ✅' : 'توافق 3 مؤشرات فنية بدون MPB ⚡'}: ${chosenList.join(' + ')})`
+      ? `${supportingCount} من 4 مؤشرات متوافقة (${hasMpbInMatch ? 'مع مؤشر MPB الأساسي محقق ✅' : 'مع زناد ارتداد S/R مؤكد ⚡'}: ${chosenList.join(' + ')})`
       : blockedByGuard
       ? `تم حجب الإشارة لحماية الجودة: ${guardResult.blockReason}`
-      : `لا يوجد توافق 3 مؤشرات حالياً (CALL: ${callMatched.length}/4, PUT: ${putMatched.length}/4 — المطلوب 3 مؤشرات على الأقل)`;
+      : missingTriggerOnly
+      ? `بانتظار زناد دخول حقيقي (اختراق MPB أو ارتداد دعم/مقاومة S/R) قبل تفعيل الصفقة`
+      : `لا يوجد توافق مكتمل حالياً (CALL: ${callMatched.length}/4, PUT: ${putMatched.length}/4)`;
 
     return {
       momentumPause,
@@ -3969,41 +4103,55 @@ async function scanRealGlobalForexMarket(
         }
       }
 
-      const requireMpb = false; // استراتيجية الروبوت الثانية MPB تقبل الإشارة مع توافر 3 شروط سواء بالشرط الأساسي أو بدونه
+      const requireMpb = false; // يقبل إشارة MPB الأساسية أو توافق 3 مؤشرات مع زناد ارتداد S/R مؤكد فقط
+      const isBullishReversal = isBullishPinBar || isBullishEngulfing || isBullishRebound || fractal.lastFractalType === 'BULLISH_LOW';
+      const isBearishReversal = isBearishPinBar || isBearishEngulfing || isBearishRejection || fractal.lastFractalType === 'BEARISH_HIGH';
       const fourConfluence = evaluateFourIndicatorConfluence(validCandles, isJpy, requireMpb, {
         isTestingSupport: srAnalysis.isTestingSupport,
-        isTestingResistance: srAnalysis.isTestingResistance
+        isTestingResistance: srAnalysis.isTestingResistance,
+        isBullishReversal,
+        isBearishReversal
       });
 
       const adx14 = fourConfluence.adxValue ?? 25;
+      const plusDi14 = fourConfluence.plusDi ?? 25;
+      const minusDi14 = fourConfluence.minusDi ?? 25;
       const htfM5Trend = fourConfluence.emaM5Trend ?? 'NEUTRAL';
       const ema50M1 = fourConfluence.ema50M1 ?? currentPrice;
       const bollingerPercentB = fourConfluence.bollingerPercentB ?? 0.5;
+      const lastBodyAbs = Math.abs(lastCandle.close - lastCandle.open);
+      const minCandleBodyCls = isJpy ? 0.003 : 0.00003;
 
-      // Apply the same institutional filters to classic mode signals too
+      // Apply the same hardened institutional filters to classic mode signals too
       if (signalReady === 'CALL') {
-        const isExtremeSupportBounce = srAnalysis.isTestingSupport && rsi <= 32;
-        if (adx14 < 18) {
+        const isExtremeSupportBounce = srAnalysis.isTestingSupport && (rsi <= 32 || isBullishReversal) && lastCandle.close > lastCandle.open;
+        if (lastBodyAbs < minCandleBodyCls || lastCandle.close <= lastCandle.open) {
           signalReady = null;
-          reason = `فلتر ADX حجب الإشارة: السوق عرضي ضعيف (${adx14} < 18)`;
-        } else if (!isExtremeSupportBounce && currentPrice < ema50M1 && htfM5Trend === 'BEARISH') {
+          reason = `حماية من التعادل: شمعة الدخول غير مؤكدة الصعود`;
+        } else if (adx14 < 21 || (plusDi14 <= minusDi14 && !(isExtremeSupportBounce && adx14 <= 32))) {
           signalReady = null;
-          reason = `فلتر الاتجاه العام (EMA 50 + M5): ترند 5 دقائق هابط`;
-        } else if (upperWickRatio >= 0.55 || bollingerPercentB >= 1.02) {
+          reason = `فلتر ADX حجب الإشارة: السوق عرضي أو السيولة البيعية مسيطرة (${adx14})`;
+        } else if (!isExtremeSupportBounce && (currentPrice <= ema50M1 || htfM5Trend === 'BEARISH')) {
           signalReady = null;
-          reason = `فلتر التشبع والرفض السعري: ذيل علوي أو تشبع فوق البولنجر`;
+          reason = `فلتر الاتجاه العام (EMA 50 + M5): مخالف للترند الصاعد`;
+        } else if (upperWickRatio >= 0.48 || bollingerPercentB >= 1.02) {
+          signalReady = null;
+          reason = `فلتر التشبع والرفض السعري: ذيل علوي أو تشبع عند البولنجر العلوي`;
         }
       } else if (signalReady === 'PUT') {
-        const isExtremeResistanceBounce = srAnalysis.isTestingResistance && rsi >= 68;
-        if (adx14 < 18) {
+        const isExtremeResistanceBounce = srAnalysis.isTestingResistance && (rsi >= 68 || isBearishReversal) && lastCandle.close < lastCandle.open;
+        if (lastBodyAbs < minCandleBodyCls || lastCandle.close >= lastCandle.open) {
           signalReady = null;
-          reason = `فلتر ADX حجب الإشارة: السوق عرضي ضعيف (${adx14} < 18)`;
-        } else if (!isExtremeResistanceBounce && currentPrice > ema50M1 && htfM5Trend === 'BULLISH') {
+          reason = `حماية من التعادل: شمعة الدخول غير مؤكدة الهبوط`;
+        } else if (adx14 < 21 || (minusDi14 <= plusDi14 && !(isExtremeResistanceBounce && adx14 <= 32))) {
           signalReady = null;
-          reason = `فلتر الاتجاه العام (EMA 50 + M5): ترند 5 دقائق صاعد`;
-        } else if (lowerWickRatio >= 0.55 || bollingerPercentB <= -0.02) {
+          reason = `فلتر ADX حجب الإشارة: السوق عرضي أو السيولة الشرائية مسيطرة (${adx14})`;
+        } else if (!isExtremeResistanceBounce && (currentPrice >= ema50M1 || htfM5Trend === 'BULLISH')) {
           signalReady = null;
-          reason = `فلتر التشبع والرفض السعري: ذيل سفلي أو تشبع أسفل البولنجر`;
+          reason = `فلتر الاتجاه العام (EMA 50 + M5): مخالف للترند الهابط`;
+        } else if (lowerWickRatio >= 0.48 || bollingerPercentB <= -0.02) {
+          signalReady = null;
+          reason = `فلتر التشبع والرفض السعري: ذيل سفلي أو تشبع عند البولنجر السفلي`;
         }
       }
 
@@ -7090,16 +7238,17 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
       allowed.some(p => p === s.pair || p.replace('/', '') === s.pair.replace('/', ''))
     );
 
-    // Filter snapshots that strictly meet high-quality confluence & institutional rules (excluding news spikes & sideways chop)
+    // Filter snapshots that strictly meet high-quality confluence & institutional rules (excluding news spikes, dead dojis, & sideways chop)
     const qualifyingSnapshots = allowedSnapshots.filter(s => {
       if (s.isNewsSpike) return false;
-      if (s.adx14 !== undefined && s.adx14 < 18) return false;
+      if (s.adx14 !== undefined && s.adx14 < 21) return false;
       const conf = s.fourIndicatorConfluence;
       if (!conf || conf.institutionalFilterBlocked || !conf.isSignalTriggered || !conf.candidateDirection) return false;
       const count = conf.supportingCount || 0;
       if (count >= 4) return true;
-      // If 3/4 indicators, require healthy ATR + (MPB confirmed OR Supertrend + RSI confirmed)
-      return count === 3 && conf.atrMatched && (conf.momentumPauseMatched || (conf.superTrendMatched && conf.rsiMatched));
+      // With hardened Option 3, 3/4 requires healthy ATR + either MPB breakout OR confirmed S/R bounce trigger (never bare ATR+ST+RSI!)
+      const hasTrigger = Boolean(conf.momentumPauseMatched) || Boolean(s.supportResistance?.isConfirmed);
+      return count === 3 && conf.atrMatched && hasTrigger;
     });
 
     // Real Technical Scanning: If no genuine high-quality confluence exists, DO NOT send weak or forced signals!
