@@ -181,15 +181,14 @@ export default function QuotexRobotAdminPage({
     });
   };
 
-  // Animated moving dots for waiting state
-  const [movingDotsCount, setMovingDotsCount] = useState(1);
+  // Calm 1-second candle countdown tick for the preview card
+  const [candleSecondsLeft, setCandleSecondsLeft] = useState<number>(() => 60 - new Date().getSeconds());
   useEffect(() => {
     const timer = setInterval(() => {
-      setMovingDotsCount(prev => (prev % 7) + 1);
-    }, 350);
+      setCandleSecondsLeft(60 - new Date().getSeconds());
+    }, 1000);
     return () => clearInterval(timer);
   }, []);
-  const movingDots = '.'.repeat(movingDotsCount);
 
   // Simulated Quotex Platform State
   const [simQuotexPair, setSimQuotexPair] = useState<string>('EUR/USD');
@@ -1413,7 +1412,7 @@ export default function QuotexRobotAdminPage({
             <div className="flex-1 w-full space-y-3 p-3.5 bg-[#060911]/90 border border-slate-800/80 rounded-2xl relative my-2 overflow-hidden">
               <div className="flex items-center justify-between text-xs text-slate-400">
                 <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span className="w-2 h-2 rounded-full bg-emerald-400" />
                   <span className="font-bold text-white">شارت منصة كيوتكس المباشر ({simQuotexPair})</span>
                   <span className="text-[10px] text-emerald-400 font-mono bg-emerald-950/70 border border-emerald-500/40 px-2 py-0.5 rounded-full hidden sm:inline-block">
                     نافذة الروبوت عائمة فوق الشارت ⚡
@@ -1495,7 +1494,7 @@ export default function QuotexRobotAdminPage({
                 <button
                   type="button"
                   onClick={() => handleSetWidgetClosed(false)}
-                  className="px-5 py-2.5 bg-[#0B0F17]/95 border-2 border-emerald-400 hover:border-emerald-300 text-emerald-300 font-extrabold rounded-full shadow-[0_12px_35px_rgba(16,185,129,0.35)] text-xs flex items-center gap-2.5 cursor-pointer transition-all hover:scale-105 active:scale-95 animate-pulse"
+                  className="px-5 py-2.5 bg-[#0B0F17]/95 border-2 border-emerald-400 hover:border-emerald-300 text-emerald-300 font-extrabold rounded-full shadow-[0_12px_35px_rgba(16,185,129,0.35)] text-xs flex items-center gap-2.5 cursor-pointer transition-all hover:scale-105 active:scale-95"
                 >
                   <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block shadow-[0_0_8px_#10b981]" />
                   <span>🤖 إظهار نافذة روبوت ZAD FX العائمة</span>
@@ -1518,10 +1517,7 @@ export default function QuotexRobotAdminPage({
                   title="اضغط واسحب لتحريك النافذة العائمة"
                 >
                       <div className="flex items-center gap-1.5">
-                        <span className="relative flex h-2 w-2">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                          <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
-                        </span>
+                        <span className="inline-flex rounded-full h-2 w-2 bg-emerald-500" />
                         <span className="text-[11px] font-extrabold text-white">
                           روبوت ZAD FX
                         </span>
@@ -1653,10 +1649,7 @@ export default function QuotexRobotAdminPage({
                       {showQuranBar && (
                         <div className="p-1.5 bg-gradient-to-r from-emerald-950 via-[#032e22] to-slate-900 border border-emerald-500/50 rounded-lg flex items-center justify-between gap-1.5 shadow-lg animate-in fade-in duration-200">
                           <div className="flex items-center gap-1.5 min-w-0">
-                            <span className="relative flex h-1.5 w-1.5 flex-shrink-0">
-                              <span className={`absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75 ${isQuranPlaying ? 'animate-ping' : ''}`} />
-                              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400" />
-                            </span>
+                            <span className="inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400 flex-shrink-0" />
                             <div className="truncate">
                               <div className="text-[9.5px] font-extrabold text-emerald-200 truncate flex items-center gap-1">
                                 <span>📖</span>
@@ -1766,7 +1759,7 @@ export default function QuotexRobotAdminPage({
                           <div className="p-2 bg-gradient-to-br from-emerald-950 via-[#022c22] to-slate-900 border border-emerald-500 rounded-lg space-y-1 text-center shadow-[0_0_15px_rgba(16,185,129,0.35)]">
                             <div className="flex items-center justify-between">
                               <span className="text-emerald-300 font-extrabold text-[10px] flex items-center gap-1">
-                                <span className="animate-pulse">⚡</span>
+                                <span>⚡</span>
                                 <span>الصفقة جارية بالمنصة</span>
                               </span>
                               <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
@@ -1817,13 +1810,27 @@ export default function QuotexRobotAdminPage({
                             </div>
                           </div>
                         ) : !isGlobalMarketOpen ? (
-                          <div className="p-2 bg-rose-950/20 rounded-lg border border-rose-500/40 text-[10px] text-rose-300 text-center space-y-0.5">
-                            <div className="flex items-center justify-center gap-1.5 font-black text-xs text-rose-400">
-                              <span>🔴</span>
-                              <span>مغلق السوق</span>
+                          <div className="p-2 bg-slate-950 rounded-lg border border-rose-500/40 text-[10px] text-rose-300 text-center space-y-0.5">
+                            <div className="flex items-center justify-center gap-1.5 font-black text-xs text-rose-300">
+                              <span>⏸️</span>
+                              <span>السوق مغلق (عطلة أسبوعية)</span>
                             </div>
                             <p className="text-[9px] text-slate-400">السوق العالمي في عطلة أسبوعية</p>
                           </div>
+                        ) : apiFeedResponse?.isLockedOutsideHours ? (
+                          (() => {
+                            const lockReason = String(apiFeedResponse.lockReason || 'الروبوت في استراحة مجدولة بين الجلسات');
+                            const isTargetDone = lockReason.includes('المستهدف') || lockReason.includes('الهدف') || lockReason.includes('60%+');
+                            return (
+                              <div className={`p-2 rounded-lg border text-[10px] text-center space-y-1 ${isTargetDone ? 'bg-emerald-950/35 border-emerald-500/50 text-emerald-200' : 'bg-[#09121d] border-amber-500/40 text-slate-200'}`}>
+                                <div className={`flex items-center justify-center gap-1.5 font-bold text-xs ${isTargetDone ? 'text-emerald-300' : 'text-amber-300'}`}>
+                                  <span>{isTargetDone ? '✅' : '⏸️'}</span>
+                                  <span>{isTargetDone ? 'اكتملت الجلسة بتحقيق الهدف' : 'استراحة بين الجلسات'}</span>
+                                </div>
+                                <p className="text-[9px] text-slate-300 leading-relaxed">{lockReason}</p>
+                              </div>
+                            );
+                          })()
                         ) : (
                           <div className="p-2 bg-[#09121d] rounded-lg border border-amber-500/40 text-[10px] text-slate-300 space-y-1 text-center">
                             <div className="flex items-center justify-center gap-1.5 text-amber-300 font-bold text-xs">
@@ -1831,9 +1838,9 @@ export default function QuotexRobotAdminPage({
                               <span>وضع الانتظار (WAIT)</span>
                             </div>
                             <p className="text-[9px] text-slate-400">جاري مسح السوق — لن يتم التكرار</p>
-                            <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#061b2d] border border-sky-500/40 text-[9.5px] font-mono-num text-sky-300">
+                            <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#061b2d] border border-sky-500/40 text-[9.5px] font-mono-num text-sky-300 tabular-nums">
                               <span>⏳ اكتمال الشمعة:</span>
-                              <b className="text-sky-400 font-bold">{60 - (new Date().getSeconds())} ثانية</b>
+                              <b className="text-sky-400 font-bold">{candleSecondsLeft} ثانية</b>
                             </div>
                           </div>
                         )}

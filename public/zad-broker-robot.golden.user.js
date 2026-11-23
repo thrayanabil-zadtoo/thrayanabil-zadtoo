@@ -395,7 +395,7 @@
       </div>
 
       <div id="zad-manual-trigger-container" style="display:none;margin-bottom:4px;">
-        <button id="zad-manual-trade-btn" style="width:100%;padding:5px 4px;font-size:10px;font-weight:extrabold;border-radius:6px;background:#10b981;color:#020617;border:none;cursor:pointer;animation:pulse 1.5s infinite;">
+        <button id="zad-manual-trade-btn" style="width:100%;padding:5px 4px;font-size:10px;font-weight:extrabold;border-radius:6px;background:#10b981;color:#020617;border:none;cursor:pointer;">
           🚀 اضغط هنا للدخول فوراً في المنصة!
         </button>
       </div>
@@ -534,7 +534,11 @@
       // تحديث حالة العرض الأولية فقط عند أول تحميل (لمنع الوميض)
       try {
         if (!currentRobotUiState && (!activeSignalObj || activeSignalObj.status !== "PENDING")) {
-          renderWaitingState();
+          if (serverLockedInfo && serverLockedInfo.isLockedOutsideHours === true) {
+            renderLockedState(serverLockedInfo);
+          } else {
+            renderWaitingState();
+          }
         }
       } catch(e) {}
     } catch(err) {
@@ -1615,12 +1619,19 @@
     }
   }
 
-  // دالة عرض وضع قفل الأمان خارج أوقات عمل الاستراتيجية المختارة (بدلاً من وضع الانتظار WAIT)
+  let serverLockedInfo = null;
+  let latestReceivedServerEpochMs = 0;
+
+  // دالة عرض وضع التوقف الهادئ خارج أوقات العمل أو بعد تحقيق الهدف (مستقر تماماً دون وميض أو تعارض مع WAIT)
   function renderLockedState(lockedInfo) {
     if (currentActiveTrade && Date.now() < currentActiveTrade.expireTime) {
       renderInTradeState();
       return;
     }
+    if (lockedInfo) {
+      serverLockedInfo = { ...lockedInfo, isLockedOutsideHours: true };
+    }
+    const activeLock = serverLockedInfo || lockedInfo || {};
     const sigElem = document.getElementById("zad-robot-signal");
     const actElem = document.getElementById("zad-robot-action");
     const cdContainer = document.getElementById("zad-robot-countdown");
@@ -1628,37 +1639,52 @@
     const manBtn = document.getElementById("zad-manual-trigger-container");
     if (manBtn) manBtn.style.display = "none";
 
-    const reason = (lockedInfo && lockedInfo.lockReason) || "الروبوت مقفل خارج أوقات عمل هذه الاستراتيجية";
-    const workingHours = (lockedInfo && lockedInfo.workingHoursText) || "الجلسة الصباحية: 10:00 ص - 12:00 م | البث المباشر: 06:00 م - 07:00 م";
-    const nextSession = (lockedInfo && lockedInfo.nextSessionText) || "بانتظار موعد انطلاق الجلسة القادمة";
+    const reason = activeLock.lockReason || "الروبوت في وضع التوقف الهادئ خارج أوقات الجلسات";
+    const workingHours = activeLock.workingHoursText || "الجلسة الصباحية: 10:30 ص - 01:00 م | البث المباشر: 04:30 م - 08:00 م";
+    const nextSession = activeLock.nextSessionText || "بانتظار موعد انطلاق الجلسة القادمة";
+    const isTargetAchieved = reason.includes("المستهدف") || reason.includes("الهدف") || reason.includes("60%+");
 
-    const stateKey = "LOCKED_" + reason.slice(0, 15);
+    const stateKey = "LOCKED_" + (isTargetAchieved ? "DONE_" : "PAUSE_") + reason.slice(0, 18);
     if (currentRobotUiState === stateKey) return;
     currentRobotUiState = stateKey;
 
+    const cardBg = isTargetAchieved ? "rgba(6,78,59,0.28)" : "rgba(15,23,42,0.92)";
+    const cardBorder = isTargetAchieved ? "#10b981" : "#f59e0b";
+    const titleColor = isTargetAchieved ? "#34d399" : "#fbbf24";
+    const titleIcon = isTargetAchieved ? "✅" : "⏸️";
+    const titleText = isTargetAchieved ? "اكتملت الجلسة بتحقيق الهدف" : "استراحة بين الجلسات";
+    const reasonColor = isTargetAchieved ? "#d1fae5" : "#e2e8f0";
+
     if (sigElem) {
       sigElem.innerHTML = `
-        <div style="background:rgba(239,68,68,0.12);border:1.5px solid #ef4444;border-radius:7px;padding:6px 8px;text-align:center;">
-          <div style="color:#f87171;font-size:11.5px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:5px;">
-            <span style="font-size:14px;">🛑</span>
-            <span style="letter-spacing:0.3px;">تنبيه: الروبوت متوقف حالياً</span>
+        <div style="background:${cardBg};border:1.5px solid ${cardBorder};border-radius:7px;padding:6px 8px;text-align:center;">
+          <div style="color:${titleColor};font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;gap:5px;">
+            <span style="font-size:12px;">${titleIcon}</span>
+            <span>${titleText}</span>
           </div>
-          <div style="color:#fca5a5;font-size:9.5px;margin-top:3px;font-weight:600;line-height:1.3;">${reason}</div>
-          <div style="margin-top:5px;background:#1e1b4b;border:1px solid #6366f1;border-radius:5px;padding:3px 6px;font-size:8.5px;color:#c7d2fe;text-align:right;">
-            <div>⏰ <b>أوقات العمل:</b> ${workingHours}</div>
-            <div style="color:#fde047;margin-top:2px;">⏳ <b>الجلسة القادمة:</b> ${nextSession}</div>
+          <div style="color:${reasonColor};font-size:9.5px;margin-top:3px;font-weight:600;line-height:1.4;">${reason}</div>
+          <div style="margin-top:5px;background:#0f172a;border:1px solid #334155;border-radius:5px;padding:4px 6px;font-size:8.5px;color:#cbd5e1;text-align:right;line-height:1.45;">
+            <div>⏰ <b>المواعيد:</b> ${workingHours}</div>
+            <div style="color:#fde047;margin-top:2px;">⏳ <b>القادم:</b> ${nextSession}</div>
           </div>
         </div>
       `;
     }
     if (actElem) {
-      actElem.innerHTML = `<span style="color:#f87171;font-weight:bold;">🛑 الروبوت متوقف حالياً وفق مواعيد وقوانين الاستراتيجية المختارة</span>`;
+      const actMsg = isTargetAchieved
+        ? "✅ تم تحقيق المستهدف الربحي بنجاح — بانتظار الجلسة القادمة"
+        : "⏸️ الروبوت في استراحة مجدولة — بانتظار بدء الجلسة القادمة";
+      if (actElem.textContent !== actMsg) {
+        actElem.textContent = actMsg;
+        actElem.style.color = isTargetAchieved ? "#34d399" : "#fbbf24";
+        actElem.style.fontWeight = "bold";
+      }
     }
-    widget.style.borderColor = "#64748b";
+    widget.style.borderColor = isTargetAchieved ? "#10b981" : "#64748b";
     widget.style.boxShadow = "0 10px 25px rgba(0,0,0,0.8)";
   }
 
-  // دالة تحديث خانة الزوج والإشارة: إما 'وضع الانتظار (WAIT)' أو 'مغلق السوق' دون وميض نهائياً
+  // دالة تحديث خانة الزوج والإشارة: 'وضع الانتظار (WAIT)' أو 'مغلق السوق' دون وميض نهائياً
   function renderWaitingState() {
     if (currentActiveTrade && Date.now() < currentActiveTrade.expireTime) {
       renderInTradeState();
@@ -1673,16 +1699,21 @@
       if (currentRobotUiState !== "MARKET_CLOSED") {
         currentRobotUiState = "MARKET_CLOSED";
         sigElem.innerHTML = `
-          <div style="background:rgba(239,68,68,0.14);border:1.5px solid #ef4444;border-radius:7px;padding:6px 8px;text-align:center;">
-            <div style="color:#f87171;font-size:11px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:4px;">
-              <span style="font-size:12px;">🔴</span>
-              <span id="zad-signal-pair-name" style="letter-spacing:0.5px;">مغلق السوق</span>
+          <div style="background:rgba(15,23,42,0.95);border:1.5px solid #f43f5e;border-radius:7px;padding:6px 8px;text-align:center;">
+            <div style="color:#fda4af;font-size:11px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:4px;">
+              <span style="font-size:12px;">⏸️</span>
+              <span id="zad-signal-pair-name" style="letter-spacing:0.3px;">السوق مغلق (عطلة أسبوعية)</span>
             </div>
             <div style="color:#94a3b8;font-size:8.5px;margin-top:2px;">السوق العالمي في عطلة أسبوعية حالياً</div>
           </div>
         `;
-        if (actElem) actElem.innerHTML = `<span style="color:#f87171;font-weight:bold;">السوق مغلق حالياً — بانتظار الافتتاح</span>`;
+        if (actElem) actElem.innerHTML = `<span style="color:#fda4af;font-weight:bold;">السوق مغلق حالياً — بانتظار الافتتاح</span>`;
       }
+      return;
+    }
+
+    if (serverLockedInfo && serverLockedInfo.isLockedOutsideHours === true) {
+      renderLockedState(serverLockedInfo);
       return;
     }
 
@@ -1692,28 +1723,34 @@
     if (currentRobotUiState !== stateKey) {
       currentRobotUiState = stateKey;
       sigElem.innerHTML = `
-        <div style="background:${warmupNotice ? 'rgba(16,185,129,0.1)' : 'rgba(234,179,8,0.08)'};border:1.5px solid ${warmupNotice ? '#10b981' : '#ca8a04'};border-radius:7px;padding:5px 7px;text-align:center;">
+        <div style="background:${warmupNotice ? 'rgba(6,78,59,0.22)' : '#0f172a'};border:1.5px solid ${warmupNotice ? '#10b981' : '#ca8a04'};border-radius:7px;padding:6px 7px;text-align:center;">
           <div style="color:${warmupNotice ? '#34d399' : '#fde047'};font-size:11px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:4px;">
             <span>${warmupNotice ? '☀️' : '⏸️'}</span>
             <span id="zad-signal-pair-name">${warmupNotice ? 'فترة الاستعداد ومسح الأزواج' : 'وضع الانتظار (WAIT)'}</span>
           </div>
-          <div style="color:${warmupNotice ? '#a7f3d0' : '#94a3b8'};font-size:8.5px;margin-top:2px;">${warmupNotice || 'جاري مسح السوق في الأزواج الستة المفتوحة — لن يتم التكرار'}</div>
+          <div style="color:${warmupNotice ? '#a7f3d0' : '#cbd5e1'};font-size:8.5px;margin-top:2px;">${warmupNotice || 'جاري مسح السوق في الأزواج الستة المفتوحة — لن يتم التكرار'}</div>
           <div style="margin-top:4px;display:inline-flex;align-items:center;gap:4px;background:#061b2d;border:1px solid #0284c7;border-radius:5px;padding:2px 6px;font-size:9.5px;">
             <span style="color:#93c5fd;">⏳ اكتمال الشمعة:</span>
-            <b id="zad-wait-candle-cd" style="color:#38bdf8;font-family:monospace;font-size:11px;">${cSec} ثانية</b>
+            <b id="zad-wait-candle-cd" style="color:#38bdf8;font-family:monospace;font-variant-numeric:tabular-nums;font-size:11px;">${cSec} ثانية</b>
           </div>
         </div>
       `;
       widget.style.borderColor = "#10b981";
       widget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.75)";
       if (actElem) {
-        actElem.innerText = warmupNotice
+        const waitActText = warmupNotice
           ? `☀️ صباح الخير — جاري مسح الأزواج الستة المفتوحة (5-10 دقائق قبل أول إشارة)`
           : `جاهز لاستقبال الإشارة القادمة وتنفيذها بالثانية (${ROBOT_MODE === 'AUTO' ? 'آلياً' : 'يدوياً'})`;
+        if (actElem.textContent !== waitActText) {
+          actElem.textContent = waitActText;
+          actElem.style.color = "#94a3b8";
+          actElem.style.fontWeight = "normal";
+        }
       }
     } else {
       const waitEl = document.getElementById("zad-wait-candle-cd");
-      if (waitEl) waitEl.textContent = cSec + " ثانية";
+      const nextSecText = cSec + " ثانية";
+      if (waitEl && waitEl.textContent !== nextSecText) waitEl.textContent = nextSecText;
     }
   }
 
@@ -2188,12 +2225,16 @@
     const cdLabel = document.getElementById("zad-countdown-label");
     const actElem = document.getElementById("zad-robot-action");
 
-    // 1. إذا لم تكن هناك إشارة نشطة: البقاء في وضع الانتظار (WAIT) المستقر وتحديث العداد
+    // 1. إذا لم تكن هناك إشارة نشطة: البقاء في الحالة المعتمدة (إما قفل خارج الجلسة أو وضع الانتظار WAIT المستقر)
     if (!activeSignalObj || activeSignalObj.status !== "PENDING" || !currentTargetEntryEpoch) {
       if (cdContainer) cdContainer.style.display = "none";
       const manContainer = document.getElementById("zad-manual-trigger-container");
       if (manContainer) manContainer.style.display = "none";
-      renderWaitingState();
+      if (serverLockedInfo && serverLockedInfo.isLockedOutsideHours === true) {
+        renderLockedState(serverLockedInfo);
+      } else {
+        renderWaitingState();
+      }
       return;
     }
 
@@ -2377,6 +2418,23 @@
     if (!data || !data.ok) return;
     const nowRecvMs = Date.now();
     lastDataReceivedTime = nowRecvMs;
+    const payloadEpochMs = typeof data.serverEpochMs === "number"
+      ? data.serverEpochMs
+      : (typeof data.serverEpochSeconds === "number" ? data.serverEpochSeconds * 1000 : 0);
+
+    // تجاهل الحمولات القديمة المخبأة في الجسر أو الكاش لمنع تضارب الحالات ووميض الصندوق
+    if (
+      payloadEpochMs > 0 &&
+      latestReceivedServerEpochMs > 0 &&
+      (payloadEpochMs + 1500) < latestReceivedServerEpochMs &&
+      (sourceLabel === "bridge_poll" || sourceLabel === "bridge_listener" || sourceLabel === "google_cloud_stream" || sourceLabel === "gm_cloud_stream")
+    ) {
+      return;
+    }
+    if (payloadEpochMs > latestReceivedServerEpochMs) {
+      latestReceivedServerEpochMs = payloadEpochMs;
+    }
+
     let sig = data.activeSignal || data.signal || null;
 
     // معايرة الساعة بدقة الملي ثانية حصرياً من استجابة API السيرفر الحية مع فلترة التذبذبات البطيئة وتثبيت الساعة قبل الدخول بـ 12 ثانية
@@ -2422,16 +2480,19 @@
       const memberElem = document.getElementById("zad-robot-member");
       const daysElem = document.getElementById("zad-robot-days");
       if (memberElem) {
-        memberElem.innerHTML = isAuth
+        const nextMemberHtml = isAuth
           ? `<span style="color:#fbbf24">${data.member.name}</span>`
           : `<span style="color:#ef4444">${data.member.name} (${data.member.error || 'غير مفعل'})</span>`;
+        if (memberElem.innerHTML !== nextMemberHtml) memberElem.innerHTML = nextMemberHtml;
       }
       if (daysElem) {
-        daysElem.innerHTML = isAuth
+        const nextDaysHtml = isAuth
           ? `<span style="color:#34d399">${data.member.daysLeft} يوم</span>`
           : `<span style="color:#ef4444">0 يوم</span>`;
+        if (daysElem.innerHTML !== nextDaysHtml) daysElem.innerHTML = nextDaysHtml;
       }
       if (!isAuth) {
+        serverLockedInfo = null;
         document.getElementById("zad-robot-signal").innerHTML = `<span style="color:#ef4444">🔒 ${data.member.error || 'الحساب بانتظار تفعيل المشرف'}</span>`;
         document.getElementById("zad-robot-action").innerText = "اضغط على زر 🔑 ID لكتابة رقم حسابك المصرح له أو راجع المشرف";
         return;
@@ -2447,20 +2508,24 @@
     // 1. فحص أمان صارم: إغلاق السوق العالمي (عطلة نهاية الأسبوع من الجمعة 21:00 UTC حتى الأحد 21:00 UTC)
     const isMarketOpenNow = isForexMarketOpen();
     if (!isMarketOpenNow || serverMarketOpen === false) {
+      serverLockedInfo = null;
       activeSignalObj = null;
       currentActiveSignalId = null;
       currentTargetEntryEpoch = null;
-      renderWaitingState(); // يعرض كارت "مغلق السوق" بالأحمر ويرفض أي صفقات
+      renderWaitingState();
       return;
     }
 
     window.__zadWarmupReason = (data.isWarmup && data.warmupReason) ? data.warmupReason : "";
 
     // 2. فحص قفل ساعات العمل الموحدة:
-    // الجلسة الصباحية (11:00 ص - 12:00 ظهراً) + البث المباشر (06:00 م - 07:00 م) بتوقيت مصر، أو الإيقاف عند تحقق النسبة (60%+)
-    const cairoNow = new Date(Date.now() + 2 * 60 * 60 * 1000); // Egypt UTC+2
-    const cairoHour = cairoNow.getUTCHours();
-    const isUnifiedSessionHour = (cairoHour === 11) || (cairoHour === 18);
+    // الجلسة الصباحية (10:30 ص - 01:00 م) + البث المباشر (04:30 م - 08:00 م) بتوقيت مصر، أو الإيقاف عند تحقق النسبة (60%+)
+    const clockBaseMs = Date.now() + (typeof serverClockOffsetMs === "number" ? serverClockOffsetMs : 0);
+    const cairoNow = new Date(clockBaseMs + 2 * 60 * 60 * 1000); // Egypt UTC+2
+    const cairoMins = cairoNow.getUTCHours() * 60 + cairoNow.getUTCMinutes();
+    const isUnifiedSessionHour =
+      (cairoMins >= 10 * 60 + 30 && cairoMins < 13 * 60) ||
+      (cairoMins >= 16 * 60 + 30 && cairoMins < 20 * 60);
 
     let shouldLock = false;
     if (data.isLockedOutsideHours === true || data.isTradingHours === false) {
@@ -2472,12 +2537,19 @@
     }
 
     if (shouldLock) {
+      serverLockedInfo = {
+        isLockedOutsideHours: true,
+        lockReason: data.lockReason || "",
+        workingHoursText: data.workingHoursText || "",
+        nextSessionText: data.nextSessionText || ""
+      };
       activeSignalObj = null;
       currentActiveSignalId = null;
       currentTargetEntryEpoch = null;
-      renderLockedState(data);
+      renderLockedState(serverLockedInfo);
       return;
     }
+    serverLockedInfo = null;
 
     // 3. عزل الاستراتيجيات 100%:
     // عند اختيار الاستراتيجية الثانية (MPB): يتم إلغاء ومنع أي إشارة تخص الاستراتيجية العامة نهائياً
@@ -2681,10 +2753,13 @@
 
       renderWaitingState();
       const actElem = document.getElementById("zad-robot-action");
-      if (actElem) {
-        actElem.innerText = isForexMarketOpen()
+      if (actElem && !window.__zadWarmupReason) {
+        const nextAct = isForexMarketOpen()
           ? `جاهز لاستقبال الإشارة القادمة وتنفيذها بالثانية (${ROBOT_MODE === 'AUTO' ? 'آلياً' : 'يدوياً'})`
           : "السوق مغلق حالياً";
+        if (actElem.textContent !== nextAct) {
+          actElem.textContent = nextAct;
+        }
       }
       widget.style.borderColor = "#10b981";
       widget.style.boxShadow = "0 15px 35px rgba(0,0,0,0.85)";

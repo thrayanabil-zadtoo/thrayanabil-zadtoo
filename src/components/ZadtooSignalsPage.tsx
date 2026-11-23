@@ -409,7 +409,7 @@ export const ZadtooSignalsPage: React.FC<ZadtooSignalsPageProps> = ({
                 </button>
 
                 <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping inline-block" />
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
                   <span>مباشر</span>
                 </div>
               </div>
@@ -423,7 +423,7 @@ export const ZadtooSignalsPage: React.FC<ZadtooSignalsPageProps> = ({
             }`}>
               <div className="flex items-center gap-2">
                 <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                  sessionInfo.isScheduleActive ? 'bg-emerald-500 animate-ping' : 'bg-amber-500'
+                  sessionInfo.isScheduleActive ? 'bg-emerald-500' : 'bg-amber-500'
                 }`} />
                 <div>
                   <span className="font-extrabold">
@@ -440,7 +440,7 @@ export const ZadtooSignalsPage: React.FC<ZadtooSignalsPageProps> = ({
             {/* Live Quotex Strategy Indicators Badge Bar */}
             <div className="p-3 bg-gradient-to-r from-slate-900 to-slate-800 text-white rounded-xl border border-slate-700/80 shadow-xs flex flex-wrap items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="w-2 h-2 rounded-full bg-emerald-400" />
                 <span className="font-bold text-amber-300">مؤشرات الاستراتيجية الحية (M1):</span>
               </div>
               <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-mono-num font-bold">
@@ -568,8 +568,8 @@ export const ZadtooSignalsPage: React.FC<ZadtooSignalsPageProps> = ({
                       <div className="flex items-center gap-2">
                         {isPending ? (
                           <div className="flex items-center gap-1.5">
-                            <span className="px-2.5 py-1 text-[11px] font-black rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-sm animate-pulse flex items-center gap-1 font-mono-num border border-amber-400">
-                              <Clock className="w-3.5 h-3.5 text-white animate-spin" />
+                            <span className="px-2.5 py-1 text-[11px] font-black rounded-lg bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-sm flex items-center gap-1 font-mono-num border border-amber-400">
+                              <Clock className="w-3.5 h-3.5 text-white" />
                               <span>{secondsRemaining > 0 ? `00:${String(secondsRemaining).padStart(2, '0')}` : 'ادخل الآن! 🚀'}</span>
                             </span>
                             <span className="hidden sm:inline-flex px-2 py-0.5 text-[10px] font-bold rounded bg-emerald-100 text-emerald-800 border border-emerald-200">
@@ -680,7 +680,7 @@ export const ZadtooSignalsPage: React.FC<ZadtooSignalsPageProps> = ({
               {(selectedSignal.status === 'PENDING' || selectedSignal.isLive) && (
                 <div className="text-left font-mono-num">
                   <span className="text-[10px] text-amber-600 font-bold block">متبقي للدخول:</span>
-                  <span className="text-sm font-black text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md inline-block animate-pulse">
+                  <span className="text-sm font-black text-amber-600 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md inline-block">
                     00:{String(secondsRemaining).padStart(2, '0')}
                   </span>
                 </div>
