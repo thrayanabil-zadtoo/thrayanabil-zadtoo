@@ -3619,7 +3619,7 @@ export function evaluateFourIndicatorConfluence(
     return { ok: true, bonuses };
   };
 
-  const minAtr = isJpy ? 0.024 : 0.00015;
+  const minAtr = isJpy ? 0.016 : 0.000075;
   const isAtrHealthy = atr >= minAtr;
 
   if (requireMpb) {
@@ -3732,7 +3732,7 @@ export function evaluateFourIndicatorConfluence(
     const callHasMpb = momentumPause.isDetected && momentumPause.direction === 'CALL';
     const callHasSrTrigger =
       Boolean(srContext?.isTestingSupport) &&
-      (Boolean(srContext?.isBullishReversal) || rsi <= 36);
+      (Boolean(srContext?.isBullishReversal) || rsi <= 34);
     const callHasTrigger = callHasMpb || callHasSrTrigger;
 
     if (callHasMpb) {
@@ -3758,7 +3758,7 @@ export function evaluateFourIndicatorConfluence(
     const putHasMpb = momentumPause.isDetected && momentumPause.direction === 'PUT';
     const putHasSrTrigger =
       Boolean(srContext?.isTestingResistance) &&
-      (Boolean(srContext?.isBearishReversal) || rsi >= 64);
+      (Boolean(srContext?.isBearishReversal) || rsi >= 66);
     const putHasTrigger = putHasMpb || putHasSrTrigger;
 
     if (putHasMpb) {
@@ -3785,8 +3785,13 @@ export function evaluateFourIndicatorConfluence(
     let supportingCount = 0;
     let guardResult: { ok: boolean; blockReason?: string; bonuses: string[] } = { ok: true, bonuses: [] };
 
-    const callCoreEligible = callHasTrigger && callMatched.length >= 3;
-    const putCoreEligible = putHasTrigger && putMatched.length >= 3;
+    // Require MPB (>=3/4), OR full 4/4 S/R confluence, OR extreme oversold/overbought S/R bounce (eliminates weak 3/4 S/R noise)
+    const callCoreEligible =
+      (callHasMpb && callMatched.length >= 3) ||
+      (callHasSrTrigger && (callMatched.length >= 4 || (callMatched.length >= 3 && rsi <= 32)));
+    const putCoreEligible =
+      (putHasMpb && putMatched.length >= 3) ||
+      (putHasSrTrigger && (putMatched.length >= 4 || (putMatched.length >= 3 && rsi >= 68)));
 
     if (callCoreEligible && (!putCoreEligible || callMatched.length >= putMatched.length)) {
       guardResult = evaluateInstitutionalGuard('CALL', callHasMpb);
@@ -3943,9 +3948,16 @@ async function scanRealGlobalForexMarket(
       for (let i = 0; i < rawCloses.length; i++) {
         if (typeof rawCloses[i] === 'number' && !isNaN(rawCloses[i]!)) {
           const c = rawCloses[i]!;
-          const o = typeof rawOpens[i] === 'number' && !isNaN(rawOpens[i]!) ? rawOpens[i]! : c;
-          const h = typeof rawHighs[i] === 'number' && !isNaN(rawHighs[i]!) ? rawHighs[i]! : Math.max(o, c);
-          const l = typeof rawLows[i] === 'number' && !isNaN(rawLows[i]!) ? rawLows[i]! : Math.min(o, c);
+          let o = typeof rawOpens[i] === 'number' && !isNaN(rawOpens[i]!) ? rawOpens[i]! : c;
+          let h = typeof rawHighs[i] === 'number' && !isNaN(rawHighs[i]!) ? rawHighs[i]! : Math.max(o, c);
+          let l = typeof rawLows[i] === 'number' && !isNaN(rawLows[i]!) ? rawLows[i]! : Math.min(o, c);
+          // Reconstruct true open from previous candle close when Yahoo returns close-only ticks (O=H=L=C)
+          // — critical for EUR/USD, GBP/USD, AUD/USD bars AND live forming :49-:53s bars on all pairs!
+          if (o === c && h === l && validCandles.length > 0) {
+            o = validCandles[validCandles.length - 1].close;
+            h = Math.max(o, c);
+            l = Math.min(o, c);
+          }
           validCandles.push({
             timestamp: timestamps[i] || 0,
             open: o,
@@ -6244,9 +6256,14 @@ async function evaluateCompletedM1Candle(
         const diff = cClose - cOpen;
 
         if (Math.abs(diff) < 0.000001) {
-          // Exactly flat candle: check against entry price if available
-          if (typeof entryPriceNumeric === 'number' && entryPriceNumeric > 0) {
-            const entryDiff = cClose - entryPriceNumeric;
+          // Flat Yahoo bar (O == C): compare against previous bar's close (exact :00 open) or entryPriceNumeric
+          const prevClose = matchedIndex > 0 ? closes[matchedIndex - 1] : null;
+          const refOpen =
+            typeof prevClose === 'number' && !isNaN(prevClose) && prevClose > 0
+              ? prevClose
+              : entryPriceNumeric;
+          if (typeof refOpen === 'number' && refOpen > 0) {
+            const entryDiff = cClose - refOpen;
             if (direction === 'CALL') {
               return entryDiff > 0.000001 ? 'WIN' : entryDiff < -0.000001 ? 'LOSS' : 'DRAW';
             } else {
@@ -8558,15 +8575,15 @@ async function checkFocusedGlobalMarketAutoPilot() {
   isCheckingAutoPilot = true;
 
   try {
+    // Sync cloud state first so if another container (`ais-pre` or `ais-dev`) just sent a signal, we know immediately!
+    await loadStateFromCloudAndDisk();
+
     const isMarketOpen = isGlobalForexMarketOpen();
     autoPilot.marketOpenStatus = isMarketOpen;
 
     if (!isMarketOpen) {
       return;
     }
-
-    // Sync cloud state first so if another container (`ais-pre` or `ais-dev`) just sent a signal, we know immediately!
-    await loadStateFromCloudAndDisk();
 
     if (enforceDailySignalReset()) {
       await saveState();
