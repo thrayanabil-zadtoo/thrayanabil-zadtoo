@@ -21,18 +21,16 @@ service cloud.firestore {
     }
 
     match /test/{docId} {
-      allow get: if isValidId(docId);
+      allow read, write: if false;
     }
 
     match /system_state/{docId} {
-      allow get, list: if isValidId(docId);
-      allow create, update: if isValidId(docId) && isValidAppState(incoming());
+      allow get: if docId in ['platform_plans', 'platform_contact_links'];
+      allow list, write: if false;
     }
 
     match /robot_feed/{docId} {
-      // Direct Public Stream for Quotex Robot: Zero auth cookies, global CORS, 100% direct access from broker
-      allow get: if docId == 'live';
-      allow create, update: if docId == 'live';
+      allow read, write: if false;
     }
   }
 }
