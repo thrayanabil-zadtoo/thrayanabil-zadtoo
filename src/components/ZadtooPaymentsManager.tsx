@@ -32,6 +32,7 @@ import { INITIAL_PAYMENT_METHODS } from '../types/platformConfig';
 import type { VipSubscriber } from '../App';
 
 interface ZadtooPaymentsManagerProps {
+  adminToken?: string;
   subscribers?: VipSubscriber[];
   onSubscribersUpdated?: (updated: VipSubscriber[]) => void;
   plans?: SubscriptionPlan[];
@@ -39,6 +40,7 @@ interface ZadtooPaymentsManagerProps {
 }
 
 export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
+  adminToken,
   subscribers = [],
   onSubscribersUpdated,
   plans = [],
@@ -83,12 +85,19 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
 
   useEffect(() => {
     fetchPaymentsConfig();
-  }, []);
+  }, [adminToken]);
+
+  const getAuthHeaders = (includeJson = true): Record<string, string> => ({
+    ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
+    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
+  });
 
   const fetchPaymentsConfig = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch('/api/payments/config');
+      const res = await fetch('/api/payments/config', {
+        headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
+      });
       const data = await res.json();
       if (data.ok) {
         if (Array.isArray(data.paymentMethods) && data.paymentMethods.length > 0) {
@@ -125,12 +134,14 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     try {
       const res = await fetch('/api/payments/methods', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ paymentMethods: updated })
       });
       const data = await res.json();
-      if (data.ok) {
+      if (res.ok && data.ok) {
         showNotice('تم تحديث حالة وسيلة الدفع بنجاح');
+      } else {
+        showNotice(data.error || 'تعذر حفظ التغيير (تأكد من صلاحية المشرف)', 'error');
       }
     } catch (_e) {
       showNotice('حدث خطأ في حفظ التغيير', 'error');
@@ -160,12 +171,14 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     try {
       const res = await fetch('/api/payments/methods', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ paymentMethods: updatedList })
       });
       const resData = await res.json();
-      if (resData.ok) {
+      if (res.ok && resData.ok) {
         showNotice(isNew ? 'تمت إضافة وسيلة الدفع بنجاح' : 'تم تعديل وسيلة الدفع بنجاح');
+      } else {
+        showNotice(resData.error || 'تعذر حفظ وسيلة الدفع', 'error');
       }
     } catch (_e) {
       showNotice('حدث خطأ أثناء حفظ وسيلة الدفع', 'error');
@@ -182,12 +195,14 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     try {
       const res = await fetch('/api/payments/methods', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ paymentMethods: updated })
       });
       const data = await res.json();
-      if (data.ok) {
+      if (res.ok && data.ok) {
         showNotice('تم حذف وسيلة الدفع بنجاح');
+      } else {
+        showNotice(data.error || 'تعذر حذف وسيلة الدفع', 'error');
       }
     } catch (_e) {
       showNotice('حدث خطأ أثناء حذف وسيلة الدفع', 'error');
@@ -199,7 +214,7 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     try {
       const res = await fetch('/api/payments/review-transaction', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           transactionId: txId,
           action: 'APPROVE',
@@ -207,7 +222,7 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
         })
       });
       const data = await res.json();
-      if (data.ok) {
+      if (res.ok && data.ok) {
         setTransactions(prev =>
           prev.map(t => (t.id === txId ? { ...t, status: 'APPROVED', reviewedAt: new Date().toISOString() } : t))
         );
@@ -229,7 +244,7 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     try {
       const res = await fetch('/api/payments/review-transaction', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           transactionId: rejectingTx.id,
           action: 'REJECT',
@@ -237,12 +252,14 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
         })
       });
       const data = await res.json();
-      if (data.ok) {
+      if (res.ok && data.ok) {
         setTransactions(prev =>
           prev.map(t => (t.id === rejectingTx.id ? { ...t, status: 'REJECTED', adminNotes: rejectReason, reviewedAt: new Date().toISOString() } : t))
         );
         setRejectingTx(null);
         showNotice('تم رفض المعاملة وتحديث حالتها');
+      } else {
+        showNotice(data.error || 'تعذر رفض المعاملة', 'error');
       }
     } catch (_e) {
       showNotice('حدث خطأ في الاتصال بالخادم', 'error');

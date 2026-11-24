@@ -19,7 +19,6 @@ import {
 } from 'lucide-react';
 import type { SubscriptionPlan, PlatformContactLinks } from '../types/platformConfig';
 import { INITIAL_SUBSCRIPTION_PLANS, INITIAL_CONTACT_LINKS } from '../types/platformConfig';
-import { loadCloudPlans, loadCloudContactLinks } from '../firebase';
 
 interface ZadtooMembershipsPageProps {
   onSelectPlan: (planId: string, planName: string, price: number) => void;
@@ -96,28 +95,11 @@ export const ZadtooMembershipsPage: React.FC<ZadtooMembershipsPageProps> = ({
                 localStorage.setItem('zad_platform_contact_links', JSON.stringify(data.contactLinks));
               } catch (_e) {}
             }
-          } else {
-            fallbackLoadCloud();
           }
         })
-        .catch(() => {
-          fallbackLoadCloud();
-        });
+        .catch(() => {});
     }
   }, [propPlans]);
-
-  const fallbackLoadCloud = async () => {
-    try {
-      const cloudPlans = await loadCloudPlans<SubscriptionPlan[]>();
-      if (cloudPlans && Array.isArray(cloudPlans) && cloudPlans.length > 0) {
-        setPlans(cloudPlans);
-      }
-      const cloudLinks = await loadCloudContactLinks<PlatformContactLinks>();
-      if (cloudLinks && typeof cloudLinks === 'object') {
-        setContactLinks(cloudLinks);
-      }
-    } catch (_e) {}
-  };
 
   useEffect(() => {
     if (propContactLinks) setContactLinks(propContactLinks);

@@ -56,7 +56,6 @@ import {
   DEFAULT_CUSTOM_TEMPLATE,
   FormatterOptions
 } from './utils/signalParser';
-import { loadCloudSystemState, saveCloudSystemState, saveCloudPlans, saveCloudContactLinks } from './firebase';
 import QuotexRobotAdminPage, { QuotexRobotSettings } from './components/QuotexRobotAdminPage';
 import FloatingRobotVisitorBanner from './components/FloatingRobotVisitorBanner';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -324,10 +323,22 @@ export interface AutoPilotConfig {
 }
 
 export default function App() {
-  // Public visitors see 'visitor' view by default; admin studio, stats & robot are hidden unless logged in
-  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(
-    () => typeof window !== 'undefined' && (sessionStorage.getItem('zad_admin_auth') === 'true' || localStorage.getItem('zad_admin_auth') === 'true')
-  );
+  // Public visitors see 'visitor' view by default; admin studio, stats & robot require a signed server token
+  const [adminToken, setAdminToken] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      sessionStorage.removeItem('zad_admin_auth');
+      localStorage.removeItem('zad_admin_auth');
+      localStorage.removeItem('tg_bot_token');
+      localStorage.removeItem('tg_vip_bot_token');
+    } catch (_e) {}
+    return sessionStorage.getItem('zad_admin_token') || '';
+  });
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return Boolean(sessionStorage.getItem('zad_admin_token'));
+  });
+  const [adminNeedsSetup, setAdminNeedsSetup] = useState<boolean>(false);
   const [activeView, setActiveView] = useState<'visitor' | 'admin' | 'stats' | 'robot'>('visitor');
   const [zadtooTab, setZadtooTab] = useState<'home' | 'signals' | 'news' | 'autotrade' | 'memberships' | 'admin' | 'telegram_bot'>('home');
   const [aboutContactType, setAboutContactType] = useState<'about' | 'contact' | null>(null);
@@ -345,10 +356,49 @@ export default function App() {
     defaultStakeUsd: 5
   });
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
-  const [loginEmail, setLoginEmail] = useState<string>('thrayanabil2026@gmail.com');
+  const [loginEmail, setLoginEmail] = useState<string>('');
   const [loginPassword, setLoginPassword] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
+
+  const getAdminHeaders = (tokenOverride?: string, includeJson = true): Record<string, string> => {
+    const tok = tokenOverride ?? adminToken;
+    const headers: Record<string, string> = {};
+    if (includeJson) headers['Content-Type'] = 'application/json';
+    if (tok) headers['Authorization'] = `Bearer ${tok}`;
+    return headers;
+  };
+
+  const clearAdminSession = () => {
+    try {
+      sessionStorage.removeItem('zad_admin_token');
+      sessionStorage.removeItem('zad_admin_auth');
+      localStorage.removeItem('zad_admin_auth');
+    } catch (_e) {}
+    setAdminToken('');
+    setIsAdminAuthenticated(false);
+    setActiveView('visitor');
+  };
+
+  const checkAdminAuthStatus = async (tokOverride?: string) => {
+    try {
+      const tok = tokOverride ?? adminToken;
+      const res = await fetch('/api/admin/status', {
+        headers: tok ? { Authorization: `Bearer ${tok}` } : undefined
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAdminNeedsSetup(Boolean(data.needsSetup));
+        if (tok && data.authenticated === false) {
+          clearAdminSession();
+        }
+      }
+    } catch (_e) {}
+  };
+
+  useEffect(() => {
+    checkAdminAuthStatus();
+  }, []);
 
   // Live device clock (phone/computer) updated every second
   const [deviceNow, setDeviceNow] = useState<Date>(() => new Date());
@@ -358,22 +408,6 @@ export default function App() {
       setDeviceNow(new Date());
     }, 1000);
     return () => clearInterval(clockTimer);
-  }, []);
-
-  // Emergency direct admin unlock via URL query parameter (e.g. https://fx.zadtoo.com/?admin=Tr@7177)
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const search = window.location.search;
-      if (search.includes('admin=Tr@7177') || search.includes('auth=Tr@7177') || search.includes('pass=Tr@7177')) {
-        sessionStorage.setItem('zad_admin_auth', 'true');
-        localStorage.setItem('zad_admin_auth', 'true');
-        setIsAdminAuthenticated(true);
-        setActiveView('admin');
-        try {
-          window.history.replaceState({}, document.title, window.location.pathname);
-        } catch (_e) {}
-      }
-    }
   }, []);
 
   const [visitorFilter, setVisitorFilter] = useState<'ALL' | 'WIN' | 'PENDING'>('ALL');
@@ -520,11 +554,11 @@ export default function App() {
   const [adminChatInput, setAdminChatInput] = useState<string>('');
   const [isSavingSubscriber, setIsSavingSubscriber] = useState<boolean>(false);
 
-  // Server-side 24/7 Focused Auto-Pilot state
+  // Server-side 24/7 Focused Auto-Pilot state (tokens live exclusively on server)
   const [autoPilot, setAutoPilot] = useState<AutoPilotConfig>({
     enabled: true,
     freeBotEnabled: true,
-    botToken: localStorage.getItem('tg_bot_token') || '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U',
+    botToken: '',
     chatId: localStorage.getItem('tg_chat_id') || '@ZadNBFX',
     freeScheduleEnabled: true,
     freeStartHourEgypt: Number(localStorage.getItem('tg_free_start_hour') ?? 10),
@@ -536,7 +570,7 @@ export default function App() {
     freeWinGale1ImageUrl: localStorage.getItem('tg_free_gale1_img') || '',
     freeLossImageUrl: localStorage.getItem('tg_free_loss_img') || '',
     vipEnabled: true,
-    vipBotToken: localStorage.getItem('tg_vip_bot_token') || '8814918920:AAGeXmZrTy03s9gozdDAOj3hkIijHm9yJHM',
+    vipBotToken: '',
     vipChatId: localStorage.getItem('tg_vip_chat_id') || '-1004323890544',
     vipWinIcon: localStorage.getItem('tg_vip_win_icon') || '👑✅ ربح VIP',
     vipWinGale1Icon: localStorage.getItem('tg_vip_gale1_icon') || '👑✅ ربح مضاعفة واحدة',
@@ -641,7 +675,9 @@ export default function App() {
   const fetchAnalytics = async () => {
     setIsLoadingAnalytics(true);
     try {
-      const res = await fetch('/api/analytics/performance');
+      const res = await fetch('/api/analytics/performance', {
+        headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined
+      });
       const data = await res.json();
       if (data.ok) {
         setAnalyticsData(data);
@@ -654,18 +690,28 @@ export default function App() {
   };
 
   // Load signals, settings, autopilot state, and live global market radar
-  const fetchSignals = async () => {
+  const fetchSignals = async (tokenOverride?: string) => {
+    const activeToken = tokenOverride ?? adminToken;
     try {
-      const res = await fetch('/api/signals');
+      const res = await fetch('/api/signals', {
+        headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : undefined
+      });
       const data = await res.json();
+      if (activeToken && data.isAdmin === false) {
+        clearAdminSession();
+      }
       if (data.signals) {
         setSignals(data.signals);
       }
       if (data.liveMarket) {
         setLiveMarket(data.liveMarket);
       }
-      if (data.subscribers) {
-        setSubscribers(data.subscribers);
+      if (Array.isArray(data.subscribers)) {
+        setSubscribers(prev => {
+          if (data.isAdmin) return data.subscribers;
+          // Preserve currently logged-in VIP member profile locally if present
+          return prev.filter(s => s.id === currentMemberId);
+        });
       }
       if (data.quickNotes) {
         setQuickNotes(data.quickNotes);
@@ -703,19 +749,10 @@ export default function App() {
         }));
       }
       if (data.autopilot && Date.now() - lastAutoPilotSaveRef.current > 4000) {
-        const savedLocalToken = localStorage.getItem('tg_bot_token') || '';
-        const savedLocalChat = localStorage.getItem('tg_chat_id') || '';
-        const resolvedToken = data.autopilot.botToken || savedLocalToken;
-        const resolvedChat = data.autopilot.chatId || savedLocalChat || '@ZadNBFX';
+        const resolvedChat = data.autopilot.chatId || localStorage.getItem('tg_chat_id') || '@ZadNBFX';
+        const resolvedVipChat = data.autopilot.vipChatId || localStorage.getItem('tg_vip_chat_id') || '';
 
-        const savedLocalVipToken = localStorage.getItem('tg_vip_bot_token') || '';
-        const savedLocalVipChat = localStorage.getItem('tg_vip_chat_id') || '';
-        const resolvedVipToken = data.autopilot.vipBotToken || savedLocalVipToken;
-        const resolvedVipChat = data.autopilot.vipChatId || savedLocalVipChat;
-
-        if (resolvedToken) localStorage.setItem('tg_bot_token', resolvedToken);
         if (resolvedChat) localStorage.setItem('tg_chat_id', resolvedChat);
-        if (resolvedVipToken) localStorage.setItem('tg_vip_bot_token', resolvedVipToken);
         if (resolvedVipChat) localStorage.setItem('tg_vip_chat_id', resolvedVipChat);
         if (data.autopilot.freeStartHourEgypt !== undefined) {
           localStorage.setItem('tg_free_start_hour', String(data.autopilot.freeStartHourEgypt));
@@ -749,9 +786,9 @@ export default function App() {
           primaryFixedPair: data.autopilot.primaryFixedPair || prev.primaryFixedPair || 'EUR/JPY',
           allowedPairs: Array.isArray(data.autopilot.allowedPairs) && data.autopilot.allowedPairs.length > 0 ? data.autopilot.allowedPairs : prev.allowedPairs,
           quotexReferralLink: resolvedQxLink,
-          botToken: resolvedToken || prev.botToken,
+          botToken: data.autopilot.botToken || '',
           chatId: resolvedChat || prev.chatId,
-          vipBotToken: resolvedVipToken || prev.vipBotToken,
+          vipBotToken: data.autopilot.vipBotToken || '',
           vipChatId: resolvedVipChat || prev.vipChatId,
           freeWinImageUrl: data.autopilot.freeWinImageUrl !== undefined ? data.autopilot.freeWinImageUrl : (prev.freeWinImageUrl || ''),
           freeWinGale1ImageUrl: data.autopilot.freeWinGale1ImageUrl !== undefined ? data.autopilot.freeWinGale1ImageUrl : (prev.freeWinGale1ImageUrl || ''),
@@ -760,55 +797,9 @@ export default function App() {
           vipWinGale1ImageUrl: data.autopilot.vipWinGale1ImageUrl !== undefined ? data.autopilot.vipWinGale1ImageUrl : (prev.vipWinGale1ImageUrl || ''),
           vipLossImageUrl: data.autopilot.vipLossImageUrl !== undefined ? data.autopilot.vipLossImageUrl : (prev.vipLossImageUrl || '')
         }));
-
-        // If browser had a token in localStorage that the server didn't have yet, push it to server immediately
-        if (!data.autopilot.botToken && savedLocalToken) {
-          fetch('/api/autopilot', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              ...data.autopilot,
-              botToken: savedLocalToken,
-              chatId: resolvedChat
-            })
-          }).catch(() => {});
-        }
-        if (!data.autopilot.vipBotToken && savedLocalVipToken) {
-          fetch('/api/autopilot', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              ...data.autopilot,
-              vipBotToken: savedLocalVipToken,
-              vipChatId: resolvedVipChat
-            })
-          }).catch(() => {});
-        }
       }
     } catch (_err) {
-      // Fallback to direct Firestore read if backend is momentarily restarting
-      try {
-        const cloudData = await loadCloudSystemState();
-        if (cloudData?.autopilot) {
-          setAutoPilot(prev => ({
-            ...prev,
-            ...cloudData.autopilot,
-            botToken: cloudData.autopilot.botToken || prev.botToken || localStorage.getItem('tg_bot_token') || '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U',
-            chatId: cloudData.autopilot.chatId || prev.chatId || localStorage.getItem('tg_chat_id') || '@ZadNBFX',
-            vipBotToken: cloudData.autopilot.vipBotToken || prev.vipBotToken || localStorage.getItem('tg_vip_bot_token') || '8814918920:AAGeXmZrTy03s9gozdDAOj3hkIijHm9yJHM',
-            vipChatId: cloudData.autopilot.vipChatId || prev.vipChatId || localStorage.getItem('tg_vip_chat_id') || '-1004323890544',
-            vipEnabled: cloudData.autopilot.vipEnabled ?? prev.vipEnabled ?? true
-          }));
-        }
-        if (cloudData?.signals) {
-          setSignals(cloudData.signals);
-        }
-        if (cloudData?.dailyStats && Array.isArray(cloudData.dailyStats)) {
-          setDailyStats(cloudData.dailyStats);
-        }
-      } catch (_e) {
-        // Ignore
-      }
+      // Backend momentarily unreachable
     } finally {
       setIsLoading(false);
     }
@@ -816,9 +807,9 @@ export default function App() {
 
   useEffect(() => {
     fetchSignals();
-    const timer = setInterval(fetchSignals, 10000);
+    const timer = setInterval(() => fetchSignals(), 10000);
     return () => clearInterval(timer);
-  }, []);
+  }, [adminToken]);
 
   // Force refresh live market radar
   const handleRefreshMarketRadar = async () => {
@@ -836,7 +827,7 @@ export default function App() {
     }
   };
 
-  // Handle Admin Login
+  // Handle Admin Login / First-Run Admin Setup via Server
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
@@ -845,42 +836,48 @@ export default function App() {
     const cleanEmail = (loginEmail || '').trim().toLowerCase();
     const cleanPassword = (loginPassword || '').trim();
 
-    // Direct secure credential verification (guarantees instant login on fx.zadtoo.com / GitHub Pages / Cloud Run)
-    const isEmailValid = cleanEmail === 'thrayanabil2026@gmail.com' || cleanEmail === 'thrayanabil@gmail.com';
-    const isPasswordValid = cleanPassword === 'Tr@7177';
-
-    if (isEmailValid && isPasswordValid) {
-      sessionStorage.setItem('zad_admin_auth', 'true');
-      localStorage.setItem('zad_admin_auth', 'true');
-      setIsAdminAuthenticated(true);
-      setShowLoginModal(false);
-      setActiveView('admin');
-      setLoginPassword('');
+    if (!cleanEmail || !cleanPassword) {
+      setLoginError('يرجى إدخال البريد الإلكتروني وكلمة المرور');
       setIsLoggingIn(false);
-
-      // Best effort background sync with server
-      try {
-        fetch('/api/admin/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: cleanEmail, password: cleanPassword })
-        }).catch(() => {});
-      } catch (_e) {}
       return;
     }
 
-    if (!isEmailValid || !isPasswordValid) {
-      setLoginError('البريد الإلكتروني أو كلمة المرور غير صحيحة');
+    try {
+      const endpoint = adminNeedsSetup ? '/api/admin/setup' : '/api/admin/login';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password: cleanPassword })
+      });
+      const data = await res.json();
+
+      if (res.status === 409 && data?.needsSetup) {
+        setAdminNeedsSetup(true);
+        setLoginError(data.error || 'لم يتم إعداد حساب المشرف بعد. أنشئ حساب المشرف الآن.');
+        return;
+      }
+
+      if (res.ok && data.ok && data.token) {
+        sessionStorage.setItem('zad_admin_token', data.token);
+        setAdminToken(data.token);
+        setIsAdminAuthenticated(true);
+        setAdminNeedsSetup(false);
+        setShowLoginModal(false);
+        setActiveView('admin');
+        setLoginPassword('');
+        await fetchSignals(data.token);
+      } else {
+        setLoginError(data.error || 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
+      }
+    } catch (_e) {
+      setLoginError('تعذر الاتصال بالخادم للتحقق من بيانات الدخول');
+    } finally {
       setIsLoggingIn(false);
-      return;
     }
   };
 
   const handleAdminLogout = () => {
-    sessionStorage.removeItem('zad_admin_auth');
-    localStorage.removeItem('zad_admin_auth');
-    setIsAdminAuthenticated(false);
-    setActiveView('visitor');
+    clearAdminSession();
   };
 
   // Direct Trader Registration without email/gmail verification
@@ -1114,7 +1111,7 @@ export default function App() {
     try {
       const res = await fetch('/api/quick-notes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({
           title: newNoteTitle.trim(),
           content: newNoteContent.trim()
@@ -1134,7 +1131,10 @@ export default function App() {
 
   const handleDeleteQuickNote = async (id: string) => {
     try {
-      const res = await fetch(`/api/quick-notes/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/quick-notes/${id}`, {
+        method: 'DELETE',
+        headers: getAdminHeaders(undefined, false)
+      });
       const data = await res.json();
       if (data.ok && data.quickNotes) {
         setQuickNotes(data.quickNotes);
@@ -1153,7 +1153,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/subscribers/${subId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify(updates)
       });
       const data = await res.json();
@@ -1330,13 +1330,18 @@ export default function App() {
     if (!text.trim() && !imageUrl) return;
     if (sender === 'member') setIsSendingMemberMsg(true);
     try {
+      const memberCred =
+        sender === 'member'
+          ? (subscribers.find(s => s.id === subId)?.brokerAccountId || '').trim()
+          : '';
       const res = await fetch(`/api/subscribers/${subId}/message`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: sender === 'admin' ? getAdminHeaders() : { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sender,
           text: text.trim() || '📸 صورة إيصال التحويل لتجديد الاشتراك',
           imageUrl,
+          ...(sender === 'member' && memberCred ? { brokerAccountId: memberCred } : {}),
           ...extraUpdates
         })
       });
@@ -1441,7 +1446,10 @@ export default function App() {
 
   const handleDeleteSubscriber = async (id: string) => {
     try {
-      await fetch(`/api/subscribers/${id}`, { method: 'DELETE' });
+      await fetch(`/api/subscribers/${id}`, {
+        method: 'DELETE',
+        headers: getAdminHeaders(undefined, false)
+      });
       setSubscribers(prev => prev.filter(s => s.id !== id));
       if (selectedAdminSubId === id) setSelectedAdminSubId(null);
     } catch (_e) {
@@ -1449,20 +1457,15 @@ export default function App() {
     }
   };
 
-  // Sync formatting rules to server & Cloud Firestore
+  // Sync formatting rules to server
   const updateFormatterOptions = async (updater: (prev: FormatterOptions) => FormatterOptions) => {
     const next = updater(formatterOptions);
     setFormatterOptions(next);
     try {
       await fetch('/api/settings', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify(next)
-      });
-      await saveCloudSystemState({
-        signals: signals.slice(0, 50),
-        settings: next,
-        autopilot: autoPilot
       });
     } catch (_e) {
       // Ignore
@@ -1484,7 +1487,6 @@ export default function App() {
       }
     };
 
-    if (merged.botToken) safeSet('tg_bot_token', merged.botToken);
     if (merged.chatId) safeSet('tg_chat_id', merged.chatId);
     if (merged.freeStartHourEgypt !== undefined) {
       safeSet('tg_free_start_hour', String(merged.freeStartHourEgypt));
@@ -1510,7 +1512,6 @@ export default function App() {
       if (merged.freeLossImageUrl) safeSet('tg_free_loss_img', merged.freeLossImageUrl);
       else { try { localStorage.removeItem('tg_free_loss_img'); } catch(e) {} }
     }
-    if (merged.vipBotToken !== undefined) safeSet('tg_vip_bot_token', merged.vipBotToken);
     if (merged.vipChatId !== undefined) safeSet('tg_vip_chat_id', merged.vipChatId);
     if (merged.vipWinIcon !== undefined) safeSet('tg_vip_win_icon', merged.vipWinIcon);
     if (merged.vipWinGale1Icon !== undefined) safeSet('tg_vip_gale1_icon', merged.vipWinGale1Icon);
@@ -1543,7 +1544,7 @@ export default function App() {
     try {
       const res = await fetch('/api/autopilot', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify(merged)
       });
       if (!res.ok) {
@@ -1558,20 +1559,6 @@ export default function App() {
       const updatedAutopilot = data.ok && data.autopilot ? data.autopilot : merged;
       lastAutoPilotSaveRef.current = Date.now();
       setAutoPilot(updatedAutopilot);
-
-      // Best-effort secondary sync to Cloud Firestore (does not break local server persistence if unauthenticated)
-      try {
-        await saveCloudSystemState({
-          signals: signals.slice(0, 50),
-          settings: formatterOptions,
-          autopilot: updatedAutopilot,
-          subscribers: subscribers.slice(0, 200),
-          quickNotes: quickNotes.slice(0, 50),
-          dailyStats: dailyStats.slice(0, 120)
-        });
-      } catch (cloudErr) {
-        console.warn('Optional secondary cloud sync notice:', cloudErr);
-      }
 
       const startH = updatedAutopilot.freeStartHourEgypt ?? 10;
       const endH = updatedAutopilot.freeEndHourEgypt ?? 13;
@@ -1613,7 +1600,7 @@ export default function App() {
     try {
       const res = await fetch('/api/telegram/test-vip-connection', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({ type: 'vip' })
       });
       const data = await res.json();
@@ -1648,7 +1635,7 @@ export default function App() {
     try {
       const res = await fetch('/api/autopilot/add-pair', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({ pair: p })
       });
       const data = await res.json();
@@ -1673,7 +1660,7 @@ export default function App() {
     try {
       const res = await fetch('/api/autopilot/remove-pair', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({ pair: pairToRemove })
       });
       const data = await res.json();
@@ -1704,7 +1691,7 @@ export default function App() {
     try {
       const res = await fetch('/api/autopilot/trigger-now', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({ preferredPair: pair })
       });
       const data = await res.json();
@@ -1775,15 +1762,10 @@ export default function App() {
 
     fetch('/api/settings', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminHeaders(),
       body: JSON.stringify(nextOptions)
     })
       .then(() => {
-        saveCloudSystemState({
-          signals: signals.slice(0, 50),
-          settings: nextOptions,
-          autopilot: autoPilot
-        }).catch(() => {});
         setMessageAutoSaveStatus('saved');
       })
       .catch(() => {
@@ -1800,7 +1782,9 @@ export default function App() {
   const handlePullFromLiveGlobalRadar = async () => {
     setIsFetchingSource(true);
     try {
-      const res = await fetch('/api/scrape-source');
+      const res = await fetch('/api/scrape-source', {
+        headers: getAdminHeaders(undefined, false)
+      });
       const data = await res.json();
       if (data.ok && data.messages && data.messages.length > 0) {
         handleRawInputChange(data.messages[0]);
@@ -1829,7 +1813,7 @@ export default function App() {
     try {
       const res = await fetch('/api/signals/publish', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({
           asset: parsedSignal.asset,
           isOtc: false,
@@ -1887,7 +1871,7 @@ export default function App() {
     try {
       const res = await fetch(`/api/signals/${id}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({
           status,
           botToken: autoPilot.botToken,
@@ -1918,7 +1902,10 @@ export default function App() {
 
   const handleDeleteSignal = async (id: string) => {
     try {
-      await fetch(`/api/signals/${id}`, { method: 'DELETE' });
+      await fetch(`/api/signals/${id}`, {
+        method: 'DELETE',
+        headers: getAdminHeaders(undefined, false)
+      });
       setSignals(prev => prev.filter(s => s.id !== id));
     } catch (_e) {
       // Ignore
@@ -1928,7 +1915,10 @@ export default function App() {
   // Manual & Daily Reset for "04. سجل إشارات السوق العالمي المنشورة" and daily accuracy/wins stats
   const handleResetDailySignalsLog = async () => {
     try {
-      const res = await fetch('/api/signals/reset-daily', { method: 'POST' });
+      const res = await fetch('/api/signals/reset-daily', {
+        method: 'POST',
+        headers: getAdminHeaders(undefined, false)
+      });
       const data = await res.json();
       if (data.ok) {
         setSignals([]);
@@ -1938,11 +1928,6 @@ export default function App() {
         if (data.autopilot) {
           setAutoPilot(prev => ({ ...prev, ...data.autopilot, totalAutoSent: 0 }));
         }
-        await saveCloudSystemState({
-          signals: [],
-          settings: formatterOptions,
-          autopilot: { ...autoPilot, totalAutoSent: 0 }
-        });
         setPublishStatus({
           type: 'success',
           message: '✅ تم تصفير (04. سجل إشارات السوق العالمي المنشورة) وتصفير عداد الصفقات والنسبة اليومية بنجاح!'
@@ -2180,7 +2165,7 @@ export default function App() {
     try {
       const res = await fetch('/api/daily-report/send-telegram', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({
           destination,
           customText: endOfDayReportData.telegramReportText
@@ -2780,7 +2765,7 @@ export default function App() {
     try {
       const res = await fetch('/api/daily-stats', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({
           date: editStatForm.date,
           directWins: Math.max(0, Number(editStatForm.directWins) || 0),
@@ -2792,12 +2777,6 @@ export default function App() {
       const data = await res.json();
       if (data.ok && Array.isArray(data.dailyStats)) {
         setDailyStats(data.dailyStats);
-        await saveCloudSystemState({
-          signals: signals.slice(0, 80),
-          settings: formatterOptions,
-          autopilot: autoPilot,
-          dailyStats: data.dailyStats
-        });
         setEditingStatDate(null);
       }
     } catch (_e) {
@@ -2823,7 +2802,10 @@ export default function App() {
           }
         }}
         isAdmin={isAdminAuthenticated}
-        onOpenLogin={() => setShowLoginModal(true)}
+        onOpenLogin={() => {
+          checkAdminAuthStatus();
+          setShowLoginModal(true);
+        }}
         onOpenAbout={() => setAboutContactType('about')}
         onOpenContact={() => setAboutContactType('contact')}
       />
@@ -2843,6 +2825,7 @@ export default function App() {
       {zadtooTab === 'news' && (
         <ZadtooForexNewsPage
           isAdmin={isAdminAuthenticated}
+          adminToken={adminToken}
           onNavigateSignals={() => setZadtooTab('signals')}
           onNavigateHome={() => setZadtooTab('home')}
         />
@@ -2884,7 +2867,6 @@ export default function App() {
             setShowLegacyAdminStudio(true);
             setActiveView('robot');
           }}
-          onDownloadScript={() => window.open('/api/quotex-robot/zad-broker-robot.user.js', '_blank')}
         />
       )}
 
@@ -2901,9 +2883,31 @@ export default function App() {
         />
       )}
 
-      {/* Screen 6: قسم بوت التليجرام الذكي */}
+      {/* Screen 6: قسم بوت التليجرام الذكي (محمي للمشرف فقط) */}
       {zadtooTab === 'telegram_bot' && (
-        <TelegramBotManager />
+        isAdminAuthenticated ? (
+          <TelegramBotManager adminToken={adminToken} />
+        ) : (
+          <div className="max-w-md mx-auto my-16 p-8 bg-white border border-slate-200 rounded-3xl shadow-lg text-center space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center mx-auto text-xl font-bold">
+              🔒
+            </div>
+            <h2 className="text-xl font-black text-slate-900">منطقة مدير النظام</h2>
+            <p className="text-xs text-slate-500">
+              يرجى تسجيل الدخول بحساب المشرف لإدارة بوت التليجرام.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                checkAdminAuthStatus();
+                setShowLoginModal(true);
+              }}
+              className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl cursor-pointer"
+            >
+              تسجيل الدخول الآن
+            </button>
+          </div>
+        )
       )}
 
       {/* Screen 5: لوحة تحكم الإدارة */}
@@ -2920,7 +2924,10 @@ export default function App() {
               </p>
               <button
                 type="button"
-                onClick={() => setShowLoginModal(true)}
+                onClick={() => {
+                  checkAdminAuthStatus();
+                  setShowLoginModal(true);
+                }}
                 className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl cursor-pointer"
               >
                 تسجيل الدخول الآن
@@ -2928,6 +2935,7 @@ export default function App() {
             </div>
           ) : !showLegacyAdminStudio ? (
             <ZadtooAdminDashboard
+              adminToken={adminToken}
               onLogout={handleAdminLogout}
               onOpenSignalModal={() => {
                 setShowLegacyAdminStudio(true);
@@ -2973,8 +2981,6 @@ export default function App() {
                   localStorage.setItem('zad_platform_plans', JSON.stringify(newPlans));
                   localStorage.setItem('zad_platform_contact_links', JSON.stringify(newLinks));
                 } catch (_e) {}
-                saveCloudPlans(newPlans).catch(() => {});
-                saveCloudContactLinks(newLinks).catch(() => {});
               }}
             />
           ) : (
@@ -3250,10 +3256,14 @@ export default function App() {
                       </label>
                       <input
                         type="password"
-                        value={autoPilot.botToken}
+                        value={autoPilot.botToken === 'CONFIGURED' ? '' : autoPilot.botToken}
                         onChange={(e) => setAutoPilot(prev => ({ ...prev, botToken: e.target.value }))}
-                        onBlur={() => handleSaveAutoPilot({ botToken: autoPilot.botToken })}
-                        placeholder="7123456789:AAHxyz..."
+                        onBlur={() => {
+                          if (autoPilot.botToken && autoPilot.botToken !== 'CONFIGURED') {
+                            handleSaveAutoPilot({ botToken: autoPilot.botToken });
+                          }
+                        }}
+                        placeholder={autoPilot.botToken === 'CONFIGURED' ? 'محفوظ بأمان في السيرفر (أدخل توكن جديد للتحديث)' : 'أدخل توكن البوت المجاني'}
                         dir="ltr"
                         className="w-full px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-emerald-500 font-mono-num"
                       />
@@ -3742,17 +3752,18 @@ export default function App() {
                       </div>
                       <input
                         type={showVipToken ? 'text' : 'password'}
-                        value={autoPilot.vipBotToken || ''}
+                        value={autoPilot.vipBotToken === 'CONFIGURED' ? '' : (autoPilot.vipBotToken || '')}
                         onChange={(e) => {
                           const val = e.target.value;
                           setAutoPilot(prev => ({ ...prev, vipBotToken: val }));
-                          try { localStorage.setItem('tg_vip_bot_token', val); } catch(_) {}
                         }}
                         onBlur={(e) => {
                           const val = e.target.value;
-                          handleSaveAutoPilot({ vipBotToken: val });
+                          if (val && val !== 'CONFIGURED') {
+                            handleSaveAutoPilot({ vipBotToken: val });
+                          }
                         }}
-                        placeholder="8814918920:AAGeXm..."
+                        placeholder={autoPilot.vipBotToken === 'CONFIGURED' ? 'محفوظ بأمان في السيرفر (أدخل توكن جديد للتحديث)' : 'أدخل توكن بوت VIP'}
                         dir="ltr"
                         className="w-full px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 font-mono-num"
                       />
@@ -3776,7 +3787,7 @@ export default function App() {
                           const val = e.target.value;
                           handleSaveAutoPilot({ vipChatId: val });
                         }}
-                        placeholder="@YourVipChannel أو -1004323890544"
+                        placeholder="@YourVipChannel أو -100..."
                         dir="ltr"
                         className="w-full px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 font-mono-num"
                       />
@@ -3791,11 +3802,10 @@ export default function App() {
                         const token = (autoPilot.vipBotToken || '').trim();
                         const chat = (autoPilot.vipChatId || '').trim();
                         try {
-                          localStorage.setItem('tg_vip_bot_token', token);
                           localStorage.setItem('tg_vip_chat_id', chat);
                         } catch (_) {}
                         await handleSaveAutoPilot({
-                          vipBotToken: token,
+                          ...(token && token !== 'CONFIGURED' ? { vipBotToken: token } : {}),
                           vipChatId: chat,
                           vipEnabled: true
                         });
@@ -6060,6 +6070,7 @@ export default function App() {
                   </h2>
                 </div>
                 <ZadtooPlansAndLinksManager
+                  adminToken={adminToken}
                   initialPlans={platformPlans}
                   initialContactLinks={platformContactLinks}
                   onConfigChanged={(p, c) => {
@@ -6074,6 +6085,7 @@ export default function App() {
             {(adminSectionTab === 'all' || adminSectionTab === 'admin_live') && (
               <section className="space-y-4">
                 <ZadtooAdminLiveBroadcast
+                  adminToken={adminToken}
                   autoPilot={autoPilot}
                   onRefreshSignals={fetchSignals}
                   onSignalCreated={(sig) => {
@@ -6086,6 +6098,7 @@ export default function App() {
         ) : activeView === 'robot' ? (
           <ErrorBoundary>
             <QuotexRobotAdminPage
+              adminToken={adminToken}
               robotSettings={robotSettings}
               setRobotSettings={setRobotSettings}
               subscribers={subscribers}
@@ -6095,7 +6108,10 @@ export default function App() {
               onTriggerSignalNow={handleTriggerAutoNow}
               onNavigateView={setActiveView}
               isAdmin={isAdminAuthenticated}
-              onOpenLoginModal={() => setShowLoginModal(true)}
+              onOpenLoginModal={() => {
+                checkAdminAuthStatus();
+                setShowLoginModal(true);
+              }}
             />
           </ErrorBoundary>
         ) : activeView === 'stats' && isAdminAuthenticated ? (
@@ -9805,7 +9821,9 @@ export default function App() {
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <Lock className="w-4 h-4 text-emerald-400" />
-                <h3 className="text-base font-bold text-white">تسجيل دخول المشرف</h3>
+                <h3 className="text-base font-bold text-white">
+                  {adminNeedsSetup ? 'إعداد حساب المشرف لأول مرة' : 'تسجيل دخول المشرف'}
+                </h3>
               </div>
               <button
                 onClick={() => {
@@ -9818,6 +9836,12 @@ export default function App() {
               </button>
             </div>
 
+            {adminNeedsSetup && (
+              <p className="text-xs text-amber-300 bg-amber-950/50 border border-amber-500/40 rounded-lg p-2.5 leading-relaxed">
+                لم يتم ضبط حساب المشرف على هذا الخادم بعد. أدخل البريد الإلكتروني وكلمة المرور (6 أحرف على الأقل) لاعتماد حساب المشرف بشكل مشفر.
+              </p>
+            )}
+
             <form onSubmit={handleAdminLogin} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1.5">
@@ -9829,7 +9853,7 @@ export default function App() {
                   value={loginEmail}
                   onChange={(e) => setLoginEmail(e.target.value)}
                   dir="ltr"
-                  placeholder="thrayanabil2026@gmail.com"
+                  placeholder="admin@example.com"
                   autoComplete="email"
                   className="w-full px-3.5 py-2.5 text-sm bg-[#0B0F17] border border-slate-800 rounded-lg text-slate-100 focus:outline-none focus:border-emerald-500 font-mono-num"
                 />
@@ -9842,10 +9866,12 @@ export default function App() {
                 <input
                   type="password"
                   required
+                  minLength={adminNeedsSetup ? 6 : undefined}
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   dir="ltr"
                   placeholder="••••••••"
+                  autoComplete={adminNeedsSetup ? 'new-password' : 'current-password'}
                   className="w-full px-3.5 py-2.5 text-sm bg-[#0B0F17] border border-slate-800 rounded-lg text-slate-100 focus:outline-none focus:border-emerald-500 font-mono-num"
                 />
               </div>
@@ -9859,7 +9885,11 @@ export default function App() {
                 disabled={isLoggingIn}
                 className="w-full py-2.5 text-sm font-bold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-lg transition-colors cursor-pointer"
               >
-                {isLoggingIn ? 'جاري التحقق...' : 'دخول إلى لوحة المشرف'}
+                {isLoggingIn
+                  ? 'جاري التحقق...'
+                  : adminNeedsSetup
+                  ? 'إنشاء حساب المشرف والدخول'
+                  : 'دخول إلى لوحة المشرف'}
               </button>
             </form>
           </div>
@@ -9889,7 +9919,10 @@ export default function App() {
               </button>
             ) : (
               <button
-                onClick={() => setShowLoginModal(true)}
+                onClick={() => {
+                  checkAdminAuthStatus();
+                  setShowLoginModal(true);
+                }}
                 className="relative z-30 flex items-center gap-1 text-slate-500 hover:text-emerald-400 transition-colors cursor-pointer pointer-events-auto"
                 title="دخول المشرف"
               >
@@ -10084,17 +10117,7 @@ export default function App() {
                   </div>
 
                   {/* Actions / Export */}
-                  <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800">
-                    <a
-                      href="/strategy.txt"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-medium transition-colors"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <span>عرض ملف الاستراتيجية الشامل (strategy.txt)</span>
-                    </a>
-
+                  <div className="pt-2 flex flex-wrap items-center justify-end gap-3 border-t border-slate-800">
                     <button
                       type="button"
                       onClick={() => {

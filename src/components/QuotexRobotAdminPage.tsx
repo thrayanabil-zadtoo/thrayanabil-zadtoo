@@ -47,6 +47,7 @@ export interface QuotexRobotSettings {
 }
 
 interface QuotexRobotAdminPageProps {
+  adminToken?: string;
   robotSettings: QuotexRobotSettings;
   setRobotSettings: React.Dispatch<React.SetStateAction<QuotexRobotSettings>>;
   subscribers?: VipSubscriber[];
@@ -60,6 +61,7 @@ interface QuotexRobotAdminPageProps {
 }
 
 export default function QuotexRobotAdminPage({
+  adminToken,
   robotSettings,
   setRobotSettings,
   subscribers = [],
@@ -216,15 +218,21 @@ export default function QuotexRobotAdminPage({
   const [momentumTriggerFeedback, setMomentumTriggerFeedback] = useState<string | null>(null);
   const [momentumRadar, setMomentumRadar] = useState<any[]>([]);
   const [isLoadingMomentumRadar, setIsLoadingMomentumRadar] = useState(false);
-  const [showMq4CodeModal, setShowMq4CodeModal] = useState(false);
-  const [mq4SourceCode, setMq4SourceCode] = useState<string>('');
+
+  const getAuthHeaders = (includeJson = true): Record<string, string> => ({
+    ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
+    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
+  });
 
   const fetchMomentumRadar = async () => {
+    if (!adminToken) return;
     setIsLoadingMomentumRadar(true);
     try {
-      const res = await fetch('/api/admin/momentum-pause/status');
+      const res = await fetch('/api/admin/momentum-pause/status', {
+        headers: getAuthHeaders(false)
+      });
       const data = await res.json();
-      if (data.ok && Array.isArray(data.radar)) {
+      if (res.ok && data.ok && Array.isArray(data.radar)) {
         setMomentumRadar(data.radar);
       }
     } catch (_e) {
@@ -238,7 +246,7 @@ export default function QuotexRobotAdminPage({
     fetchMomentumRadar();
     const interval = setInterval(fetchMomentumRadar, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [adminToken]);
 
   const handleTriggerMomentumPauseNow = async (preferredPair?: string, direction?: 'CALL' | 'PUT') => {
     setIsTriggeringMomentumPause(true);
@@ -246,11 +254,11 @@ export default function QuotexRobotAdminPage({
     try {
       const res = await fetch('/api/admin/momentum-pause/trigger-now', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ preferredPair, direction })
       });
       const data = await res.json();
-      if (data.ok) {
+      if (res.ok && data.ok) {
         setMomentumTriggerFeedback(`✅ تم إرسال إشارة Momentum Pause بنجاح إلى قناة VIP وروبوت كيوتكس! (${data.signal?.asset} - ${data.signal?.direction})`);
       } else {
         setMomentumTriggerFeedback(`❌ فشل: ${data.error || 'تعذر الإرسال'}`);
@@ -260,19 +268,6 @@ export default function QuotexRobotAdminPage({
     } finally {
       setIsTriggeringMomentumPause(false);
       setTimeout(() => setMomentumTriggerFeedback(null), 8000);
-    }
-  };
-
-  const handleOpenMq4CodeModal = async () => {
-    setShowMq4CodeModal(true);
-    if (!mq4SourceCode) {
-      try {
-        const res = await fetch('/api/strategy/mq4-code');
-        const data = await res.json();
-        if (data.ok && data.code) {
-          setMq4SourceCode(data.code);
-        }
-      } catch (_e) {}
     }
   };
 
@@ -389,9 +384,12 @@ export default function QuotexRobotAdminPage({
     setIsTestingTelegram(true);
     setTelegramTestResult(null);
     try {
-      const res = await fetch('/api/telegram/test-connection', { method: 'POST' });
+      const res = await fetch('/api/telegram/test-connection', {
+        method: 'POST',
+        headers: getAuthHeaders(false)
+      });
       const data = await res.json();
-      if (data.ok) {
+      if (res.ok && data.ok) {
         setTelegramTestResult({
           ok: true,
           message: data.message || 'تم إرسال رسالة الفحص بنجاح إلى القناة!',
@@ -418,7 +416,9 @@ export default function QuotexRobotAdminPage({
     const activeKey = keyToTest ?? selectedTestApiKey;
     setIsTestingApi(true);
     try {
-      const res = await fetch(`/api/quotex-robot/feed?apiKey=${encodeURIComponent(activeKey)}`);
+      const res = await fetch(`/api/quotex-robot/feed?apiKey=${encodeURIComponent(activeKey)}`, {
+        headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
+      });
       const data = await res.json();
       setApiFeedResponse(data);
     } catch (_e) {
@@ -430,7 +430,7 @@ export default function QuotexRobotAdminPage({
 
   useEffect(() => {
     fetchLiveRobotApiFeed(selectedTestApiKey);
-  }, [selectedTestApiKey, safeSignals.length]);
+  }, [selectedTestApiKey, safeSignals.length, adminToken]);
 
   useEffect(() => {
     if (latestSignal?.asset && latestSignal.status === 'PENDING') {
@@ -509,11 +509,11 @@ export default function QuotexRobotAdminPage({
     try {
       const res = await fetch('/api/robot-settings', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(updated)
       });
       const data = await res.json();
-      if (data.ok && data.robotSettings) {
+      if (res.ok && data.ok && data.robotSettings) {
         setRobotSettings(data.robotSettings);
         setSettingsSavedBadge(true);
         setTimeout(() => setSettingsSavedBadge(false), 2500);
@@ -532,7 +532,7 @@ export default function QuotexRobotAdminPage({
     try {
       const res = await fetch('/api/quotex-robot/create-key', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           name: newKeyMemberName.trim(),
           brokerAccountId: newKeyQuotexId.trim() || 'QX-TRADER',
@@ -542,7 +542,7 @@ export default function QuotexRobotAdminPage({
         })
       });
       const data = await res.json();
-      if (data.ok && data.subscriber) {
+      if (res.ok && data.ok && data.subscriber) {
         setSubscribers(prev => [data.subscriber, ...prev]);
         setSelectedTestApiKey(data.subscriber.robotApiKey || 'QX-ADMIN-MASTER-TEST');
         setNewKeyMemberName('');
@@ -569,11 +569,11 @@ export default function QuotexRobotAdminPage({
     try {
       const res = await fetch(`/api/subscribers/${subId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(payload)
       });
       const data = await res.json();
-      if (data.ok && data.subscriber) {
+      if (res.ok && data.ok && data.subscriber) {
         setSubscribers(prev => prev.map(s => (s.id === subId ? data.subscriber : s)));
       }
     } catch (_e) {
@@ -600,65 +600,23 @@ export default function QuotexRobotAdminPage({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const handleDownloadUserscript = async () => {
-    try {
-      let code = canonicalUserscript;
-      if (!code) {
-        const key = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
-        const res = await fetch(`/api/quotex-robot/zad-broker-robot.user.js?apiKey=${encodeURIComponent(key)}`);
-        code = await res.text();
-        setCanonicalUserscript(code);
-      }
-      const blob = new Blob([code], { type: 'text/javascript;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'zad-broker-robot.user.js';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch(e) {
-      console.error('Download error:', e);
-    }
-  };
-
   const [isRestoringGolden, setIsRestoringGolden] = useState<boolean>(false);
   const [goldenRestoreMessage, setGoldenRestoreMessage] = useState<string | null>(null);
 
-  const handleDownloadGoldenScript = async () => {
-    try {
-      const key = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
-      const res = await fetch(`/api/quotex-robot/golden-reference.user.js?apiKey=${encodeURIComponent(key)}`);
-      const code = await res.text();
-      const blob = new Blob([code], { type: 'text/javascript;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'zad-broker-robot.golden-v4.0.user.js';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch(e) {
-      console.error('Download golden error:', e);
-    }
-  };
-
   const handleRestoreGoldenBaseline = async () => {
-    if (!window.confirm('🔒 هل أنت متأكد من رغبتك في استعادة وتثبيت النسخة المرجعية الذهبية (v4.0 Golden Baseline)؟\nسيتم تثبيت كود محرك التبديل والتداول المعتمد بنسبة 100% كمرجع أساسي.')) {
+    if (!window.confirm('🔒 هل أنت متأكد من رغبتك في استعادة وتثبيت الإعدادات المرجعية الذهبية للروبوت السحابي على الخادم؟')) {
       return;
     }
     setIsRestoringGolden(true);
     setGoldenRestoreMessage(null);
     try {
-      const res = await fetch('/api/quotex-robot/restore-golden-baseline', { method: 'POST' });
+      const res = await fetch('/api/quotex-robot/restore-golden-baseline', {
+        method: 'POST',
+        headers: getAuthHeaders(false)
+      });
       const data = await res.json();
-      if (data.ok) {
-        setGoldenRestoreMessage(data.message || '✅ تم تثبيت واستعادة النسخة المرجعية الذهبية بنجاح!');
-        const key = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
-        const txt = await fetch(`/api/quotex-robot/zad-broker-robot.user.js?apiKey=${encodeURIComponent(key)}`).then(r => r.text());
-        setCanonicalUserscript(txt);
+      if (res.ok && data.ok) {
+        setGoldenRestoreMessage(data.message || '✅ تم تثبيت واستعادة الإعدادات المرجعية الذهبية بنجاح!');
       } else {
         setGoldenRestoreMessage('❌ فشل: ' + (data.error || 'تعذر الاستعادة'));
       }
@@ -670,43 +628,8 @@ export default function QuotexRobotAdminPage({
     }
   };
 
-  // Primary Official Domain & Current App Origin
-  const officialDomain = 'https://fx.zadtoo.com';
+  // Current App Origin
   const appOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://fx.zadtoo.com';
-
-  // Canonical Userscript loaded dynamically from server endpoint (single source of truth)
-  const [canonicalUserscript, setCanonicalUserscript] = useState<string>('');
-
-  useEffect(() => {
-    const key = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
-    fetch(`/api/quotex-robot/zad-broker-robot.user.js?apiKey=${encodeURIComponent(key)}`)
-      .then(res => res.text())
-      .then(txt => {
-        if (txt && txt.length > 500) {
-          setCanonicalUserscript(txt);
-        }
-      })
-      .catch((err) => {
-        console.warn('Failed to load canonical userscript from endpoint:', err);
-      });
-  }, [selectedTestApiKey]);
-
-  const handleCopyUserscript = async () => {
-    try {
-      let code = canonicalUserscript;
-      if (!code) {
-        const key = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
-        const res = await fetch(`/api/quotex-robot/zad-broker-robot.user.js?apiKey=${encodeURIComponent(key)}`);
-        code = await res.text();
-        setCanonicalUserscript(code);
-      }
-      handleCopy(code, 'userscript-code');
-    } catch(e) {
-      console.error('Copy error:', e);
-    }
-  };
-
-  const generatedQuotexUserscript = canonicalUserscript;
 
   const filteredSubscribers = useMemo(() => {
     const list = safeSubscribers;
@@ -955,23 +878,10 @@ export default function QuotexRobotAdminPage({
               <span>{isTriggeringMomentumPause ? '⏳ جاري الإرسال...' : '⚡ إرسال إشارة VIP وروبوت تجريبية الآن (5 ثوانٍ)'}</span>
             </button>
 
-            <a
-              href="/api/strategy/download-mq4"
-              download="NB_FX_Momentum_Pause_Breakout.mq4"
-              className="px-3.5 py-2.5 text-xs font-black bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-md shadow-emerald-500/20"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>تحميل مؤشر MT4 (.mq4)</span>
-            </a>
-
-            <button
-              type="button"
-              onClick={handleOpenMq4CodeModal}
-              className="px-3.5 py-2.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
-            >
-              <Code className="w-3.5 h-3.5" />
-              <span>عرض ونسخ كود MQL4</span>
-            </button>
+            <span className="px-3.5 py-2.5 text-xs font-bold bg-slate-800 text-emerald-300 border border-emerald-500/30 rounded-xl flex items-center gap-1.5">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              <span>خوارزمية MPB محمية بالكامل على الخادم</span>
+            </span>
           </div>
         </div>
 
@@ -1233,62 +1143,6 @@ export default function QuotexRobotAdminPage({
           </div>
         </div>
       </div>
-
-      {/* MQ4 Code Viewer Modal */}
-      {showMq4CodeModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0b1220] border-2 border-amber-500/50 rounded-2xl max-w-4xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
-            <div className="p-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Code className="w-5 h-5 text-amber-400" />
-                <h3 className="font-black text-white text-base">
-                  كود مؤشر MT4 الرسمي (NB_FX_Momentum_Pause_Breakout.mq4)
-                </h3>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleCopy(mq4SourceCode, 'mq4-code-modal')}
-                  className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black rounded-lg text-xs cursor-pointer flex items-center gap-1 shadow"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>{copiedId === 'mq4-code-modal' ? '✓ تم النسخ!' : 'نسخ الكود بالكامل'}</span>
-                </button>
-                <a
-                  href="/api/strategy/download-mq4"
-                  download="NB_FX_Momentum_Pause_Breakout.mq4"
-                  className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-lg text-xs cursor-pointer flex items-center gap-1 shadow"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>تحميل ملف .mq4</span>
-                </a>
-                <button
-                  type="button"
-                  onClick={() => setShowMq4CodeModal(false)}
-                  className="p-1.5 text-slate-400 hover:text-white rounded-lg cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="p-4 overflow-y-auto flex-1 font-mono text-xs text-emerald-300 bg-[#050914] leading-relaxed select-all" dir="ltr">
-              <pre>{mq4SourceCode || '// جاري تحميل كود المؤشر من السيرفر...'}</pre>
-            </div>
-
-            <div className="p-3 bg-slate-900 border-t border-slate-800 text-xs text-slate-400 flex items-center justify-between">
-              <span>💡 طريقة التثبيت: افتح MetaTrader 4 &gt; File &gt; Open Data Folder &gt; MQL4 &gt; Indicators والصق الملف ثم أعد تشغيل المنصة.</span>
-              <button
-                type="button"
-                onClick={() => setShowMq4CodeModal(false)}
-                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs cursor-pointer"
-              >
-                إغلاق
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* =====================================================================
           SECTION 1: LIVE INTERACTIVE FLOATING ROBOT OVER QUOTEX CHART PREVIEW
@@ -1721,7 +1575,7 @@ export default function QuotexRobotAdminPage({
                             setRobotSettings(prev => ({ ...prev, strategyEngineMode: newMode }));
                             fetch('/api/robot-settings', {
                               method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
+                              headers: getAuthHeaders(),
                               body: JSON.stringify({ strategyEngineMode: newMode })
                             }).catch(() => {});
                           }}
@@ -2278,48 +2132,11 @@ export default function QuotexRobotAdminPage({
                 <li><strong className="text-emerald-300">نغمة صوتية عالية النقاء:</strong> تنبيه صوتي فوري مع وميض الصندوق باللون الأخضر أو الأحمر.</li>
               </ul>
               <div className="text-[10px] text-slate-400 pt-1 border-t border-emerald-500/20">
-                💡 <strong>لتحديث الروبوت الآن:</strong> اضغط الزر الأصفر أدناه لنسخ الكود المحدث، ثم افتح Tampermonkey واستبدل الكود القديم واحفظه (Ctrl + S).
+                🔒 <strong>سياسة حماية الأكواد والملفات:</strong> تم إيقاف تصدير أو تحميل أي ملفات خارجية (`.user.js` أو `.mq4` أو ملفات نصية) لضمان حماية الخوارزميات بالكامل على الخادم.
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                onClick={handleCopyUserscript}
-                className="py-2.5 px-3 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-lg shadow-amber-500/20 active:scale-95"
-              >
-                <Copy className="w-4 h-4" />
-                <span>
-                  {copiedId === 'userscript-code'
-                    ? '✓ تم نسخ كود السكريبت (v4.5) بنجاح!'
-                    : 'نسخ كود السكريبت المحدث v4.5'}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={handleDownloadUserscript}
-                className="py-2.5 px-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-500/20 active:scale-95"
-              >
-                <span>📥</span>
-                <span>تحميل ملف (zad-broker-robot.user.js)</span>
-              </button>
-            </div>
-
-            <div className="flex items-center justify-between p-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-xs">
-              <span className="text-slate-400">⚡ رابط التثبيت / التحديث التلقائي المباشر:</span>
-              <a
-                href={`${appOrigin}/api/quotex-robot/zad-broker-robot.user.js?apiKey=${selectedTestApiKey}`}
-                target="_blank"
-                rel="noreferrer"
-                className="px-3 py-1 bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold rounded-lg text-xs flex items-center gap-1 transition-all"
-                title="اضغط لفتح شاشة التثبيت التلقائي المباشرة في تامبرمونكي بنقرة واحدة"
-              >
-                <span>تثبيت مباشر بنقرة واحدة (v4.5) ↗</span>
-              </a>
-            </div>
-
-            {/* GOLDEN REFERENCE BASELINE LOCK CARD (النسخة المرجعية الذهبية المعتمدة والمقفولة) */}
+            {/* GOLDEN REFERENCE BASELINE LOCK CARD */}
             <div className="p-4 bg-gradient-to-r from-amber-950/40 via-slate-950 to-amber-950/30 border-2 border-amber-500/60 rounded-xl space-y-3 shadow-lg">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -2328,13 +2145,13 @@ export default function QuotexRobotAdminPage({
                   </span>
                   <div>
                     <h4 className="text-xs font-extrabold text-amber-300 flex items-center gap-1.5">
-                      <span>النسخة المرجعية الذهبية المعتمدة (v4.5 Golden Baseline)</span>
+                      <span>المرجع السحابي المعتمد لإعدادات الروبوت</span>
                       <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[9px] font-bold">
-                        محمية ومقفولة
+                        محمية ومقفولة على الخادم
                       </span>
                     </h4>
                     <p className="text-[10.5px] text-slate-400 mt-0.5">
-                      تم حفظ وتجميد محرك النقر والتبديل واختيار الشارت المعتمد كمرجع دائم لا يتأثر بأي تعديلات في العضويات أو المؤشرات.
+                      إعدادات الروبوت وإدارة المفاتيح محمية بالكامل ولا يمكن استخراج أو تحميل أي أكواد مصدرية عبر الموقع.
                     </p>
                   </div>
                 </div>
@@ -2353,25 +2170,8 @@ export default function QuotexRobotAdminPage({
                   disabled={isRestoringGolden}
                   className="px-3 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs transition-all cursor-pointer flex items-center gap-1.5 shadow"
                 >
-                  <span>{isRestoringGolden ? '⏳ جاري الاستعادة...' : '🔄 استعادة وتثبيت النسخة الذهبية بنقرة واحدة'}</span>
+                  <span>{isRestoringGolden ? '⏳ جاري الاستعادة...' : '🔄 استعادة وتثبيت الإعدادات المرجعية بنقرة واحدة'}</span>
                 </button>
-
-                <button
-                  type="button"
-                  onClick={handleDownloadGoldenScript}
-                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 font-bold rounded-lg text-xs transition-all cursor-pointer flex items-center gap-1.5"
-                >
-                  <span>📥 تحميل نسخة الاحتياط الذهبية (.user.js)</span>
-                </button>
-
-                <a
-                  href="/api/quotex-robot/golden-reference.user.js"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-2.5 py-2 text-[11px] text-slate-400 hover:text-white underline underline-offset-4"
-                >
-                  عرض الكود المرجعي الخام ↗
-                </a>
               </div>
             </div>
           </div>

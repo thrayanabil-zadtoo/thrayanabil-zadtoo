@@ -17,7 +17,6 @@ import {
   Flame
 } from 'lucide-react';
 import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, filterActiveForexNews } from '../types/forexNews';
-import { loadCloudSystemState } from '../firebase';
 
 interface ZadtooHomePageProps {
   onStartNow: () => void;
@@ -51,7 +50,6 @@ export const ZadtooHomePage: React.FC<ZadtooHomePageProps> = ({
     let isMounted = true;
 
     const loadLatestNews = async () => {
-      let loadedFromServer = false;
       try {
         const res = await fetch('/api/forex-news');
         const contentType = res.headers.get('content-type') || '';
@@ -62,25 +60,10 @@ export const ZadtooHomePage: React.FC<ZadtooHomePageProps> = ({
             if (isMounted) {
               setNewsList(active);
             }
-            loadedFromServer = true;
           }
         }
       } catch (_err) {
-        // Fallback to Firestore
-      }
-
-      if (!loadedFromServer) {
-        try {
-          const cloud = await loadCloudSystemState<{ forexNews?: ForexNewsItem[] }>();
-          if (cloud && Array.isArray(cloud.forexNews) && isMounted) {
-            const active = filterActiveForexNews(cloud.forexNews, 0);
-            if (active.length > 0) {
-              setNewsList(active);
-            }
-          }
-        } catch (_err) {
-          // Keep current active list
-        }
+        // Keep current active list
       }
     };
 

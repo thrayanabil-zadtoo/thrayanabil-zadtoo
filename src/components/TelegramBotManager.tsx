@@ -34,7 +34,6 @@ import {
   Unlock,
   Coins
 } from 'lucide-react';
-import { saveCloudTelegramBotState, loadCloudTelegramBotState } from '../firebase';
 
 export interface TelegramBotUser {
   id: string;
@@ -121,7 +120,7 @@ export interface TelegramBotConfig {
 
 const DEFAULT_CONFIG: TelegramBotConfig = {
   isEnabled: true,
-  botToken: '9229198517:AAH026I-mlMHGtCZakEwxQuQQ6P341wKnkY',
+  botToken: '',
   botUsername: '@Zadfx_bot',
   adminTelegramUsername: '@thrayanabil',
   freeChannelLink: 'https://t.me/ZadNBFX',
@@ -184,7 +183,11 @@ const DEFAULT_CONFIG: TelegramBotConfig = {
   }
 };
 
-export const TelegramBotManager: React.FC = () => {
+interface TelegramBotManagerProps {
+  adminToken?: string;
+}
+
+export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminToken }) => {
   const [activeTab, setActiveTab] = useState<'users' | 'settings' | 'broadcast' | 'simulator'>('users');
   const [users, setUsers] = useState<TelegramBotUser[]>([]);
   const [config, setConfig] = useState<TelegramBotConfig>(DEFAULT_CONFIG);
@@ -230,23 +233,26 @@ export const TelegramBotManager: React.FC = () => {
   const [simName, setSimName] = useState('كريم الأحمدي');
   const [simCountry, setSimCountry] = useState('مصر');
 
-  // Fetch initial data (from Local API and Firebase Cloud)
-  const fetchData = async () => {
-    setIsLoading(true);
-    let gotUsers = false;
-    let gotConfig = false;
+  const getAuthHeaders = (includeJson = true): Record<string, string> => ({
+    ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
+    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
+  });
 
+  // Fetch initial data from protected Admin API
+  const fetchData = async () => {
+    if (!adminToken) return;
+    setIsLoading(true);
     try {
+      const authHeaders = getAuthHeaders(false);
       const [resUsers, resConfig] = await Promise.all([
-        fetch('/api/telegram-bot/users').catch(() => null),
-        fetch('/api/telegram-bot/config').catch(() => null)
+        fetch('/api/telegram-bot/users', { headers: authHeaders }).catch(() => null),
+        fetch('/api/telegram-bot/config', { headers: authHeaders }).catch(() => null)
       ]);
 
       if (resUsers && resUsers.ok) {
         const dataUsers = await resUsers.json();
         if (dataUsers?.users && Array.isArray(dataUsers.users)) {
           setUsers(dataUsers.users);
-          gotUsers = true;
         }
       }
       if (resConfig && resConfig.ok) {
@@ -260,45 +266,10 @@ export const TelegramBotManager: React.FC = () => {
               ...(dataConfig.config.usdtPayment || {})
             }
           }));
-          gotConfig = true;
         }
       }
     } catch (e) {
-      console.warn('Local API check failed, checking cloud Firestore:', e);
-    }
-
-    // Fallback or Two-way cloud sync: If on fx.zadtoo.com or API returned empty/failed, load from Firebase
-    try {
-      const cloudState = await loadCloudTelegramBotState();
-      if (cloudState) {
-        if (!gotConfig && cloudState.config) {
-          setConfig(prev => ({
-            ...prev,
-            ...cloudState.config,
-            usdtPayment: {
-              ...DEFAULT_CONFIG.usdtPayment,
-              ...(cloudState.config.usdtPayment || {})
-            }
-          }));
-        }
-        if (!gotUsers && Array.isArray(cloudState.users)) {
-          setUsers(cloudState.users);
-        } else if (Array.isArray(cloudState.users) && cloudState.users.length > 0) {
-          // Merge any users from cloud that might be newly registered
-          setUsers(prev => {
-            const existingIds = new Set(prev.map(u => u.telegramChatId || u.id));
-            const fresh = [...prev];
-            for (const u of cloudState.users || []) {
-              if (!existingIds.has(u.telegramChatId || u.id)) {
-                fresh.push(u);
-              }
-            }
-            return fresh;
-          });
-        }
-      }
-    } catch (errCloud) {
-      console.warn('Firebase cloud state load notice:', errCloud);
+      console.warn('Telegram bot API check failed:', e);
     } finally {
       setIsLoading(false);
     }
@@ -306,56 +277,54 @@ export const TelegramBotManager: React.FC = () => {
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [adminToken]);
 
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
     setStatusMessage({ text, type });
     setTimeout(() => setStatusMessage(null), 4000);
   };
 
-  // Save Settings (Saves to Server API AND Firebase Cloud Firestore)
+  // Save Settings (Saves via protected Server API)
   const handleSaveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    let apiSuccess = false;
-    let cloudSuccess = false;
-
     try {
       const res = await fetch('/api/telegram-bot/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(config)
       });
       const data = await res.json();
-      if (data?.ok) apiSuccess = true;
+      if (res.ok && data?.ok) {
+        if (data.config) {
+          setConfig(prev => ({ ...prev, ...data.config }));
+        }
+        showToast('✅ تم حفظ كافة إعدادات بوت التليجرام والمدفوعات بنجاح ومزامنتها لحظياً!');
+      } else {
+        showToast(data?.error || '❌ تعذر حفظ الإعدادات، يرجى التحقق من صلاحية المشرف', 'error');
+      }
     } catch (_err) {
-      // API call might fail if fx.zadtoo.com runs as client-only
-    }
-
-    try {
-      cloudSuccess = await saveCloudTelegramBotState(config, users);
-    } catch (_errCloud) {}
-
-    setIsLoading(false);
-    if (apiSuccess || cloudSuccess) {
-      showToast('✅ تم حفظ كافة إعدادات بوت التليجرام والمدفوعات بنجاح ومزامنتها لحظياً!');
-    } else {
       showToast('❌ تعذر حفظ الإعدادات، يرجى التأكد من اتصال الإنترنت', 'error');
+    } finally {
+      setIsLoading(false);
     }
   };
 
   // Toggle user status
   const handleUpdateUserStatus = async (id: string, status: 'ACTIVE' | 'SUSPENDED' | 'BLOCKED') => {
-    const updatedUsers = users.map(u => (u.id === id ? { ...u, status } : u));
-    setUsers(updatedUsers);
     try {
-      await fetch(`/api/telegram-bot/users/${id}/status`, {
+      const res = await fetch(`/api/telegram-bot/users/${id}/status`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ status })
-      }).catch(() => null);
-      await saveCloudTelegramBotState(config, updatedUsers);
-      showToast(`✅ تم تحديث حالة العضو إلى: ${status === 'ACTIVE' ? 'نشط' : status === 'SUSPENDED' ? 'معلق' : 'موقوف'}`);
+      });
+      const data = await res.json();
+      if (res.ok && data?.ok) {
+        setUsers(prev => prev.map(u => (u.id === id ? { ...u, status } : u)));
+        showToast(`✅ تم تحديث حالة العضو إلى: ${status === 'ACTIVE' ? 'نشط' : status === 'SUSPENDED' ? 'معلق' : 'موقوف'}`);
+      } else {
+        showToast(data?.error || '❌ تعذر تحديث حالة العضو', 'error');
+      }
     } catch (_err) {
       showToast('❌ حدث خطأ أثناء تحديث حالة العضو', 'error');
     }
@@ -364,14 +333,18 @@ export const TelegramBotManager: React.FC = () => {
   // Delete User
   const handleDeleteUser = async (id: string, name: string) => {
     if (!window.confirm(`هل أنت متأكد من حذف العضو "${name}" نهائياً من سجل البوت؟`)) return;
-    const updatedUsers = users.filter(u => u.id !== id);
-    setUsers(updatedUsers);
     try {
-      await fetch(`/api/telegram-bot/users/${id}`, {
-        method: 'DELETE'
-      }).catch(() => null);
-      await saveCloudTelegramBotState(config, updatedUsers);
-      showToast(`🗑️ تم حذف العضو "${name}" بنجاح ومزامنة السحابة`);
+      const res = await fetch(`/api/telegram-bot/users/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders(false)
+      });
+      const data = await res.json();
+      if (res.ok && data?.ok) {
+        setUsers(prev => prev.filter(u => u.id !== id));
+        showToast(`🗑️ تم حذف العضو "${name}" بنجاح`);
+      } else {
+        showToast(data?.error || '❌ تعذر حذف العضو', 'error');
+      }
     } catch (_err) {
       showToast('❌ تعذر حذف العضو', 'error');
     }
@@ -381,18 +354,22 @@ export const TelegramBotManager: React.FC = () => {
   const handleSaveEditUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser) return;
-    const updatedUsers = users.map(u => (u.id === editingUser.id ? editingUser : u));
-    setUsers(updatedUsers);
+    const targetUser = editingUser;
     setEditingUser(null);
 
     try {
-      await fetch(`/api/telegram-bot/users/${editingUser.id}`, {
+      const res = await fetch(`/api/telegram-bot/users/${targetUser.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(editingUser)
-      }).catch(() => null);
-      await saveCloudTelegramBotState(config, updatedUsers);
-      showToast('✅ تم حفظ وتثبيت تعديلات ملف العضو بنجاح ومزامنتها مع البوت');
+        headers: getAuthHeaders(),
+        body: JSON.stringify(targetUser)
+      });
+      const data = await res.json();
+      if (res.ok && data?.ok) {
+        setUsers(prev => prev.map(u => (u.id === targetUser.id ? (data.user || targetUser) : u)));
+        showToast('✅ تم حفظ وتثبيت تعديلات ملف العضو بنجاح ومزامنتها مع البوت');
+      } else {
+        showToast(data?.error || '❌ تعذر حفظ تعديلات العضو', 'error');
+      }
     } catch (_err) {
       showToast('❌ تعذر حفظ تعديلات العضو', 'error');
     }
@@ -408,11 +385,11 @@ export const TelegramBotManager: React.FC = () => {
     try {
       const res = await fetch('/api/telegram-bot/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(newMember)
       });
       const data = await res.json();
-      if (data.ok && data.user) {
+      if (res.ok && data.ok && data.user) {
         setUsers(prev => [data.user, ...prev]);
         setIsAddModalOpen(false);
         setNewMember({
@@ -428,6 +405,8 @@ export const TelegramBotManager: React.FC = () => {
           notes: ''
         });
         showToast('✅ تم إضافة العضو الجديد للملف بنجاح');
+      } else {
+        showToast(data?.error || '❌ تعذر إضافة العضو', 'error');
       }
     } catch (_err) {
       showToast('❌ تعذر إضافة العضو', 'error');
@@ -442,11 +421,11 @@ export const TelegramBotManager: React.FC = () => {
     try {
       const res = await fetch(`/api/telegram-bot/users/${directMsgUser.id}/message`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ message: directMsgText.trim() })
       });
       const data = await res.json();
-      if (data.ok) {
+      if (res.ok && data.ok) {
         showToast(`🚀 تم إرسال الرسالة إلى ${directMsgUser.name} بنجاح عبر التليجرام!`);
         setDirectMsgText('');
         setDirectMsgUser(null);
@@ -472,7 +451,7 @@ export const TelegramBotManager: React.FC = () => {
     try {
       const res = await fetch('/api/telegram-bot/broadcast', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           message: broadcastText.trim(),
           targetLanguage: broadcastLang,
@@ -480,11 +459,11 @@ export const TelegramBotManager: React.FC = () => {
         })
       });
       const data = await res.json();
-      if (data.ok) {
+      if (res.ok && data.ok) {
         showToast(`📢 تم إرسال البث الجماعي بنجاح إلى (${data.sentCount} عضو)!`);
         setBroadcastText('');
       } else {
-        showToast(`❌ حدث خطأ أثناء البث: ${data.error}`, 'error');
+        showToast(`❌ حدث خطأ أثناء البث: ${data.error || 'تعذر الإرسال'}`, 'error');
       }
     } catch (_err) {
       showToast('❌ تعذر تنفيذ البث الجماعي', 'error');

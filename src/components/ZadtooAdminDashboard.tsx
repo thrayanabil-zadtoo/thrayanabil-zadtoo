@@ -43,6 +43,7 @@ import type { SubscriptionPlan, PlatformContactLinks } from '../types/platformCo
 import type { AutoPilotConfig } from '../App';
 
 interface ZadtooAdminDashboardProps {
+  adminToken?: string;
   onLogout: () => void;
   onOpenSignalModal?: () => void;
   onOpenAddUser?: () => void;
@@ -63,6 +64,7 @@ interface ZadtooAdminDashboardProps {
 }
 
 export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
+  adminToken,
   onLogout,
   onOpenSignalModal,
   onOpenAddUser,
@@ -264,128 +266,70 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
     }
   };
 
+  const getAuthHeaders = (): Record<string, string> => ({
+    'Content-Type': 'application/json',
+    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
+  });
+
   const handleTriggerInstant = async () => {
     setIsTriggeringInstant(true);
-    let handled = false;
     try {
-      const isStatic =
-        typeof window !== 'undefined' &&
-        (window.location.hostname === 'fx.zadtoo.com' ||
-          window.location.hostname.endsWith('.web.app') ||
-          window.location.hostname.endsWith('.firebaseapp.com'));
-
-      if (!isStatic) {
-        const res = await fetch('/api/autopilot/trigger-now', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ preferredPair: fixedPair })
-        });
-        const contentType = res.headers.get('content-type') || '';
-        if (res.ok && contentType.includes('application/json')) {
-          const data = await res.json();
-          if (data.ok) {
-            handled = true;
-            const sig = data.signal;
-            setBroadcastSuccessMessage(
-              `⚡ تم بث إشارة فورية بنجاح إلى القناة (@ZadNBFX)! الزوج: ${sig?.asset || fixedPair} | الاتجاه: ${sig?.direction === 'CALL' ? 'شراء 🟢' : 'بيع 🔴'} (رسالة #${sig?.telegramMessageId || ''})`
-            );
-            if (sig) {
-              setRecentSignals((prev) => [
-                { asset: sig.asset, direction: sig.direction, time: sig.entryTime || 'الآن' },
-                ...prev.slice(0, 4)
-              ]);
-            }
-          }
-        }
-      }
-    } catch (_serverErr) {
-      // Fallback below
-    }
-
-    if (!handled) {
-      // Direct client dispatch to Telegram
-      try {
-        const token = (autoPilot?.botToken || localStorage.getItem('tg_bot_token') || '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U').trim();
-        const chat = (autoPilot?.chatId || localStorage.getItem('tg_chat_id') || '@ZadNBFX').trim();
-        const now = new Date();
-        const entryMinute = String((now.getMinutes() + 1) % 60).padStart(2, '0');
-        const dir = Math.random() > 0.5 ? 'CALL' : 'PUT';
-        const dirText = dir === 'CALL' ? 'صعود 🟢 ⬆️ (CALL / شراء)' : 'هبوط 🔴 ⬇️ (PUT / بيع)';
-
-        const text = [
-          '⚡ إشارة بث فوري استثنائية - ZAD FX ⚡',
-          '━━━━━━━━━━━━━━━━━━━',
-          `📊 الزوج: ${fixedPair}`,
-          `🎯 الاتجاه: ${dirText}`,
-          `⏱️ وقت الدخول: :${entryMinute} (1 دقيقة M1)`,
-          '💵 السعر: السوق المباشر',
-          '━━━━━━━━━━━━━━━━━━━',
-          '🔗 رابط منصة كيوتكس المباشر: https://broker-qx.pro/?lid=2303934',
-          '⚖️ التزام صارم بإدارة رأس المال 1% كحد أقصى.'
-        ].join('\n');
-
-        const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chat_id: chat, text })
-        });
-        const tgData = await tgRes.json();
-        if (tgData.ok) {
+      const res = await fetch('/api/autopilot/trigger-now', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ preferredPair: fixedPair })
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        if (data.ok) {
+          const sig = data.signal;
           setBroadcastSuccessMessage(
-            `⚡ تم بث إشارة فورية بنجاح إلى القناة (@ZadNBFX)! الزوج: ${fixedPair} | الاتجاه: ${dirText} (رسالة #${tgData.result?.message_id || ''})`
+            `⚡ تم بث إشارة فورية بنجاح إلى القناة (@ZadNBFX)! الزوج: ${sig?.asset || fixedPair} | الاتجاه: ${sig?.direction === 'CALL' ? 'شراء 🟢' : 'بيع 🔴'} (رسالة #${sig?.telegramMessageId || ''})`
           );
-          setRecentSignals((prev) => [
-            { asset: fixedPair, direction: dir, time: `:${entryMinute}` },
-            ...prev.slice(0, 4)
-          ]);
+          if (sig) {
+            setRecentSignals((prev) => [
+              { asset: sig.asset, direction: sig.direction, time: sig.entryTime || 'الآن' },
+              ...prev.slice(0, 4)
+            ]);
+          }
         } else {
-          setBroadcastSuccessMessage(`⚠️ تعذر إرسال الإشارة عبر التليجرام: ${tgData.description || 'تأكد من الصلاحيات'}`);
+          setBroadcastSuccessMessage(`⚠️ تعذر بث الإشارة: ${data.error || 'تأكد من صلاحيات المشرف'}`);
         }
-      } catch (directErr: any) {
-        setBroadcastSuccessMessage(`❌ خطأ أثناء إرسال الإشارة: ${directErr?.message || ''}`);
+      } else {
+        const errData = contentType.includes('application/json') ? await res.json().catch(() => ({})) : {};
+        setBroadcastSuccessMessage(`❌ تعذر تنفيذ البث الفوري (${errData?.error || res.status})`);
       }
+    } catch (serverErr: any) {
+      setBroadcastSuccessMessage(`❌ خطأ أثناء الاتصال بالخادم: ${serverErr?.message || ''}`);
+    } finally {
+      setIsTriggeringInstant(false);
+      setTimeout(() => setBroadcastSuccessMessage(''), 6000);
     }
-
-    setIsTriggeringInstant(false);
-    setTimeout(() => setBroadcastSuccessMessage(''), 6000);
   };
 
   const handleTestTelegram = async () => {
     setIsTestingTelegram(true);
     setTelegramStatusMessage(null);
     try {
-      const res = await fetch('/api/telegram/test-connection', { method: 'POST' });
+      const res = await fetch('/api/telegram/test-connection', {
+        method: 'POST',
+        headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
+      });
       const contentType = res.headers.get('content-type') || '';
       if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         if (data.ok) {
           setTelegramStatusMessage(`✅ الاتصال بالقناة سليم وموثق بنسبة 100%! (@ZadNBFX - رسالة فحص #${data.messageId || ''})`);
-          return;
-        }
-      }
-      throw new Error('Fallback to direct Telegram');
-    } catch (_err) {
-      // Direct client fallback for fx.zadtoo.com
-      const token = (autoPilot?.botToken || localStorage.getItem('tg_bot_token') || '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U').trim();
-      const chat = (autoPilot?.chatId || localStorage.getItem('tg_chat_id') || '@ZadNBFX').trim();
-      try {
-        const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            chat_id: chat,
-            text: `🔔 فحص الاتصال التلقائي من لوحة المشرف ZAD FX\n⏰ الوقت: ${new Date().toLocaleTimeString('ar-EG')}\n✅ الاتصال بالقناة سليم ونشط 100%.`
-          })
-        });
-        const tgData = await tgRes.json();
-        if (tgData.ok) {
-          setTelegramStatusMessage(`✅ الاتصال بالقناة سليم وموثق بنسبة 100%! (@ZadNBFX - رسالة فحص #${tgData.result?.message_id || ''})`);
         } else {
-          setTelegramStatusMessage(`❌ فشل الاتصال: ${tgData.description || 'تأكد من صلاحيات البوت في القناة'}`);
+          setTelegramStatusMessage(`❌ فشل الاتصال: ${data.error || 'تأكد من إعدادات البوت في الخادم'}`);
         }
-      } catch (directErr: any) {
-        setTelegramStatusMessage(`❌ خطأ أثناء فحص التليجرام: ${directErr?.message || ''}`);
+      } else {
+        const errData = contentType.includes('application/json') ? await res.json().catch(() => ({})) : {};
+        setTelegramStatusMessage(`❌ تعذر فحص الاتصال (${errData?.error || res.status})`);
       }
+    } catch (err: any) {
+      setTelegramStatusMessage(`❌ خطأ أثناء الاتصال بالخادم: ${err?.message || ''}`);
     } finally {
       setIsTestingTelegram(false);
       setTimeout(() => setTelegramStatusMessage(null), 8000);
@@ -725,7 +669,7 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               </button>
             </div>
 
-            <ZadtooPaymentsManager />
+            <ZadtooPaymentsManager adminToken={adminToken} plans={plans} isAdmin={true} />
           </div>
         ) : activeAdminNav === 'plans_links' ? (
           <div className="space-y-4">
@@ -746,6 +690,7 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
             </div>
 
             <ZadtooPlansAndLinksManager
+              adminToken={adminToken}
               initialPlans={plans}
               initialContactLinks={contactLinks}
               onConfigChanged={onConfigChanged}
@@ -770,6 +715,7 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
             </div>
 
             <ZadtooAdminLiveBroadcast
+              adminToken={adminToken}
               autoPilot={autoPilot}
               onNavigateHome={() => setActiveAdminNav('overview')}
             />
@@ -792,7 +738,7 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               </button>
             </div>
 
-            <TelegramBotManager />
+            <TelegramBotManager adminToken={adminToken} />
           </div>
         ) : (
           <>
@@ -1194,16 +1140,10 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               </div>
             </div>
 
-            <a
-              href="/strategy.txt"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-bold transition-colors flex items-center gap-1.5 cursor-pointer"
-            >
-              <FileText className="w-3.5 h-3.5 text-amber-400" />
-              <span>عرض وثيقة الاستراتيجية (strategy.txt)</span>
-              <ExternalLink className="w-3 h-3 text-slate-400" />
-            </a>
+            <span className="px-3 py-1.5 rounded-xl bg-slate-800 text-emerald-300 border border-emerald-500/30 text-xs font-bold flex items-center gap-1.5">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              <span>محرك سيرفر آمن 100%</span>
+            </span>
           </div>
 
           {/* 4 Indicators Breakdown Cards */}

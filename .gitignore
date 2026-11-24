@@ -6,3 +6,5 @@ coverage/
 *.log
 .env*
 !.env.example
+autopilot-state.json
+*-state.json

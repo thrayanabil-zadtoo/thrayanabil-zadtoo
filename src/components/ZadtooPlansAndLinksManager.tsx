@@ -23,20 +23,16 @@ import {
   AlertCircle
 } from 'lucide-react';
 import type { SubscriptionPlan, PlatformContactLinks } from '../types/platformConfig';
-import {
-  saveCloudPlans,
-  loadCloudPlans,
-  saveCloudContactLinks,
-  loadCloudContactLinks
-} from '../firebase';
 
 interface ZadtooPlansAndLinksManagerProps {
+  adminToken?: string;
   initialPlans?: SubscriptionPlan[];
   initialContactLinks?: PlatformContactLinks;
   onConfigChanged?: (plans: SubscriptionPlan[], contactLinks: PlatformContactLinks) => void;
 }
 
 export const ZadtooPlansAndLinksManager: React.FC<ZadtooPlansAndLinksManagerProps> = ({
+  adminToken,
   initialPlans,
   initialContactLinks,
   onConfigChanged
@@ -109,6 +105,11 @@ export const ZadtooPlansAndLinksManager: React.FC<ZadtooPlansAndLinksManagerProp
     fetchConfig();
   }, []);
 
+  const getAuthHeaders = (includeJson = true): Record<string, string> => ({
+    ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
+    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
+  });
+
   const fetchConfig = async () => {
     setIsLoading(true);
     try {
@@ -130,30 +131,12 @@ export const ZadtooPlansAndLinksManager: React.FC<ZadtooPlansAndLinksManagerProp
         if (onConfigChanged) {
           onConfigChanged(data.plans || [], data.contactLinks || contactLinks);
         }
-      } else {
-        // Fallback to Firestore
-        await fallbackLoadCloud();
       }
     } catch (_e) {
-      await fallbackLoadCloud();
+      // Keep cached/initial
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const fallbackLoadCloud = async () => {
-    try {
-      const cloudPlans = await loadCloudPlans<SubscriptionPlan[]>();
-      if (cloudPlans && Array.isArray(cloudPlans) && cloudPlans.length > 0) {
-        setPlans(cloudPlans);
-        if (onConfigChanged) onConfigChanged(cloudPlans, contactLinks);
-      }
-      const cloudLinks = await loadCloudContactLinks<PlatformContactLinks>();
-      if (cloudLinks && typeof cloudLinks === 'object') {
-        setContactLinks(cloudLinks);
-        if (onConfigChanged) onConfigChanged(plans, cloudLinks);
-      }
-    } catch (_err) {}
   };
 
   const showFeedback = (text: string, type: 'success' | 'error' = 'success') => {
@@ -172,28 +155,24 @@ export const ZadtooPlansAndLinksManager: React.FC<ZadtooPlansAndLinksManagerProp
     if (e) e.preventDefault();
     setIsSavingLinks(true);
     try {
-      // 1. Direct save to Firestore cloud
-      saveCloudContactLinks(contactLinks).catch(() => {});
-      try {
-        localStorage.setItem('zad_platform_contact_links', JSON.stringify(contactLinks));
-      } catch (_e) {}
-
-      // 2. Save to server
       const res = await fetch('/api/platform-config/contact-links', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(contactLinks)
       });
       const data = await res.json();
-      if (data.ok) {
+      if (res.ok && data.ok) {
         setContactLinks(data.contactLinks);
-        showFeedback('تم حفظ وتحديث روابط التواصل والإحالة سحابياً بنجاح ✅');
+        try {
+          localStorage.setItem('zad_platform_contact_links', JSON.stringify(data.contactLinks));
+        } catch (_e) {}
+        showFeedback('تم حفظ وتحديث روابط التواصل والإحالة بنجاح ✅');
         if (onConfigChanged) onConfigChanged(plans, data.contactLinks);
       } else {
         showFeedback(data.error || 'تعذر حفظ الروابط', 'error');
       }
-    } catch (e: any) {
-      showFeedback('تم حفظ الروابط سحابياً ومحلياً ✅');
+    } catch (err: any) {
+      showFeedback('تعذر الاتصال بالخادم لحفظ الروابط: ' + (err?.message || ''), 'error');
     } finally {
       setIsSavingLinks(false);
     }
@@ -273,47 +252,41 @@ export const ZadtooPlansAndLinksManager: React.FC<ZadtooPlansAndLinksManagerProp
       }
     }
 
-    // Direct Firestore cloud & local persistence
-    try {
-      localStorage.setItem('zad_platform_plans', JSON.stringify(optimisticPlans));
-    } catch (_e) {}
-    saveCloudPlans(optimisticPlans).catch(() => {});
-
     try {
       let res: Response;
       if (editingPlanModal.isNew) {
         res = await fetch('/api/platform-config/plans/add', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
           body: JSON.stringify(payload)
         });
       } else {
         res = await fetch(`/api/platform-config/plans/${payload.id}`, {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: getAuthHeaders(),
           body: JSON.stringify(payload)
         });
       }
 
       const data = await res.json();
-      const finalPlans = data.ok && Array.isArray(data.plans) ? data.plans : optimisticPlans;
-      setPlans(finalPlans);
-      try {
-        localStorage.setItem('zad_platform_plans', JSON.stringify(finalPlans));
-      } catch (_e) {}
-      saveCloudPlans(finalPlans).catch(() => {});
-      setEditingPlanModal(null);
-      showFeedback(
-        editingPlanModal.isNew
-          ? `تم إضافة الباقة "${payload.name}" وحفظها سحابياً بنجاح ✅`
-          : `تم تحديث بيانات الباقة "${payload.name}" وحفظها سحابياً بنجاح ✅`
-      );
-      if (onConfigChanged) onConfigChanged(finalPlans, contactLinks);
-    } catch (e: any) {
-      setPlans(optimisticPlans);
-      setEditingPlanModal(null);
-      showFeedback(`تم حفظ الباقة "${payload.name}" محلياً وسحابياً بنجاح ✅`);
-      if (onConfigChanged) onConfigChanged(optimisticPlans, contactLinks);
+      if (res.ok && data.ok) {
+        const finalPlans = Array.isArray(data.plans) ? data.plans : optimisticPlans;
+        setPlans(finalPlans);
+        try {
+          localStorage.setItem('zad_platform_plans', JSON.stringify(finalPlans));
+        } catch (_e) {}
+        setEditingPlanModal(null);
+        showFeedback(
+          editingPlanModal.isNew
+            ? `تم إضافة الباقة "${payload.name}" وحفظها بنجاح ✅`
+            : `تم تحديث بيانات الباقة "${payload.name}" وحفظها بنجاح ✅`
+        );
+        if (onConfigChanged) onConfigChanged(finalPlans, contactLinks);
+      } else {
+        showFeedback(data.error || 'تعذر حفظ الباقة', 'error');
+      }
+    } catch (err: any) {
+      showFeedback('تعذر الاتصال بالخادم لحفظ الباقة: ' + (err?.message || ''), 'error');
     } finally {
       setIsSavingPlan(false);
     }
@@ -322,63 +295,53 @@ export const ZadtooPlansAndLinksManager: React.FC<ZadtooPlansAndLinksManagerProp
   // Toggle Plan Enabled / Disabled inline
   const handleTogglePlanEnabled = async (plan: SubscriptionPlan) => {
     const updated = { ...plan, enabled: !plan.enabled };
-    const nextPlans = plans.map(p => (p.id === plan.id ? updated : p));
-    setPlans(nextPlans);
-    try {
-      localStorage.setItem('zad_platform_plans', JSON.stringify(nextPlans));
-    } catch (_e) {}
-    saveCloudPlans(nextPlans).catch(() => {});
-    if (onConfigChanged) onConfigChanged(nextPlans, contactLinks);
-
     try {
       const res = await fetch(`/api/platform-config/plans/${plan.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(updated)
       });
       const data = await res.json();
-      if (data.ok && Array.isArray(data.plans)) {
+      if (res.ok && data.ok && Array.isArray(data.plans)) {
         setPlans(data.plans);
         try {
           localStorage.setItem('zad_platform_plans', JSON.stringify(data.plans));
         } catch (_e) {}
+        if (onConfigChanged) onConfigChanged(data.plans, contactLinks);
+        showFeedback(
+          updated.enabled
+            ? `تم تفعيل الباقة (${plan.name}) ✅`
+            : `تم تعطيل الباقة (${plan.name}) مؤقتاً`
+        );
+      } else {
+        showFeedback(data.error || 'تعذر تحديث حالة الباقة', 'error');
       }
-      showFeedback(
-        updated.enabled
-          ? `تم تفعيل الباقة (${plan.name}) ✅`
-          : `تم تعطيل الباقة (${plan.name}) مؤقتاً`
-      );
     } catch (_e) {
-      // Keep optimistic
+      showFeedback('تعذر الاتصال بالخادم', 'error');
     }
   };
 
   // Confirm Delete Plan
   const handleConfirmDelete = async () => {
     if (!planToDelete) return;
-    const remainingPlans = plans.filter(p => p.id !== planToDelete.id);
-    setPlans(remainingPlans);
-    try {
-      localStorage.setItem('zad_platform_plans', JSON.stringify(remainingPlans));
-    } catch (_e) {}
-    saveCloudPlans(remainingPlans).catch(() => {});
-    if (onConfigChanged) onConfigChanged(remainingPlans, contactLinks);
-
     try {
       const res = await fetch(`/api/platform-config/plans/${planToDelete.id}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: getAuthHeaders(false)
       });
       const data = await res.json();
-      if (data.ok && Array.isArray(data.plans)) {
+      if (res.ok && data.ok && Array.isArray(data.plans)) {
         setPlans(data.plans);
         try {
           localStorage.setItem('zad_platform_plans', JSON.stringify(data.plans));
         } catch (_e) {}
-        saveCloudPlans(data.plans).catch(() => {});
+        if (onConfigChanged) onConfigChanged(data.plans, contactLinks);
+        showFeedback(`تم حذف الباقة (${planToDelete.name}) بنجاح 🗑️`);
+      } else {
+        showFeedback(data.error || 'تعذر حذف الباقة', 'error');
       }
-      showFeedback(`تم حذف الباقة (${planToDelete.name}) بنجاح 🗑️`);
-    } catch (e: any) {
-      showFeedback(`تم حذف الباقة (${planToDelete.name}) محلياً وسحابياً بنجاح 🗑️`);
+    } catch (err: any) {
+      showFeedback('تعذر الاتصال بالخادم: ' + (err?.message || ''), 'error');
     } finally {
       setPlanToDelete(null);
     }
@@ -388,19 +351,23 @@ export const ZadtooPlansAndLinksManager: React.FC<ZadtooPlansAndLinksManagerProp
   const handleResetPlans = async () => {
     if (!window.confirm('هل أنت متأكد من استعادة الباقات الأصلية الافتراضية للنظام؟')) return;
     try {
-      const res = await fetch('/api/platform-config/reset-plans', { method: 'POST' });
+      const res = await fetch('/api/platform-config/reset-plans', {
+        method: 'POST',
+        headers: getAuthHeaders(false)
+      });
       const data = await res.json();
-      if (data.ok && Array.isArray(data.plans)) {
+      if (res.ok && data.ok && Array.isArray(data.plans)) {
         setPlans(data.plans);
         try {
           localStorage.setItem('zad_platform_plans', JSON.stringify(data.plans));
         } catch (_e) {}
-        saveCloudPlans(data.plans).catch(() => {});
         showFeedback('تمت استعادة الباقات الافتراضية وحفظها بنجاح 🔄');
         if (onConfigChanged) onConfigChanged(data.plans, contactLinks);
+      } else {
+        showFeedback(data.error || 'تعذر استعادة الباقات', 'error');
       }
-    } catch (e: any) {
-      showFeedback('خطأ: ' + e.message, 'error');
+    } catch (err: any) {
+      showFeedback('خطأ: ' + (err?.message || ''), 'error');
     }
   };
 

@@ -1,6 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { db, SYSTEM_STATE_DOC_PATH, SYSTEM_STATE_DOC_ID } from '../firebase';
 import {
   Radio,
   Send,
@@ -35,30 +33,8 @@ import {
 } from 'lucide-react';
 import type { AutoPilotConfig, SignalItem } from '../App';
 
-export const DEFAULT_FREE_BOT_TOKEN = '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U';
-export const DEFAULT_FREE_CHAT_ID = '@ZadNBFX';
-export const DEFAULT_VIP_BOT_TOKEN = '8814918920:AAGeXmZrTy03s9gozdDAOj3hkIijHm9yJHM';
-export const DEFAULT_VIP_CHAT_ID = '-1004323890544';
-
-async function sendTelegramDirect(token: string, chatId: string, text: string) {
-  const ctrl = new AbortController();
-  const tid = setTimeout(() => ctrl.abort(), 8500);
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${token.trim()}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId.trim(), text }),
-      signal: ctrl.signal
-    });
-    return (await res.json()) as { ok: boolean; result?: any; description?: string };
-  } catch (err: any) {
-    return { ok: false, description: err?.message || 'تعذر الاتصال بسيرفر التليجرام' };
-  } finally {
-    clearTimeout(tid);
-  }
-}
-
 interface ZadtooAdminLiveBroadcastProps {
+  adminToken?: string;
   autoPilot?: AutoPilotConfig;
   onRefreshSignals?: () => void;
   onNavigateHome?: () => void;
@@ -75,6 +51,7 @@ export const MAJOR_6_PAIRS = [
 ];
 
 export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> = ({
+  adminToken,
   autoPilot,
   onRefreshSignals,
   onNavigateHome,
@@ -156,9 +133,17 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     text: string;
   } | null>(null);
 
+  const getAuthHeaders = (includeJson = true): Record<string, string> => ({
+    ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
+    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
+  });
+
   const fetchSessionStatus = async () => {
+    if (!adminToken) return;
     try {
-      const res = await fetch('/api/admin/live-broadcast-session');
+      const res = await fetch('/api/admin/live-broadcast-session', {
+        headers: getAuthHeaders(false)
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.ok && data.session) {
@@ -176,7 +161,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     fetchSessionStatus();
     const interval = setInterval(fetchSessionStatus, 8000);
     return () => clearInterval(interval);
-  }, []);
+  }, [adminToken]);
 
   const handleToggleSessionEnabled = async () => {
     if (!sessionData) return;
@@ -185,11 +170,11 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     try {
       const res = await fetch('/api/admin/live-broadcast-session/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ enabled: !sessionData.enabled })
       });
       const data = await res.json();
-      if (data.ok && data.session) {
+      if (res.ok && data.ok && data.session) {
         setSessionData(data.session);
         setSessionActionFeedback({
           type: 'success',
@@ -197,6 +182,8 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
             ? 'تم تفعيل جلسة البث الحي الآلي (الساعة 6:00 مساءً) بنجاح!'
             : 'تم إيقاف جلسة البث الحي الآلي مؤقتاً.'
         });
+      } else {
+        setSessionActionFeedback({ type: 'error', text: data.error || 'تعذر تعديل حالة الجلسة' });
       }
     } catch (e: any) {
       setSessionActionFeedback({ type: 'error', text: 'فشل تعديل حالة الجلسة: ' + (e?.message || '') });
@@ -211,17 +198,19 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     try {
       const res = await fetch('/api/admin/live-broadcast-session/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ action: 'reset' })
       });
       const data = await res.json();
-      if (data.ok && data.session) {
+      if (res.ok && data.ok && data.session) {
         setSessionData(data.session);
         setSessionActionFeedback({
           type: 'success',
           text: 'تمت إعادة ضبط إحصائيات جلسة البث المشرف لليوم بنجاح!'
         });
         fetchSessionStatus();
+      } else {
+        setSessionActionFeedback({ type: 'error', text: data.error || 'تعذر إعادة ضبط الجلسة' });
       }
     } catch (e: any) {
       setSessionActionFeedback({ type: 'error', text: 'فشل إعادة ضبط الجلسة: ' + (e?.message || '') });
@@ -236,11 +225,11 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     try {
       const res = await fetch('/api/admin/live-broadcast-session/trigger-now', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ mode })
       });
       const data = await res.json();
-      if (data.ok) {
+      if (res.ok && data.ok) {
         if (data.session) setSessionData(data.session);
         setSessionActionFeedback({
           type: 'success',
@@ -282,86 +271,18 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     setConfirmSignalModalOpen(true);
   };
 
-  // Execute sending the live signal after confirmation
+  // Execute sending the live signal after confirmation via secure backend API
   const executeSendLiveSignal = async () => {
     setConfirmSignalModalOpen(false);
     setIsSendingSignal(true);
     setSignalFeedback(null);
 
-    // Resolve tokens and chat IDs with guaranteed fallbacks (supports incognito / fx.zadtoo.com)
-    const freeToken = (autoPilot?.botToken || localStorage.getItem('tg_bot_token') || DEFAULT_FREE_BOT_TOKEN).trim();
-    const freeChat = (autoPilot?.chatId || localStorage.getItem('tg_chat_id') || DEFAULT_FREE_CHAT_ID).trim();
-    const vipToken = (autoPilot?.vipBotToken || localStorage.getItem('tg_vip_bot_token') || DEFAULT_VIP_BOT_TOKEN).trim();
-    const vipChat = (autoPilot?.vipChatId || localStorage.getItem('tg_vip_chat_id') || DEFAULT_VIP_CHAT_ID).trim();
-
-    // Prepare standard signal metadata
-    const now = new Date();
-    const minutesAhead = now.getSeconds() >= 56 ? 2 : 1;
-    const targetEntryDate = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-      now.getHours(),
-      now.getMinutes() + minutesAhead,
-      0,
-      0
-    );
-    const entryMinute = String(targetEntryDate.getMinutes()).padStart(2, '0');
-    const targetEntryTimestamp = Math.floor(targetEntryDate.getTime() / 1000);
-    const dirSymbol = direction === 'CALL' ? 'صعود 🟢 ⬆️ (CALL)' : 'هبوط 🔴 ⬇️ (PUT)';
-    const defaultPrices: Record<string, string> = {
-      'EUR/USD': '1.08520',
-      'GBP/USD': '1.29410',
-      'USD/JPY': '153.240',
-      'USD/CAD': '1.38650',
-      'AUD/USD': '0.65820',
-      'USD/CHF': '0.86610'
-    };
-    const livePrice = defaultPrices[selectedPair] || '1.08500';
-
-    const formattedMessage = [
-      '🔴 البث المباشر مع ابوسليم 🔴',
-      '━━━━━━━━━━━━━━━━━━━',
-      `📊 الزوج: ${selectedPair} (🌐)`,
-      `🎯 الاتجاه: ${dirSymbol}`,
-      `⏱️ وقت الدخول: :${entryMinute} (1 دقيقة (M1))`,
-      '🎯 شروط الدخول: محققة بنجاح (3 من 4 شروط فنية معتمدة ✅)',
-      customNotes && customNotes.trim() ? `\n📝 توجيهات وملاحظات المشرف:\n${customNotes.trim()}` : '',
-      '━━━━━━━━━━━━━━━━━━━',
-      '⚠️ تنبيه: يرجى الالتزام الصارم بإدارة رأس المال (1% إلى 2% كحد أقصى لكل صفقة).'
-    ].filter(Boolean).join('\n');
-
-    const newSignal: SignalItem = {
-      id: `sig-live-${targetEntryTimestamp}`,
-      asset: selectedPair,
-      isOtc: false,
-      direction,
-      timeframe: '1 دقيقة (M1)',
-      entryMinute,
-      entryTime: `:${entryMinute}`,
-      targetEntryTimestamp,
-      payout: '(🌐) (البث المباشر مع ابوسليم 🔴)',
-      livePrice,
-      rsiValue: direction === 'CALL' ? 38 : 62,
-      analysisReason: customNotes && customNotes.trim() ? `🔴 بث حي للمشرف: ${customNotes.trim()}` : '🔴 إشارة بث حي مباشر صادرة من المشرف',
-      entryPriceNumeric: parseFloat(livePrice),
-      formattedMessage,
-      status: 'PENDING',
-      createdAt: new Date().toISOString(),
-      resultSent: false,
-      autoSent: false
-    };
-
-    let serverSuccess = false;
-    let serverData: any = null;
-
-    // Step 1: Always prioritize Backend Server API (Reliable in cloud container)
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 9000);
       const res = await fetch('/api/admin/live-broadcast', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         signal: controller.signal,
         body: JSON.stringify({
           type: 'signal',
@@ -379,19 +300,9 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
       clearTimeout(timeoutId);
 
       const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        const d = await res.json();
-        if (d && d.ok) {
-          serverSuccess = true;
-          serverData = d;
-        }
-      }
-    } catch (_serverErr) {
-      // Backend route unreachable, fallback to direct client execution below
-    }
+      const serverData = contentType.includes('application/json') ? await res.json() : null;
 
-    try {
-      if (serverSuccess && serverData) {
+      if (res.ok && serverData && serverData.ok) {
         const destParts: string[] = [];
         if (serverData.sentToFree) destParts.push('بوت القناة العامة (@ZadNBFX)');
         if (serverData.sentToVip) destParts.push('بوت VIP');
@@ -411,96 +322,13 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
           details: detailsText
         });
 
-        if (onSignalCreated) onSignalCreated(serverData.signal || newSignal);
+        if (serverData.signal && onSignalCreated) onSignalCreated(serverData.signal);
         if (onRefreshSignals) onRefreshSignals();
       } else {
-        // Step 2: Direct Client Execution (Guaranteed to work on fx.zadtoo.com & Incognito mode)
-        const destParts: string[] = [];
-        const sendTasks: Promise<void>[] = [];
-        let directFreeError: string | undefined;
-        let directVipError: string | undefined;
-
-        if (targetFreeBot && freeToken && freeChat) {
-          sendTasks.push(
-            sendTelegramDirect(freeToken, freeChat, formattedMessage)
-              .then(resFree => {
-                if (resFree.ok) {
-                  destParts.push('بوت القناة العامة (@ZadNBFX)');
-                } else {
-                  directFreeError = resFree.description || 'فشل الإرسال للبوت المجاني';
-                }
-              })
-              .catch(err => {
-                directFreeError = err?.message || 'خطأ في الاتصال بالبوت المجاني';
-              })
-          );
-        }
-
-        if (targetVipBot && vipToken && vipChat) {
-          sendTasks.push(
-            sendTelegramDirect(vipToken, vipChat, formattedMessage)
-              .then(resVip => {
-                if (resVip.ok) {
-                  destParts.push('بوت VIP');
-                } else {
-                  directVipError = resVip.description || 'فشل الإرسال لبوت VIP';
-                }
-              })
-              .catch(err => {
-                directVipError = err?.message || 'خطأ في الاتصال ببوت VIP';
-              })
-          );
-        }
-
-        if (targetFloatingRobot) {
-          destParts.push('الروبوت العائم');
-          sendTasks.push(
-            (async () => {
-              // 1. Write to robot_feed/live for instant visitor robot HUD
-              try {
-                await setDoc(doc(db, 'robot_feed', 'live'), {
-                  signal: newSignal,
-                  updatedAt: new Date().toISOString()
-                });
-              } catch (_e) {}
-
-              // 2. Append to persistent Firestore system state
-              try {
-                const snap = await getDoc(doc(db, SYSTEM_STATE_DOC_PATH, SYSTEM_STATE_DOC_ID));
-                if (snap.exists()) {
-                  const d = snap.data();
-                  if (d?.payload) {
-                    const parsed = JSON.parse(d.payload);
-                    const existingSigs = Array.isArray(parsed.signals) ? parsed.signals : [];
-                    parsed.signals = [newSignal, ...existingSigs.filter((s: any) => s.id !== newSignal.id)].slice(0, 50);
-                    parsed.stateUpdatedAt = new Date().toISOString();
-                    await setDoc(doc(db, SYSTEM_STATE_DOC_PATH, SYSTEM_STATE_DOC_ID), {
-                      updatedAt: new Date().toISOString(),
-                      payload: JSON.stringify(parsed)
-                    });
-                  }
-                }
-              } catch (_e) {}
-            })()
-          );
-        }
-
-        if (sendTasks.length > 0) {
-          await Promise.allSettled(sendTasks);
-        }
-
-        let detailsText = `وصلت الإشارة بنجاح إلى: ${destParts.join(' + ') || 'الوجهات المحددة'}`;
-        if (directFreeError) detailsText += ` | ملاحظة البوت المجاني: ${directFreeError}`;
-        if (directVipError) detailsText += ` | ملاحظة بوت VIP: ${directVipError}`;
-
         setSignalFeedback({
-          type: 'success',
-          text: `تم إرسال إشارة ${selectedPair} (${direction === 'CALL' ? 'صعود 🟢' : 'هبوط 🔴'}) بنجاح!`,
-          details: detailsText
+          type: 'error',
+          text: serverData?.error || `تعذر إرسال الإشارة عبر السيرفر (${res.status}).`
         });
-
-        if (onSignalCreated) onSignalCreated(newSignal);
-        if (onRefreshSignals) onRefreshSignals();
       }
     } catch (err: any) {
       const msg = err?.message === 'Failed to fetch'
@@ -540,7 +368,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     setConfirmAnnouncement({ boxId, title, text: text.trim() });
   };
 
-  // Execute sending announcement after confirmation
+  // Execute sending announcement after confirmation via secure backend API
   const executeSendAnnouncement = async (
     boxId: 'win' | 'loss' | 'closing' | 'custom',
     text: string
@@ -549,20 +377,12 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     setIsSendingAnnouncement(boxId);
     setAnnouncementFeedback(null);
 
-    const freeToken = (autoPilot?.botToken || localStorage.getItem('tg_bot_token') || DEFAULT_FREE_BOT_TOKEN).trim();
-    const freeChat = (autoPilot?.chatId || localStorage.getItem('tg_chat_id') || DEFAULT_FREE_CHAT_ID).trim();
-    const vipToken = (autoPilot?.vipBotToken || localStorage.getItem('tg_vip_bot_token') || DEFAULT_VIP_BOT_TOKEN).trim();
-    const vipChat = (autoPilot?.vipChatId || localStorage.getItem('tg_vip_chat_id') || DEFAULT_VIP_CHAT_ID).trim();
-
-    let serverSuccess = false;
-
-    // Step 1: Always prioritize Backend Server API (Reliable in cloud container)
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 9000);
       const res = await fetch('/api/admin/live-broadcast', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         signal: controller.signal,
         body: JSON.stringify({
           type: 'announcement',
@@ -577,18 +397,9 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
       clearTimeout(timeoutId);
 
       const contentType = res.headers.get('content-type') || '';
-      if (res.ok && contentType.includes('application/json')) {
-        const d = await res.json();
-        if (d && d.ok) {
-          serverSuccess = true;
-        }
-      }
-    } catch (_serverErr) {
-      // Backend route unreachable, fallback to direct client execution below
-    }
+      const serverData = contentType.includes('application/json') ? await res.json() : null;
 
-    try {
-      if (serverSuccess) {
+      if (res.ok && serverData && serverData.ok) {
         const destParts: string[] = [];
         if (announcementFreeBot) destParts.push('القناة العامة (@ZadNBFX)');
         if (announcementVipBot) destParts.push('قناة VIP');
@@ -602,63 +413,10 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
           setCustomAnnouncement('');
         }
       } else {
-        // Step 2: Direct Client Execution to Telegram API
-        const destParts: string[] = [];
-        const sendTasks: Promise<void>[] = [];
-        let directFreeError: string | undefined;
-        let directVipError: string | undefined;
-
-        if (announcementFreeBot && freeToken && freeChat) {
-          sendTasks.push(
-            sendTelegramDirect(freeToken, freeChat, text.trim())
-              .then(resFree => {
-                if (resFree.ok) {
-                  destParts.push('القناة العامة (@ZadNBFX)');
-                } else {
-                  directFreeError = resFree.description || 'فشل الإرسال للبوت المجاني';
-                }
-              })
-              .catch(err => {
-                directFreeError = err?.message || 'خطأ في الاتصال بالبوت المجاني';
-              })
-          );
-        }
-
-        if (announcementVipBot && vipToken && vipChat) {
-          sendTasks.push(
-            sendTelegramDirect(vipToken, vipChat, text.trim())
-              .then(resVip => {
-                if (resVip.ok) {
-                  destParts.push('قناة VIP');
-                } else {
-                  directVipError = resVip.description || 'فشل الإرسال لبوت VIP';
-                }
-              })
-              .catch(err => {
-                directVipError = err?.message || 'خطأ في الاتصال ببوت VIP';
-              })
-          );
-        }
-
-        if (sendTasks.length > 0) {
-          await Promise.allSettled(sendTasks);
-        }
-
-        if (destParts.length > 0) {
-          setAnnouncementFeedback({
-            type: 'success',
-            text: `تم إرسال الرسالة بنجاح إلى: ${destParts.join(' و ') || 'البوتات المحددة'}!`
-          });
-
-          if (boxId === 'custom') {
-            setCustomAnnouncement('');
-          }
-        } else {
-          setAnnouncementFeedback({
-            type: 'error',
-            text: directFreeError || directVipError || 'تعذر إرسال الرسالة إلى البوتات، تأكد من الاتصال.'
-          });
-        }
+        setAnnouncementFeedback({
+          type: 'error',
+          text: serverData?.error || `تعذر إرسال الرسالة إلى البوتات (${res.status}).`
+        });
       }
     } catch (err: any) {
       const msg = err?.message === 'Failed to fetch'
