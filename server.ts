@@ -14,17 +14,17 @@ import {
   extractMinuteOnly,
   GLOBAL_FOREX_PAIRS,
   DEFAULT_CUSTOM_TEMPLATE,
-  FormatterOptions,
-  ParsedSignal
+  type FormatterOptions,
+  type ParsedSignal
 } from './src/utils/signalParser.ts';
-import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, calculateEventTimes, filterActiveForexNews } from './src/types/forexNews.ts';
+import { type ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, calculateEventTimes, filterActiveForexNews } from './src/types/forexNews.ts';
 import {
-  SubscriptionPlan,
-  PlatformContactLinks,
+  type SubscriptionPlan,
+  type PlatformContactLinks,
   INITIAL_SUBSCRIPTION_PLANS,
   INITIAL_CONTACT_LINKS,
-  PaymentMethodConfig,
-  PaymentTransactionRecord,
+  type PaymentMethodConfig,
+  type PaymentTransactionRecord,
   INITIAL_PAYMENT_METHODS
 } from './src/types/platformConfig.ts';
 
@@ -9167,13 +9167,17 @@ setInterval(() => {
 
 // 24/7 Permanent Keep-Alive: Pings external Cloud Run URL + localhost every 45s so container never enters idle sleep
 setInterval(() => {
-  fetch('http://localhost:3000/api/health').catch(() => {});
-  fetch('https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app/api/health').catch(() => {});
+  const activePort = Number(process.env.PORT) || 3000;
+  fetch(`http://localhost:${activePort}/api/health`).catch(() => {});
+  const appUrl = (process.env.APP_URL || '').trim().replace(/\/+$/, '');
+  if (appUrl) {
+    fetch(`${appUrl}/api/health`).catch(() => {});
+  }
 }, 45 * 1000);
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.set('trust proxy', true);
 
@@ -12518,6 +12522,9 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
+    app.all('/api/*', (_req, res) => {
+      res.status(404).json({ ok: false, error: 'API route not found' });
+    });
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });

@@ -400,6 +400,12 @@ export default function App() {
     checkAdminAuthStatus();
   }, []);
 
+  useEffect(() => {
+    if (showLoginModal) {
+      checkAdminAuthStatus();
+    }
+  }, [showLoginModal]);
+
   // Live device clock (phone/computer) updated every second
   const [deviceNow, setDeviceNow] = useState<Date>(() => new Date());
 
@@ -849,11 +855,24 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: cleanEmail, password: cleanPassword })
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        setLoginError(
+          `الخادم الخلفي (/api) لا يستجيب بصيغة JSON على هذا الرابط (رمز ${res.status}). تأكد من فتح رابط الخادم الكامل وليس استضافة ملفات ثابتة فقط.`
+        );
+        return;
+      }
       const data = await res.json();
 
       if (res.status === 409 && data?.needsSetup) {
         setAdminNeedsSetup(true);
         setLoginError(data.error || 'لم يتم إعداد حساب المشرف بعد. أنشئ حساب المشرف الآن.');
+        return;
+      }
+
+      if (res.status === 403 && adminNeedsSetup) {
+        setAdminNeedsSetup(false);
+        setLoginError(data?.error || 'تم إعداد حساب المشرف مسبقاً. يرجى تسجيل الدخول.');
         return;
       }
 
@@ -867,7 +886,7 @@ export default function App() {
         setLoginPassword('');
         await fetchSignals(data.token);
       } else {
-        setLoginError(data.error || 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
+        setLoginError(data?.error || 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
       }
     } catch (_e) {
       setLoginError('تعذر الاتصال بالخادم للتحقق من بيانات الدخول');
