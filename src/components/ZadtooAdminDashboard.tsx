@@ -244,6 +244,11 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
   const [isTriggeringInstant, setIsTriggeringInstant] = useState(false);
   const [isTestingTelegram, setIsTestingTelegram] = useState(false);
   const [telegramStatusMessage, setTelegramStatusMessage] = useState<string | null>(null);
+  const [showClearTgPanel, setShowClearTgPanel] = useState(false);
+  const [clearTgTarget, setClearTgTarget] = useState<'both' | 'free' | 'vip'>('both');
+  const [clearTgLatestId, setClearTgLatestId] = useState('');
+  const [clearTgCount, setClearTgCount] = useState('120');
+  const [isClearingTelegram, setIsClearingTelegram] = useState(false);
 
   const isBotActive = Boolean(autoPilot?.enabled);
 
@@ -333,6 +338,48 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
     } finally {
       setIsTestingTelegram(false);
       setTimeout(() => setTelegramStatusMessage(null), 8000);
+    }
+  };
+
+  const handleClearTelegramChannels = async () => {
+    setIsClearingTelegram(true);
+    setTelegramStatusMessage(null);
+    try {
+      const res = await fetch('/api/telegram/clear-channel-messages', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          target: clearTgTarget,
+          latestMessageId: clearTgLatestId.trim() ? Number(clearTgLatestId.trim()) : undefined,
+          scanCount: Number(clearTgCount) || 120
+        })
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        const details = Array.isArray(data.results)
+          ? data.results
+              .map((r: any) =>
+                r.ok
+                  ? `${r.label}: تم حذف ${r.deletedCount} رسالة${r.skippedPinnedId ? ` (تم حفظ المثبتة #${r.skippedPinnedId})` : ''}`
+                  : `${r.label}: ${r.error || 'تعذر الحذف'}`
+              )
+              .join(' | ')
+          : '';
+        setTelegramStatusMessage(
+          data.ok
+            ? `🧹 تم تنفيذ مسح الرسائل بنجاح — ${details}`
+            : `⚠️ لم يتم حذف أي رسائل — ${details || 'تأكد من إعداد توكن البوت وصلاحيات الحذف'}`
+        );
+        setShowClearTgPanel(false);
+      } else {
+        const errData = contentType.includes('application/json') ? await res.json().catch(() => ({})) : {};
+        setTelegramStatusMessage(`❌ تعذر تنفيذ الحذف (${errData?.error || res.status})`);
+      }
+    } catch (err: any) {
+      setTelegramStatusMessage(`❌ خطأ أثناء الاتصال بالخادم: ${err?.message || ''}`);
+    } finally {
+      setIsClearingTelegram(false);
     }
   };
 
@@ -821,8 +868,97 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
                 )}
                 <span>فحص اتصال القناة</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => setShowClearTgPanel(prev => !prev)}
+                className="flex items-center gap-1.5 px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold rounded-xl transition-all cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>مسح رسائل التليجرام (مع حفظ المثبتة)</span>
+              </button>
             </div>
           </div>
+
+          {/* Bulk Clear Telegram Channel Messages Panel */}
+          {showClearTgPanel && (
+            <div className="p-4 bg-rose-50/80 border border-rose-200 rounded-xl space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-black text-rose-950 flex items-center gap-1.5">
+                  <Trash2 className="w-4 h-4 text-rose-600" />
+                  <span>مسح رسائل قنوات التليجرام دفعة واحدة (يستثني الرسالة المثبتة تلقائياً)</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowClearTgPanel(false)}
+                  className="text-slate-400 hover:text-slate-700 cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <p className="text-[11px] text-rose-800 leading-relaxed">
+                يقوم النظام تلقائياً بحذف جميع الرسائل المسجلة لديه في القناة المختارة مع حماية الرسالة المثبتة، كما يمكنك اختيارياً إدخال رقم آخر رسالة من رابط الرسالة في التليجرام لحذف رسائل أقدم (ضمن نطاق صلاحية تليجرام 48 ساعة).
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">القناة المستهدفة</label>
+                  <select
+                    value={clearTgTarget}
+                    onChange={(e) => setClearTgTarget(e.target.value as 'both' | 'free' | 'vip')}
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-bold text-slate-800"
+                  >
+                    <option value="both">القناة العامة + قناة VIP معاً</option>
+                    <option value="free">القناة العامة المجانية فقط</option>
+                    <option value="vip">قناة VIP الخاصة فقط</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">رقم آخر رسالة (اختياري)</label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={clearTgLatestId}
+                    onChange={(e) => setClearTgLatestId(e.target.value)}
+                    placeholder="مثال: 1450 (اتركه فارغاً للمسجلة)"
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-mono-num text-slate-800 placeholder-slate-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">عدد الرسائل للمسح بالخلف</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={300}
+                    value={clearTgCount}
+                    onChange={(e) => setClearTgCount(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-slate-200 rounded-lg text-xs font-mono-num text-slate-800"
+                  />
+                </div>
+              </div>
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setShowClearTgPanel(false)}
+                  className="px-3.5 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl text-xs font-bold cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="button"
+                  disabled={isClearingTelegram}
+                  onClick={handleClearTelegramChannels}
+                  className="flex items-center gap-1.5 px-4 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-60 text-white rounded-xl text-xs font-black cursor-pointer shadow-xs"
+                >
+                  {isClearingTelegram ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isClearingTelegram ? 'جاري المسح الآن...' : 'تأكيد مسح الرسائل الآن'}</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Telegram Diagnostic Status Feedback */}
           {telegramStatusMessage && (

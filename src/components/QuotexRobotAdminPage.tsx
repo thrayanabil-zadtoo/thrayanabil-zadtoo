@@ -411,10 +411,12 @@ export default function QuotexRobotAdminPage({
     }
   };
 
+  const lastAlertedSignalIdRef = useRef<string | null>(null);
+
   // Fetch Live API Feed for the selected API Key
-  const fetchLiveRobotApiFeed = async (keyToTest?: string) => {
+  const fetchLiveRobotApiFeed = async (keyToTest?: string, silent = false) => {
     const activeKey = keyToTest ?? selectedTestApiKey;
-    setIsTestingApi(true);
+    if (!silent) setIsTestingApi(true);
     try {
       const res = await fetch(`/api/quotex-robot/feed?apiKey=${encodeURIComponent(activeKey)}`, {
         headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
@@ -422,21 +424,32 @@ export default function QuotexRobotAdminPage({
       const data = await res.json();
       setApiFeedResponse(data);
     } catch (_e) {
-      setApiFeedResponse({ ok: false, error: 'تعذر الاتصال بنقطة API' });
+      if (!silent) {
+        setApiFeedResponse({ ok: false, error: 'تعذر الاتصال بنقطة API' });
+      }
     } finally {
-      setIsTestingApi(false);
+      if (!silent) setIsTestingApi(false);
     }
   };
 
   useEffect(() => {
-    fetchLiveRobotApiFeed(selectedTestApiKey);
+    fetchLiveRobotApiFeed(selectedTestApiKey, false);
+    const pollTimer = setInterval(() => {
+      fetchLiveRobotApiFeed(selectedTestApiKey, true);
+    }, 3000);
+    return () => clearInterval(pollTimer);
   }, [selectedTestApiKey, safeSignals.length, adminToken]);
 
   useEffect(() => {
-    if (latestSignal?.asset && latestSignal.status === 'PENDING') {
-      setSimQuotexPair(latestSignal.asset);
+    const activeSig = latestSignal?.status === 'PENDING' ? latestSignal : apiFeedResponse?.activeSignal;
+    if (activeSig?.asset && activeSig.status === 'PENDING') {
+      setSimQuotexPair(activeSig.asset);
+      if (activeSig.id && lastAlertedSignalIdRef.current !== activeSig.id) {
+        lastAlertedSignalIdRef.current = activeSig.id;
+        playRobotAlertSound('signal');
+      }
     }
-  }, [latestSignal?.id, latestSignal?.asset, latestSignal?.status]);
+  }, [latestSignal?.id, latestSignal?.asset, latestSignal?.status, apiFeedResponse?.activeSignal?.id]);
 
   // Simulate receiving signal -> Alert -> Auto selecting Pair & Expiry -> Auto opening trade at entry time
   const handleSimulateFullCycle = () => {
@@ -2073,6 +2086,11 @@ export default function QuotexRobotAdminPage({
                   <span>رابط فحص API المشفر للمفتاح المختار ({selectedTestApiKey}):</span>
                   <span className="text-[9.5px] bg-sky-500/20 px-1.5 py-0.5 rounded text-sky-300">آمن ومشفر</span>
                 </div>
+                {(safeSubscribers.length === 0 || selectedTestApiKey === 'QX-ADMIN-MASTER-TEST') && (
+                  <div className="p-2 rounded-lg bg-amber-500/15 border border-amber-500/40 text-[10px] text-amber-200 leading-relaxed">
+                    ⚠️ <strong>ملاحظة للروبوت العائم على كيوتكس:</strong> المفتاح <code className="font-mono-num text-amber-300">QX-ADMIN-MASTER-TEST</code> مخصص للمعاينة داخل لوحة المشرف فقط (ولأسباب أمنية لا يعمل خارجها). لتشغيل الروبوت العائم واستقبال الإشارات، أنشئ مفتاح عضو خاص من قسم <strong>"إدارة مفاتيح الأعضاء"</strong> أدناه واستخدمه في الروبوت.
+                  </div>
+                )}
                 <div className="flex items-center gap-1.5">
                   <input
                     type="text"

@@ -15,7 +15,7 @@
 | Unverified Country Update Endpoint | `server.ts` | `12107-12112` | `/api/verify-country` accepted an unsigned `chatId` query parameter, allowing third parties to alter stored Telegram user country state. | Medium | Fixed | Added `signVerifyCountryToken` / `verifyCountryToken` HMAC-SHA256 verification so `chatId` state updates return `403 Forbidden` without a valid signature. |
 | HTML Injection in Server-Rendered Status Pages | `server.ts` | `176-183`, `10108-10149`, `12192` | Dynamic member/signal/country strings were interpolated directly into server-rendered HTML responses (`/api/robot-status`, `/api/verify-country`). | Medium | Fixed | Added `escapeHtml()` and escaped all interpolated values before rendering HTML responses. |
 | Credential Rotation for Previously Exposed Bot Tokens | External (`@BotFather` / Env Secrets) | — | Historical Telegram bot tokens (`FREE`, `VIP`, `ONBOARDING`) previously existed in source code prior to this remediation. | High | Needs Follow-Up | Rotate the three Telegram bot tokens via `@BotFather` and configure the new tokens strictly via server environment secrets or the authenticated admin panel. |
-| Transitive Dependency Advisories | `package.json` / `bun.lock` | — | Read-only `bun audit` reported 5 transitive advisories in `express` (`body-parser < 1.20.9`, `qs`) and `firebase` (`@grpc/grpc-js < 1.13.6`, `re2js < 2.8.7`). | Medium | Needs Follow-Up | Plan targeted upgrades of `express` and `firebase` when upstream patches fit compatibility requirements; also deploy hardened `firestore.rules` to Firebase. |
+| Transitive Dependency Advisories | `package.json` / `bun.lock` | — | Read-only `bun audit` reported 5 transitive advisories in `express` (`body-parser < 1.20.9`, `qs`) and `firebase` (`@grpc/grpc-js < 1.13.6`, `re2js < 2.8.7`). | Medium | Needs Follow-Up | Plan targeted upgrades of `express` and `firebase` when upstream patches fit compatibility requirements. |
 
 ### Safeguards Verified
 | Area | File | How It's Protected |
@@ -27,9 +27,8 @@
 
 ### Needs Follow-Up
 1. **Rotate Telegram Bot Tokens**: Issue fresh tokens in `@BotFather` for the Free, VIP, and Onboarding bots so previously committed tokens are permanently invalidated, and set them in server Secrets (`TELEGRAM_FREE_BOT_TOKEN`, `TELEGRAM_VIP_BOT_TOKEN`, `TELEGRAM_ONBOARDING_BOT_TOKEN`).
-2. **Deploy Updated Firestore Rules**: Publish the hardened `firestore.rules` to your live Firebase project so cloud database access matches the local rules configuration.
-3. **Configure Production Admin Secrets**: Optionally set `ADMIN_EMAILS`, `ADMIN_PASS`, and `ADMIN_SESSION_SECRET` in environment secrets (otherwise complete the one-time first-run admin setup screen on `/api/admin/setup`).
-4. **Upgrade Flagged Dependencies**: Schedule dependency updates for `express` (`body-parser` / `qs`) and `firebase` (`@grpc/grpc-js` / `re2js`) to resolve the 5 transitive advisories identified by `bun audit`.
+2. **Configure Production Admin Secrets**: Optionally set `ADMIN_EMAILS`, `ADMIN_PASS`, and `ADMIN_SESSION_SECRET` in environment secrets (otherwise complete the one-time first-run admin setup screen on `/api/admin/setup`).
+3. **Upgrade Flagged Dependencies**: Schedule dependency updates for `express` (`body-parser` / `qs`) and `firebase` (`@grpc/grpc-js` / `re2js`) to resolve the 5 transitive advisories identified by `bun audit`.
 
 ---
 

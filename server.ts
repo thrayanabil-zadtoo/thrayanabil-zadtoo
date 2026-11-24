@@ -582,6 +582,13 @@ export interface TelegramBotConfig {
   };
 }
 
+interface TelegramTrackedMessage {
+  chatId: string;
+  messageId: number;
+  channelType: 'free' | 'vip' | 'other';
+  sentAt: string;
+}
+
 interface PersistedState {
   stateUpdatedAt?: string;
   signals: SignalItem[];
@@ -592,6 +599,7 @@ interface PersistedState {
   subscribers?: VipSubscriber[];
   telegramBotUsers?: TelegramBotUser[];
   telegramBotConfig?: TelegramBotConfig;
+  telegramSentMessages?: TelegramTrackedMessage[];
   quickNotes?: QuickNote[];
   dailyStats?: DailyStatRecord[];
   forexNews?: ForexNewsItem[];
@@ -646,8 +654,8 @@ const defaultAutoPilot: AutoPilotConfig = {
   freeBotCelebrationSentDate: '',
   freeBotStoppedForToday: false,
   freeBotEnabled: true,
-  botToken: '',
-  chatId: '@ZadNBFX',
+  botToken: DEFAULT_FREE_BOT_TOKEN,
+  chatId: DEFAULT_FREE_CHAT_ID || '@ZadNBFX',
   freeScheduleEnabled: true,
   freeStartHourEgypt: 10, // Morning Session starts 10:30 AM Cairo Time
   freeEndHourEgypt: 13,   // Morning Session ends 01:00 PM (13:00) Cairo Time
@@ -663,8 +671,8 @@ const defaultAutoPilot: AutoPilotConfig = {
   freeWinGale1ImageUrl: '',
   freeLossImageUrl: '',
   vipEnabled: false,
-  vipBotToken: '',
-  vipChatId: '',
+  vipBotToken: DEFAULT_VIP_BOT_TOKEN,
+  vipChatId: DEFAULT_VIP_CHAT_ID,
   vipBotConsecutiveLosses: 0,
   vipBotCooldownUntil: 0,
   vipWinIcon: '👑✅ ربح VIP',
@@ -1031,9 +1039,10 @@ export function getEveningLiveSessionStatus(): {
   const todayEgypt = getCurrentEgyptDateString(new Date());
 
   if (
-    liveBroadcastSession.status === 'STOPPED_TARGET_REACHED' ||
-    liveBroadcastSession.status === 'STOPPED_SESSION_COMPLETED' ||
-    liveBroadcastSession.status === 'STOPPED_BAD_MARKET'
+    liveBroadcastSession.activeDate === todayEgypt &&
+    (liveBroadcastSession.status === 'STOPPED_TARGET_REACHED' ||
+      liveBroadcastSession.status === 'STOPPED_SESSION_COMPLETED' ||
+      liveBroadcastSession.status === 'STOPPED_BAD_MARKET')
   ) {
     return {
       isSessionFinished: true,
@@ -1833,8 +1842,41 @@ let telegramBotUsersStore: TelegramBotUser[] = [
 ];
 
 let liveMarketSnapshots: LivePairSnapshot[] = [];
+let telegramSentMessagesLog: TelegramTrackedMessage[] = [];
 let isCloudStateLoaded = false;
 let currentStateUpdatedAt = '';
+
+function trackSentTelegramMessage(chatId: string, messageId: number) {
+  const cleanChat = String(chatId || '').trim();
+  const cleanMsgId = Number(messageId);
+  if (!cleanChat || !Number.isFinite(cleanMsgId) || cleanMsgId <= 0) return;
+  // Track channels and groups (@username or negative numeric ID)
+  if (!cleanChat.startsWith('@') && !cleanChat.startsWith('-')) return;
+  const freeChat = (autoPilot.chatId || DEFAULT_FREE_CHAT_ID || '').trim().toLowerCase();
+  const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID || '').trim().toLowerCase();
+  const lowerChat = cleanChat.toLowerCase();
+  const channelType: 'free' | 'vip' | 'other' =
+    vipChat && lowerChat === vipChat
+      ? 'vip'
+      : freeChat && lowerChat === freeChat
+      ? 'free'
+      : 'other';
+
+  const exists = telegramSentMessagesLog.some(
+    m => m.chatId.toLowerCase() === lowerChat && m.messageId === cleanMsgId
+  );
+  if (!exists) {
+    telegramSentMessagesLog.unshift({
+      chatId: cleanChat,
+      messageId: cleanMsgId,
+      channelType,
+      sentAt: new Date().toISOString()
+    });
+    if (telegramSentMessagesLog.length > 800) {
+      telegramSentMessagesLog = telegramSentMessagesLog.slice(0, 800);
+    }
+  }
+}
 
 function applyParsedState(parsed: Partial<PersistedState>) {
   if (parsed.stateUpdatedAt && parsed.stateUpdatedAt > currentStateUpdatedAt) {
@@ -1858,6 +1900,21 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       if (!existingChatIds.has(u.telegramChatId)) {
         telegramBotUsersStore.push(u);
       }
+    }
+  }
+  if (parsed.telegramSentMessages && Array.isArray(parsed.telegramSentMessages)) {
+    const existingKeys = new Set(telegramSentMessagesLog.map(m => `${m.chatId.toLowerCase()}:${m.messageId}`));
+    for (const item of parsed.telegramSentMessages) {
+      if (item && item.chatId && typeof item.messageId === 'number') {
+        const key = `${String(item.chatId).trim().toLowerCase()}:${item.messageId}`;
+        if (!existingKeys.has(key)) {
+          existingKeys.add(key);
+          telegramSentMessagesLog.push(item);
+        }
+      }
+    }
+    if (telegramSentMessagesLog.length > 800) {
+      telegramSentMessagesLog = telegramSentMessagesLog.slice(0, 800);
     }
   }
   if (typeof parsed.lastOnboardingBotUpdateId === 'number' && parsed.lastOnboardingBotUpdateId > lastOnboardingBotUpdateId) {
@@ -2004,16 +2061,16 @@ function applyParsedState(parsed: Partial<PersistedState>) {
           ? parsed.autopilot.freeBotStoppedForToday
           : Boolean(autoPilot.freeBotStoppedForToday),
       quotexReferralLink: resolvedQxLink,
-      botToken: parsed.autopilot.botToken || autoPilot.botToken,
-      chatId: parsed.autopilot.chatId || autoPilot.chatId,
+      botToken: (parsed.autopilot.botToken && parsed.autopilot.botToken.trim()) || autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN,
+      chatId: (parsed.autopilot.chatId && parsed.autopilot.chatId.trim()) || autoPilot.chatId || DEFAULT_FREE_CHAT_ID,
       freeWinIcon: parsed.autopilot.freeWinIcon || autoPilot.freeWinIcon || '✅ ربح',
       freeWinGale1Icon: parsed.autopilot.freeWinGale1Icon || autoPilot.freeWinGale1Icon || '✅ ربح مضاعفة واحدة',
       freeLossIcon: parsed.autopilot.freeLossIcon || autoPilot.freeLossIcon || '❌',
       freeWinImageUrl: parsed.autopilot.freeWinImageUrl !== undefined ? parsed.autopilot.freeWinImageUrl : (autoPilot.freeWinImageUrl || ''),
       freeWinGale1ImageUrl: parsed.autopilot.freeWinGale1ImageUrl !== undefined ? parsed.autopilot.freeWinGale1ImageUrl : (autoPilot.freeWinGale1ImageUrl || ''),
       freeLossImageUrl: parsed.autopilot.freeLossImageUrl !== undefined ? parsed.autopilot.freeLossImageUrl : (autoPilot.freeLossImageUrl || ''),
-      vipBotToken: (parsed.autopilot.vipBotToken && parsed.autopilot.vipBotToken.trim()) || autoPilot.vipBotToken || '',
-      vipChatId: (parsed.autopilot.vipChatId && parsed.autopilot.vipChatId.trim()) || autoPilot.vipChatId || '',
+      vipBotToken: (parsed.autopilot.vipBotToken && parsed.autopilot.vipBotToken.trim()) || autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN,
+      vipChatId: (parsed.autopilot.vipChatId && parsed.autopilot.vipChatId.trim()) || autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID,
       vipWinIcon: parsed.autopilot.vipWinIcon || autoPilot.vipWinIcon || '👑✅ ربح VIP',
       vipWinGale1Icon: parsed.autopilot.vipWinGale1Icon || autoPilot.vipWinGale1Icon || '👑✅ ربح مضاعفة واحدة',
       vipLossIcon: parsed.autopilot.vipLossIcon || autoPilot.vipLossIcon || '❌',
@@ -2221,29 +2278,50 @@ function getLiveRobotActiveSignal(overrideMode?: RobotStrategyEngineMode): Signa
   if (!isGlobalForexMarketOpen()) return null;
 
   const mode = overrideMode || robotSettings.strategyEngineMode || 'VIP_WITH_MPB';
+  const nowEpoch = Math.floor(Date.now() / 1000);
+
+  const isEligibleAsset = (s: SignalItem) =>
+    Boolean(s) && s.asset !== 'USD/JPY' && !s.asset.includes('USDJPY');
+
+  const isRecentlyClosed = (s: SignalItem) => {
+    if (!s.createdAt) return false;
+    const sigAgeSec = Math.floor((Date.now() - new Date(s.createdAt).getTime()) / 1000);
+    const targetSec = s.targetEntryTimestamp || (nowEpoch - sigAgeSec + 45);
+    const secondsSinceCandleClose = nowEpoch - (targetSec + 60);
+    return secondsSinceCandleClose >= 0 && secondsSinceCandleClose <= 20;
+  };
+
   let candidate: SignalItem | null = null;
 
   if (mode === 'PUBLIC_CLASSIC') {
-    // Mode 1: Public Classic Indicator (1 full minute countdown, not 5s instant)
-    candidate = signalsStore.find(s =>
-      s.status === 'PENDING' &&
-      !s.instantExecution5s &&
-      s.strategyType !== 'MOMENTUM_PAUSE_BREAKOUT'
-    ) || null;
+    // Prefer classic PENDING signal, otherwise deliver unified MPB engine signal
+    candidate =
+      signalsStore.find(
+        s =>
+          isEligibleAsset(s) &&
+          s.status === 'PENDING' &&
+          !s.instantExecution5s &&
+          s.strategyType !== 'MOMENTUM_PAUSE_BREAKOUT'
+      ) ||
+      signalsStore.find(s => isEligibleAsset(s) && s.status === 'PENDING') ||
+      signalsStore.find(s => isEligibleAsset(s) && s.status !== 'PENDING' && isRecentlyClosed(s)) ||
+      null;
   } else {
-    // Mode 2: MPB Strategy (5s instant confirmation at :55)
-    // STRICT ISOLATION: ONLY signals belonging to MPB / Instant 5s execution, never USD/JPY.
-    candidate = signalsStore.find(s =>
-      s.status === 'PENDING' &&
-      s.asset !== 'USD/JPY' &&
-      !s.asset.includes('USDJPY') &&
-      (Boolean(s.instantExecution5s) || s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.isLiveBroadcast)
-    ) || null;
+    // Unified MPB Strategy (5s instant confirmation at :50-:55), fallback to any active signal
+    candidate =
+      signalsStore.find(
+        s =>
+          isEligibleAsset(s) &&
+          s.status === 'PENDING' &&
+          (Boolean(s.instantExecution5s) || s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.isLiveBroadcast)
+      ) ||
+      signalsStore.find(s => isEligibleAsset(s) && s.status === 'PENDING') ||
+      signalsStore.find(s => isEligibleAsset(s) && s.status !== 'PENDING' && isRecentlyClosed(s)) ||
+      null;
   }
 
-  if (!candidate || candidate.asset === 'USD/JPY' || candidate.asset.includes('USDJPY')) return null;
+  if (!candidate) return null;
 
-  const nowEpoch = Math.floor(Date.now() / 1000);
   const sigAgeSec = candidate.createdAt
     ? Math.floor((Date.now() - new Date(candidate.createdAt).getTime()) / 1000)
     : 999;
@@ -2259,24 +2337,15 @@ function getLiveRobotActiveSignal(overrideMode?: RobotStrategyEngineMode): Signa
 
   // If signal is PENDING:
   if (candidate.status === 'PENDING') {
-    if (mode === 'VIP_WITH_MPB') {
-      // In MPB mode: Deliver the signal as soon as dispatched (within 180s of candle entry)
-      // and while the 60s candle trade is actively in progress (diffUntilEntry between 0 and -65s)
-      if (diffUntilEntry >= -65 && diffUntilEntry <= 180 && sigAgeSec <= 180) {
-        return candidate;
-      }
-      return null;
-    } else {
-      if (diffUntilEntry >= -70 && diffUntilEntry <= 90 && sigAgeSec <= 135) {
-        return candidate;
-      }
-      return null;
+    if (diffUntilEntry >= -65 && diffUntilEntry <= 180 && sigAgeSec <= 180) {
+      return candidate;
     }
+    return null;
   }
 
-  // If completed (WIN / LOSS / DRAW): display for 15 seconds after candle close so user sees the outcome banner
+  // If completed (WIN / LOSS / DRAW): display for 20 seconds after candle close so user sees the outcome banner
   const secondsSinceCandleClose = nowEpoch - (targetSec + 60);
-  if (secondsSinceCandleClose >= 0 && secondsSinceCandleClose <= 15) {
+  if (secondsSinceCandleClose >= 0 && secondsSinceCandleClose <= 20) {
     return candidate;
   }
 
@@ -2305,6 +2374,7 @@ async function saveState(): Promise<boolean> {
       subscribers: subscribersStore.slice(0, 200),
       telegramBotUsers: telegramBotUsersStore.slice(0, 500),
       telegramBotConfig: telegramBotConfigStore,
+      telegramSentMessages: telegramSentMessagesLog.slice(0, 800),
       quickNotes: quickNotesStore.slice(0, 50),
       dailyStats: sortedDailyStats,
       forexNews: forexNewsStore,
@@ -3648,17 +3718,17 @@ export function evaluateFourIndicatorConfluence(
       }
     }
 
-    // Add institutional confirmation tags for Telegram & UI when strongly aligned
+    // Add institutional confirmation tags for Telegram & UI when strongly aligned (indicator name only, no values)
     if (dir === 'CALL' && lastCandle.close > htfData.ema50M1 && htfData.htfM5Trend === 'BULLISH') {
-      bonuses.push(`فلتر الاتجاه العام EMA 50 + M5 (ترند صاعد متوافق 📈)`);
+      bonuses.push(`فلتر الاتجاه العام EMA + M5 (ترند صاعد متوافق 📈)`);
     } else if (dir === 'PUT' && lastCandle.close < htfData.ema50M1 && htfData.htfM5Trend === 'BEARISH') {
-      bonuses.push(`فلتر الاتجاه العام EMA 50 + M5 (ترند هابط متوافق 📉)`);
+      bonuses.push(`فلتر الاتجاه العام EMA + M5 (ترند هابط متوافق 📉)`);
     }
 
     if (!adxData.insufficientData && adxData.adx >= minAdxRequired) {
       const diAligned = dir === 'CALL' ? adxData.plusDi > adxData.minusDi : adxData.minusDi > adxData.plusDi;
       if (diAligned) {
-        bonuses.push(`مؤشر قوة الاتجاه ADX (${adxData.adx} زخم ترند نقي ✅)`);
+        bonuses.push(`مؤشر قوة الاتجاه ADX (زخم ترند نقي ✅)`);
       }
     }
 
@@ -3705,23 +3775,23 @@ export function evaluateFourIndicatorConfluence(
 
     let additionalCount = 0;
 
-    // Pillar 2: ATR (14) Volatility Confirmation
+    // Pillar 2: ATR Volatility Confirmation (Name only, no numeric value)
     const atrMatched = isAtrHealthy;
     if (atrMatched) {
       additionalCount += 1;
-      matchedList.push(`مؤشر ATR (${atr.toFixed(5)} سيولة وزخم نشط)`);
+      matchedList.push(`مؤشر ATR (سيولة وزخم نشط)`);
     }
 
-    // Pillar 3: RSI (14) Momentum Alignment (strictly excludes overextended extremes & neutral chop)
+    // Pillar 3: RSI Momentum Alignment (Name only, no numeric value)
     const rsiMatched = testDirection === 'CALL'
       ? ((rsi >= 52 && rsi <= 72) || (rsi <= 34 && rsi >= 18 && Boolean(srContext?.isTestingSupport)))
       : ((rsi <= 48 && rsi >= 28) || (rsi >= 66 && rsi <= 82 && Boolean(srContext?.isTestingResistance)));
     if (rsiMatched) {
       additionalCount += 1;
-      matchedList.push(`مؤشر RSI (${rsi.toFixed(1)} ${testDirection === 'CALL' ? 'ميل صعودي' : 'ميل هبوطي'})`);
+      matchedList.push(`مؤشر RSI (${testDirection === 'CALL' ? 'ميل صعودي' : 'ميل هبوطي'})`);
     }
 
-    // Pillar 4: Supertrend (10, 3) Trend Baseline
+    // Pillar 4: Supertrend Trend Baseline
     const stMatched = testDirection === 'CALL'
       ? supertrend.trend === 'BULLISH'
       : supertrend.trend === 'BEARISH';
@@ -3787,13 +3857,13 @@ export function evaluateFourIndicatorConfluence(
       callMatched.push(`ارتداد دعم مؤكد S/R ✅`);
     }
     if (isAtrHealthy) {
-      callMatched.push(`مؤشر ATR (${atr.toFixed(5)} سيولة نشطة)`);
+      callMatched.push(`مؤشر ATR (سيولة نشطة)`);
     }
     const rsiCall =
       (rsi >= 52 && rsi <= 72) ||
       (rsi <= 34 && rsi >= 18 && Boolean(srContext?.isTestingSupport));
     if (rsiCall) {
-      callMatched.push(`مؤشر RSI (${rsi.toFixed(1)} ميل صعودي)`);
+      callMatched.push(`مؤشر RSI (ميل صعودي)`);
     }
     const stCall = supertrend.trend === 'BULLISH';
     if (stCall) {
@@ -3813,13 +3883,13 @@ export function evaluateFourIndicatorConfluence(
       putMatched.push(`ارتداد مقاومة مؤكدة S/R ✅`);
     }
     if (isAtrHealthy) {
-      putMatched.push(`مؤشر ATR (${atr.toFixed(5)} سيولة نشطة)`);
+      putMatched.push(`مؤشر ATR (سيولة نشطة)`);
     }
     const rsiPut =
       (rsi <= 48 && rsi >= 28) ||
       (rsi >= 66 && rsi <= 82 && Boolean(srContext?.isTestingResistance));
     if (rsiPut) {
-      putMatched.push(`مؤشر RSI (${rsi.toFixed(1)} ميل هبوطي)`);
+      putMatched.push(`مؤشر RSI (ميل هبوطي)`);
     }
     const stPut = supertrend.trend === 'BEARISH';
     if (stPut) {
@@ -4108,7 +4178,7 @@ async function scanRealGlobalForexMarket(
       const fractalCallLabel = fractal.lastFractalType === 'BULLISH_LOW' ? fractal.description : isBullishPinBar ? 'شمعة مطرقة صاعدة' : isBullishEngulfing ? 'ابتلاع صعودي مؤكد' : 'ارتداد فركتال صاعد';
 
       const isRsiCall = rsi <= 38 || (rsi <= 45 && rsi >= 30) || (rsi >= 45 && rsi <= 60 && closes[closes.length - 1] > closes[closes.length - 2]);
-      const rsiCallLabel = rsi <= 35 ? `تشبع بيعي RSI(${rsi})` : `ميل صعودي RSI(${rsi})`;
+      const rsiCallLabel = rsi <= 35 ? `تشبع بيعي مؤشر RSI` : `ميل صعودي مؤشر RSI`;
 
       const callMatches: string[] = [];
       if (isStCall) callMatches.push(stCallLabel);
@@ -4126,7 +4196,7 @@ async function scanRealGlobalForexMarket(
       const fractalPutLabel = fractal.lastFractalType === 'BEARISH_HIGH' ? fractal.description : isBearishPinBar ? 'شمعة شهاب هابطة' : isBearishEngulfing ? 'ابتلاع هبوطي مؤكد' : 'انعكاس فركتال هابط';
 
       const isRsiPut = rsi >= 62 || (rsi >= 55 && rsi <= 70) || (rsi <= 55 && rsi >= 40 && closes[closes.length - 1] < closes[closes.length - 2]);
-      const rsiPutLabel = rsi >= 65 ? `تشبع شرائي RSI(${rsi})` : `ميل هبوطي RSI(${rsi})`;
+      const rsiPutLabel = rsi >= 65 ? `تشبع شرائي مؤشر RSI` : `ميل هبوطي مؤشر RSI`;
 
       const putMatches: string[] = [];
       if (isStPut) putMatches.push(stPutLabel);
@@ -4394,7 +4464,11 @@ async function sendTelegramMessage(botToken: string, chatId: string, text: strin
       body: JSON.stringify(payload),
       signal: controller.signal
     });
-    return (await tgRes.json()) as any;
+    const parsed = (await tgRes.json()) as any;
+    if (parsed?.ok && parsed?.result?.message_id) {
+      trackSentTelegramMessage(chatId, parsed.result.message_id);
+    }
+    return parsed;
   } catch (err: any) {
     console.warn('[sendTelegramMessage Error]', err);
     return { ok: false, description: err?.message || 'خطأ في الاتصال بسيرفرات التليجرام' };
@@ -6551,7 +6625,7 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
   }
 
   const superTrendLabel = candidate.superTrend
-    ? `${candidate.superTrend.trend === 'BULLISH' ? '🟢 صاعد' : '🔴 هابط'} (${candidate.superTrend.value})`
+    ? `${candidate.superTrend.trend === 'BULLISH' ? '🟢 صاعد' : '🔴 هابط'}`
     : undefined;
   const fractalLabel = candidate.fractal?.description;
 
@@ -7181,6 +7255,9 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
 
   try {
     if (!isGlobalForexMarketOpen()) return;
+    if (enforceDailySignalReset()) {
+      await saveState();
+    }
     const cairoMins = getCairoMinutesOfDay();
 
     // At 10:30 AM Cairo Time, dispatch morning greeting & readiness notice (Free + VIP)
@@ -7927,8 +8004,28 @@ async function checkAndSendEveningOpeningGreeting(): Promise<boolean> {
   const todayEgypt = getCurrentEgyptDateString(new Date());
   const cairoMins = getCairoMinutesOfDay();
 
-  // Never send welcome if evening session already closed or finished
+  // Reset stale previous-day liveBroadcastSession before checking stop state
+  if (liveBroadcastSession.activeDate !== todayEgypt) {
+    liveBroadcastSession.activeDate = todayEgypt;
+    liveBroadcastSession.status = 'IDLE';
+    liveBroadcastSession.statusNote = 'الجلسة في وضع الاستعداد لانطلاق البث المباشر (04:30 م - 08:00 م)';
+    liveBroadcastSession.wins = 0;
+    liveBroadcastSession.losses = 0;
+    liveBroadcastSession.consecutiveLosses = 0;
+    liveBroadcastSession.totalTrades = 0;
+    liveBroadcastSession.winRate = 0;
+    liveBroadcastSession.firstSignalTimestamp = undefined;
+    liveBroadcastSession.initialNoticeSentDate = '';
+    liveBroadcastSession.celebrationSentDate = '';
+    liveBroadcastSession.badMarketNoticeSentDate = '';
+    liveBroadcastSession.closingReportSentDate = '';
+    liveBroadcastSession.lastScanCandidate = undefined;
+    liveBroadcastSession.lastDispatchedAt = undefined;
+  }
+
+  // Never send welcome if evening session already closed or finished today
   if (
+    liveBroadcastSession.initialNoticeSentDate === todayEgypt ||
     liveBroadcastSession.closingReportSentDate === todayEgypt ||
     liveBroadcastSession.status === 'STOPPED_TARGET_REACHED' ||
     liveBroadcastSession.status === 'STOPPED_BAD_MARKET' ||
@@ -7948,21 +8045,7 @@ async function checkAndSendEveningOpeningGreeting(): Promise<boolean> {
     const lockKey = `evening_intro_confirmed_${todayEgypt}`;
     const noticeMap = await readTelegramDailyNoticeMap();
     if (noticeMap[lockKey]) {
-      if (liveBroadcastSession.initialNoticeSentDate !== todayEgypt) {
-        liveBroadcastSession.initialNoticeSentDate = todayEgypt;
-      }
-      return false;
-    }
-
-    // Also respect initialNoticeSentDate if live trades have already been dispatched today
-    const hasLiveTradesToday = signalsStore.some(s => {
-      if (!s.createdAt) return false;
-      const isLive = s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'));
-      if (!isLive) return false;
-      const d = new Date(s.createdAt);
-      return !isNaN(d.getTime()) && getCurrentEgyptDateString(d) === todayEgypt;
-    });
-    if (liveBroadcastSession.initialNoticeSentDate === todayEgypt && hasLiveTradesToday) {
+      liveBroadcastSession.initialNoticeSentDate = todayEgypt;
       return false;
     }
 
@@ -10061,6 +10144,10 @@ async function startServer() {
         });
       }
 
+      if (sendData.result?.message_id) {
+        trackSentTelegramMessage(chat, sendData.result.message_id);
+      }
+
       res.json({
         ok: true,
         message: `تم إرسال رسالة الفحص بنجاح إلى القناة (${chat})!`,
@@ -10074,6 +10161,219 @@ async function startServer() {
         error: `خطأ في الاتصال بسيرفر تليجرام: ${e.message}`
       });
     }
+  });
+
+  // Bulk Clear Telegram Channel Messages (Free / VIP / Both) while strictly preserving Pinned Messages
+  app.post('/api/telegram/clear-channel-messages', requireAdmin, async (req, res) => {
+    if (!isCloudStateLoaded) {
+      await loadStateFromCloudAndDisk();
+    }
+    const {
+      target = 'both',
+      latestMessageId,
+      scanCount = 120
+    } = (req.body || {}) as {
+      target?: 'free' | 'vip' | 'both';
+      latestMessageId?: number | string;
+      scanCount?: number | string;
+    };
+
+    const freeToken = (autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
+    const freeChat = (autoPilot.chatId || DEFAULT_FREE_CHAT_ID).trim();
+    const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN || freeToken).trim();
+    const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
+
+    const targets: Array<{ key: 'free' | 'vip'; label: string; token: string; chatId: string }> = [];
+    if (target === 'free' || target === 'both') {
+      targets.push({ key: 'free', label: 'القناة العامة المجانية', token: freeToken, chatId: freeChat });
+    }
+    if (target === 'vip' || target === 'both') {
+      targets.push({ key: 'vip', label: 'قناة VIP الخاصة', token: vipToken, chatId: vipChat });
+    }
+
+    const parsedLatestId = Number(latestMessageId) || 0;
+    const safeScanCount = Math.min(300, Math.max(1, Number(scanCount) || 120));
+
+    const results: Array<{
+      channel: 'free' | 'vip';
+      label: string;
+      chatId: string;
+      ok: boolean;
+      attemptedCount: number;
+      deletedCount: number;
+      failedCount: number;
+      skippedPinnedId: number | null;
+      error?: string;
+    }> = [];
+
+    for (const dest of targets) {
+      if (!dest.token || !dest.chatId) {
+        results.push({
+          channel: dest.key,
+          label: dest.label,
+          chatId: dest.chatId || '',
+          ok: false,
+          attemptedCount: 0,
+          deletedCount: 0,
+          failedCount: 0,
+          skippedPinnedId: null,
+          error: 'توكن البوت أو معرف القناة غير مضبوط حالياً.'
+        });
+        continue;
+      }
+
+      let pinnedMessageId: number | null = null;
+      let resolvedChatId = dest.chatId;
+
+      try {
+        const chatRes = await fetch(
+          `https://api.telegram.org/bot${dest.token}/getChat?chat_id=${encodeURIComponent(dest.chatId)}`
+        );
+        const chatData = (await chatRes.json()) as any;
+        if (!chatData?.ok) {
+          results.push({
+            channel: dest.key,
+            label: dest.label,
+            chatId: dest.chatId,
+            ok: false,
+            attemptedCount: 0,
+            deletedCount: 0,
+            failedCount: 0,
+            skippedPinnedId: null,
+            error: chatData?.description || 'تعذر الوصول إلى القناة عبر توكن البوت.'
+          });
+          continue;
+        }
+        if (chatData.result?.id) {
+          resolvedChatId = String(chatData.result.id);
+        }
+        if (chatData.result?.pinned_message?.message_id) {
+          pinnedMessageId = Number(chatData.result.pinned_message.message_id);
+        }
+      } catch (err: any) {
+        results.push({
+          channel: dest.key,
+          label: dest.label,
+          chatId: dest.chatId,
+          ok: false,
+          attemptedCount: 0,
+          deletedCount: 0,
+          failedCount: 0,
+          skippedPinnedId: null,
+          error: err?.message || 'فشل فحص القناة قبل الحذف.'
+        });
+        continue;
+      }
+
+      const idSet = new Set<number>();
+      const destLower = dest.chatId.toLowerCase();
+      const resolvedLower = resolvedChatId.toLowerCase();
+
+      for (const item of telegramSentMessagesLog) {
+        const itemChat = item.chatId.toLowerCase();
+        if (itemChat === destLower || itemChat === resolvedLower || item.channelType === dest.key) {
+          if (item.messageId > 0) idSet.add(item.messageId);
+        }
+      }
+      for (const sig of signalsStore) {
+        const sigMsgId = dest.key === 'free' ? sig.telegramMessageId : sig.vipTelegramMessageId;
+        if (sigMsgId && sigMsgId > 0) idSet.add(sigMsgId);
+      }
+
+      if (parsedLatestId > 0) {
+        const startId = Math.max(1, parsedLatestId - safeScanCount + 1);
+        for (let id = parsedLatestId; id >= startId; id--) {
+          idSet.add(id);
+        }
+      }
+
+      if (pinnedMessageId) {
+        idSet.delete(pinnedMessageId);
+      }
+
+      const candidateIds = Array.from(idSet).sort((a, b) => b - a);
+      let deletedCount = 0;
+      let failedCount = 0;
+      const deletedIds = new Set<number>();
+
+      // Batch delete up to 100 at a time via deleteMessages, falling back to single deleteMessage if batch hits a missing/old ID
+      for (let i = 0; i < candidateIds.length; i += 100) {
+        const chunk = candidateIds.slice(i, i + 100);
+        let batchOk = false;
+        try {
+          const batchRes = await fetch(`https://api.telegram.org/bot${dest.token}/deleteMessages`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: resolvedChatId,
+              message_ids: chunk
+            })
+          });
+          const batchData = (await batchRes.json()) as any;
+          if (batchData?.ok) {
+            batchOk = true;
+            deletedCount += chunk.length;
+            chunk.forEach(id => deletedIds.add(id));
+          }
+        } catch (_e) {
+          batchOk = false;
+        }
+
+        if (!batchOk) {
+          for (const msgId of chunk) {
+            if (pinnedMessageId && msgId === pinnedMessageId) continue;
+            try {
+              const delRes = await fetch(`https://api.telegram.org/bot${dest.token}/deleteMessage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  chat_id: resolvedChatId,
+                  message_id: msgId
+                })
+              });
+              const delData = (await delRes.json()) as any;
+              if (delData?.ok) {
+                deletedCount += 1;
+                deletedIds.add(msgId);
+              } else {
+                failedCount += 1;
+              }
+            } catch (_e) {
+              failedCount += 1;
+            }
+          }
+        }
+      }
+
+      if (deletedIds.size > 0) {
+        telegramSentMessagesLog = telegramSentMessagesLog.filter(
+          item =>
+            !(
+              deletedIds.has(item.messageId) &&
+              (item.chatId.toLowerCase() === destLower ||
+                item.chatId.toLowerCase() === resolvedLower ||
+                item.channelType === dest.key)
+            )
+        );
+      }
+
+      results.push({
+        channel: dest.key,
+        label: dest.label,
+        chatId: dest.chatId,
+        ok: true,
+        attemptedCount: candidateIds.length,
+        deletedCount,
+        failedCount,
+        skippedPinnedId: pinnedMessageId
+      });
+    }
+
+    await saveState();
+    return res.json({
+      ok: results.some(r => r.ok),
+      results
+    });
   });
 
   // Dedicated Browser Diagnostic Verification Page (Admin only, HTML-escaped)
