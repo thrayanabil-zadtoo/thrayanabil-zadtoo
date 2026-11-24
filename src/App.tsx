@@ -331,12 +331,18 @@ export default function App() {
       localStorage.removeItem('zad_admin_auth');
       localStorage.removeItem('tg_bot_token');
       localStorage.removeItem('tg_vip_bot_token');
-    } catch (_e) {}
-    return sessionStorage.getItem('zad_admin_token') || '';
+      return sessionStorage.getItem('zad_admin_token') || '';
+    } catch (_e) {
+      return '';
+    }
   });
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
-    return Boolean(sessionStorage.getItem('zad_admin_token'));
+    try {
+      return Boolean(sessionStorage.getItem('zad_admin_token'));
+    } catch (_e) {
+      return false;
+    }
   });
   const [adminNeedsSetup, setAdminNeedsSetup] = useState<boolean>(false);
   const [activeView, setActiveView] = useState<'visitor' | 'admin' | 'stats' | 'robot'>('visitor');
@@ -877,7 +883,9 @@ export default function App() {
       }
 
       if (res.ok && data.ok && data.token) {
-        sessionStorage.setItem('zad_admin_token', data.token);
+        try {
+          sessionStorage.setItem('zad_admin_token', data.token);
+        } catch (_e) {}
         setAdminToken(data.token);
         setIsAdminAuthenticated(true);
         setAdminNeedsSetup(false);
@@ -888,8 +896,9 @@ export default function App() {
       } else {
         setLoginError(data?.error || 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
       }
-    } catch (_e) {
-      setLoginError('تعذر الاتصال بالخادم للتحقق من بيانات الدخول');
+    } catch (err: any) {
+      const reason = err?.message ? ` (${err.message})` : '';
+      setLoginError(`تعذر الاتصال بالخادم للتحقق من بيانات الدخول${reason}`);
     } finally {
       setIsLoggingIn(false);
     }
