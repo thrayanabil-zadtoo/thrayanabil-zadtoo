@@ -565,6 +565,10 @@ export default function App() {
   });
   const [adminChatInput, setAdminChatInput] = useState<string>('');
   const [isSavingSubscriber, setIsSavingSubscriber] = useState<boolean>(false);
+  const [modalSaveFeedback, setModalSaveFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
   // Server-side 24/7 Focused Auto-Pilot state (tokens live exclusively on server)
   const [autoPilot, setAutoPilot] = useState<AutoPilotConfig>({
@@ -1069,9 +1073,10 @@ export default function App() {
       paymentMethod: sub.paymentMethod || PAYMENT_METHODS[1],
       status: sub.status || 'PENDING',
       activationLink: sub.activationLink || '',
-      expiryDate: sub.expiryDate || ''
+      expiryDate: sub.expiryDate || sub.robotExpiryDate || ''
     });
     setAdminChatInput('');
+    setModalSaveFeedback(null);
   };
 
   // Helper to calculate days left until expiry
@@ -1178,14 +1183,28 @@ export default function App() {
     updates: Partial<VipSubscriber> & { sendActivationMessage?: boolean }
   ) => {
     setIsSavingSubscriber(true);
+    setModalSaveFeedback(null);
     try {
+      const payload: Partial<VipSubscriber> & { sendActivationMessage?: boolean } = {
+        ...updates,
+        ...(updates.expiryDate !== undefined && updates.robotExpiryDate === undefined
+          ? { robotExpiryDate: updates.expiryDate }
+          : {})
+      };
       const res = await fetch(`/api/subscribers/${subId}`, {
         method: 'PATCH',
         headers: getAdminHeaders(),
-        body: JSON.stringify(updates)
+        body: JSON.stringify(payload)
       });
-      const data = await res.json();
-      if (data.ok && data.subscriber) {
+      const rawText = await res.text();
+      let data: any = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch (_parseErr) {
+        data = {};
+      }
+
+      if (res.ok && data?.ok && data?.subscriber) {
         setSubscribers(prev => prev.map(s => (s.id === subId ? data.subscriber : s)));
         if (selectedAdminSubId === subId) {
           const planObj = VIP_PLANS.find(p => p.id === data.subscriber.planDuration) || VIP_PLANS[0];
@@ -1210,19 +1229,28 @@ export default function App() {
             paymentMethod: data.subscriber.paymentMethod || PAYMENT_METHODS[1],
             status: data.subscriber.status || 'PENDING',
             activationLink: data.subscriber.activationLink || '',
-            expiryDate: data.subscriber.expiryDate || ''
+            expiryDate: data.subscriber.expiryDate || data.subscriber.robotExpiryDate || ''
           });
         }
-        setPublishStatus({
-          type: 'success',
-          message: updates.sendActivationMessage
-            ? '✅ تم إرسال رابط التفعيل وتاريخ الانتهاء إلى حساب العضو وتفعيل عضويته!'
-            : '✅ تم تحديث بيانات العضوية بنجاح.'
-        });
+        const okMsg = updates.sendActivationMessage
+          ? '✅ تم إرسال رابط التفعيل وتاريخ الانتهاء وتثبيته في قاعدة البيانات بنجاح!'
+          : `✅ تم حفظ التعديلات وتاريخ الانتهاء (${data.subscriber.expiryDate || data.subscriber.robotExpiryDate || ''}) في قاعدة بيانات الخادم بنجاح!`;
+        setModalSaveFeedback({ type: 'success', message: okMsg });
+        setPublishStatus({ type: 'success', message: okMsg });
         setTimeout(() => setPublishStatus({ type: 'idle' }), 4000);
+      } else {
+        const errMsg =
+          data?.error ||
+          (res.status === 401 || res.status === 403
+            ? '❌ انتهت جلسة المشرف — يرجى إعادة تسجيل الدخول ثم المحاولة مرة أخرى.'
+            : '❌ تعذر حفظ التعديلات على الخادم، يرجى التأكد من الاتصال.');
+        setModalSaveFeedback({ type: 'error', message: errMsg });
+        setPublishStatus({ type: 'error', message: errMsg });
       }
     } catch (_e) {
-      // Ignore
+      const netMsg = '❌ تعذر الاتصال بالخادم لحفظ التعديلات — تأكد من فتح الموقع من رابط الخادم الصحيح.';
+      setModalSaveFeedback({ type: 'error', message: netMsg });
+      setPublishStatus({ type: 'error', message: netMsg });
     } finally {
       setIsSavingSubscriber(false);
     }
@@ -9428,6 +9456,19 @@ export default function App() {
                       +{pl.label} ({pl.price}$)
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setAdminEditForm(p => ({
+                        ...p,
+                        status: 'ACTIVE',
+                        expiryDate: '2099-12-31'
+                      }))
+                    }
+                    className="px-2 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded font-bold cursor-pointer"
+                  >
+                    +دائم (2099-12-31)
+                  </button>
                 </div>
 
                 <div>
@@ -9446,14 +9487,26 @@ export default function App() {
                   />
                 </div>
 
+                {modalSaveFeedback && (
+                  <div
+                    className={`p-2.5 rounded-lg border text-xs font-bold ${
+                      modalSaveFeedback.type === 'success'
+                        ? 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
+                        : 'bg-rose-950/70 border-rose-500/50 text-rose-300'
+                    }`}
+                  >
+                    {modalSaveFeedback.message}
+                  </div>
+                )}
+
                 <div className="flex flex-wrap gap-2 pt-2">
                   <button
                     type="button"
                     disabled={isSavingSubscriber}
                     onClick={() => handleAdminUpdateSubscriber(selectedAdminSub.id, adminEditForm)}
-                    className="flex-1 py-2 px-3 text-xs font-bold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-lg transition-colors cursor-pointer"
+                    className="flex-1 py-2 px-3 text-xs font-bold text-slate-950 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 rounded-lg transition-colors cursor-pointer"
                   >
-                    حفظ التعديلات وتاريخ الانتهاء
+                    {isSavingSubscriber ? '⏳ جاري الحفظ...' : 'حفظ التعديلات وتاريخ الانتهاء'}
                   </button>
 
                   <button

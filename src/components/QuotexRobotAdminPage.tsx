@@ -568,6 +568,11 @@ export default function QuotexRobotAdminPage({
     }
   };
 
+  const [memberUpdateToast, setMemberUpdateToast] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
+
   const handleUpdateSubscriberRobot = async (
     subId: string,
     payload: {
@@ -588,9 +593,22 @@ export default function QuotexRobotAdminPage({
       const data = await res.json();
       if (res.ok && data.ok && data.subscriber) {
         setSubscribers(prev => prev.map(s => (s.id === subId ? data.subscriber : s)));
+        setMemberUpdateToast({
+          type: 'success',
+          message: `✅ تم حفظ تحديثات (${data.subscriber.name}) وتاريخ الصلاحية (${data.subscriber.robotExpiryDate || data.subscriber.expiryDate || '-'}) في قاعدة البيانات.`
+        });
+        setTimeout(() => setMemberUpdateToast(null), 4000);
+      } else {
+        setMemberUpdateToast({
+          type: 'error',
+          message: `❌ ${data?.error || 'تعذر حفظ التحديثات — تأكد من تسجيل الدخول كمشرف'}`
+        });
       }
     } catch (_e) {
-      // Ignore
+      setMemberUpdateToast({
+        type: 'error',
+        message: '❌ خطأ في الاتصال بالخادم أثناء حفظ بيانات العضو.'
+      });
     }
   };
 
@@ -613,13 +631,14 @@ export default function QuotexRobotAdminPage({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // Current App Origin
+  // Current App Origin (rewrite ais-dev-* preview host to public ais-pre-* Cloud Run host for external scripts)
+  const toPublicOrigin = (url: string) =>
+    String(url || '').trim().replace(/\/+$/, '').replace(/^(https?:\/\/)ais-dev-/i, '$1ais-pre-');
   const appOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+  const publicRobotOrigin = toPublicOrigin(appOrigin);
 
   // Admin-Only Floating Quotex Robot v5.0 Tampermonkey Script Generator State
-  const [scriptServerOrigin, setScriptServerOrigin] = useState<string>(() =>
-    typeof window !== 'undefined' ? window.location.origin : ''
-  );
+  const [scriptServerOrigin, setScriptServerOrigin] = useState<string>(() => publicRobotOrigin);
   const [scriptApiKey, setScriptApiKey] = useState<string>('');
   const [generatedScript, setGeneratedScript] = useState<string>('');
   const [scriptMeta, setScriptMeta] = useState<{
@@ -649,7 +668,7 @@ export default function QuotexRobotAdminPage({
     setScriptError(null);
     try {
       const targetKey = (overrideKey ?? scriptApiKey).trim();
-      const targetOrigin = (overrideOrigin ?? scriptServerOrigin ?? appOrigin).trim();
+      const targetOrigin = toPublicOrigin(overrideOrigin ?? scriptServerOrigin ?? publicRobotOrigin);
       const params = new URLSearchParams();
       if (targetKey) params.set('apiKey', targetKey);
       if (targetOrigin) params.set('serverOrigin', targetOrigin);
@@ -2221,8 +2240,8 @@ export default function QuotexRobotAdminPage({
               </div>
               <ul className="list-disc list-inside space-y-1 text-slate-300">
                 <li><strong className="text-white">اتصال سحابي مباشر وآمن:</strong> يتصل الروبوت مباشرة بنقطة <code className="font-mono-num text-sky-300">/api/quotex-robot/feed</code> باستخدام مفتاح العضو فقط دون تضمين أي مفاتيح قاعدة بيانات أو صلاحيات مشرف داخل الكود.</li>
-                <li><strong className="text-amber-300">زر إدخال وتعديل المفتاح (🔑 المفتاح):</strong> يمكن تغيير مفتاح العضو أو رابط السيرفر مباشرة من داخل الصندوق العائم على منصة كيوتكس في أي وقت.</li>
-                <li><strong className="text-emerald-300">تداول آلي أو يدوي + تنبيه صوتي:</strong> يدعم الاختيار التلقائي للزوج وضبط المدة M1 والتنفيذ الفوري بدون مضاعفات.</li>
+                <li><strong className="text-amber-300">زر إدخال وتعديل المفتاح (🔑 ID):</strong> يكتفي العضو بإدخال مفتاح العضو فقط داخل الروبوت العائم بينما يظل رابط الربط مضمّناً ومخفياً بالكامل.</li>
+                <li><strong className="text-emerald-300">مرور الصفقة + تداول آلي/يدوي + قرآن واختبار الأزرار:</strong> يعرض مراحل الإشارة والعد التنازلي أثناء الصفقة (60 ثانية) مع أزرار التثبيت اليدوي والشراء/البيع.</li>
               </ul>
             </div>
 
@@ -2312,9 +2331,12 @@ export default function QuotexRobotAdminPage({
                   </div>
                 </div>
 
-                {scriptServerOrigin.includes('fx.zadtoo.com') && (
-                  <div className="p-2 rounded-lg bg-rose-500/15 border border-rose-500/40 text-[10px] text-rose-200 leading-relaxed">
-                    ⚠️ تنبيه: تأكد أن رابط السيرفر يشير إلى رابط الخادم المنشور (<code dir="ltr" className="font-mono-num">ais-pre-...run.app</code>) وليس صفحة استضافة ثابتة بدون سيرفر، حتى تصل الإشارات للروبوت فوراً.
+                {(scriptServerOrigin.includes('fx.zadtoo.com') || scriptServerOrigin.includes('ais-dev-') || scriptServerOrigin.includes('ais-pre-')) && (
+                  <div className="p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/40 text-[10.5px] text-amber-200 leading-relaxed">
+                    ⚠️ <strong>ملاحظة هامة للربط من منصة Quotex:</strong>{' '}
+                    {scriptServerOrigin.includes('fx.zadtoo.com')
+                      ? 'تأكد أن رابط السيرفر يشير إلى رابط الخادم المنشور على Cloud Run وليس صفحة استضافة ثابتة بدون سيرفر.'
+                      : 'روابط المعاينة (ais-dev / ais-pre) محمية بجدار تسجيل دخول Google AI Studio وتمنع الاتصال الخارجي من كيوتكس. لتحقيق الربط الفعلي، انشر التطبيق عبر زر Publish / Deploy to Cloud Run ثم افتح رابط الموقع المنشور (بدون ais-dev أو ais-pre) وانسخ الكود أو حمّل الملف منه.'}
                   </div>
                 )}
 
@@ -2329,14 +2351,35 @@ export default function QuotexRobotAdminPage({
                     type="button"
                     disabled={!generatedScript || isLoadingScript}
                     onClick={() => handleCopy(generatedScript, 'admin-robot-script')}
-                    className="flex-1 min-w-[200px] py-2 px-3 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow"
+                    className="flex-1 min-w-[180px] py-2 px-3 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow"
                   >
                     {copiedId === 'admin-robot-script' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                     <span>
                       {copiedId === 'admin-robot-script'
                         ? '✅ تم نسخ كود الروبوت العائم v5.0!'
-                        : '📋 نسخ كود الروبوت العائم (Tampermonkey v5.0)'}
+                        : '📋 نسخ كود الروبوت (Tampermonkey v5.0)'}
                     </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={!generatedScript || isLoadingScript}
+                    onClick={() => {
+                      if (!generatedScript) return;
+                      const blob = new Blob([generatedScript], { type: 'text/javascript;charset=utf-8' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = 'zad-fx-floating-robot.user.js';
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      URL.revokeObjectURL(url);
+                    }}
+                    className="px-3 py-2 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs cursor-pointer flex items-center gap-1.5 shadow"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>تحميل (.user.js)</span>
                   </button>
 
                   <button
@@ -2371,7 +2414,7 @@ export default function QuotexRobotAdminPage({
                   <ol className="list-decimal list-inside space-y-0.5 text-slate-400">
                     <li>اضغط <strong>نسخ كود الروبوت العائم</strong> أعلاه (يُفضل إنشاء مفتاح عضو وتضمينه أولاً).</li>
                     <li>افتح إضافة <strong>Tampermonkey</strong> في المتصفح واختر <strong>Create a new script</strong> ثم امسح المحتوى القديم والصق الكود واحفظه (<code dir="ltr">Ctrl + S</code>).</li>
-                    <li>افتح منصة <strong>Quotex</strong> — سيظهر الصندوق العائم فوراً، وإذا ظهر في المرة الأولى أنك بحاجة لتعديل الرابط أو المفتاح اضغط زر <strong>🔑 المفتاح</strong>.</li>
+                    <li>افتح منصة <strong>Quotex</strong> — سيظهر الروبوت العائم بتصميم ZAD FX الكلاسيكي ومرتبطاً مباشرة بالسيرفر، ولإدخال أو تغيير مفتاحك اضغط زر <strong>🔑 ID</strong>.</li>
                   </ol>
                 </div>
               </div>
@@ -2509,6 +2552,18 @@ export default function QuotexRobotAdminPage({
             </button>
           </div>
         </form>
+
+        {memberUpdateToast && (
+          <div
+            className={`p-3 rounded-xl border text-xs font-bold ${
+              memberUpdateToast.type === 'success'
+                ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
+                : 'bg-rose-950/60 border-rose-500/40 text-rose-300'
+            }`}
+          >
+            {memberUpdateToast.message}
+          </div>
+        )}
 
         {/* Table of Members with their Unique API Keys, Validity Duration, and Controls */}
         <div className="overflow-x-auto">
