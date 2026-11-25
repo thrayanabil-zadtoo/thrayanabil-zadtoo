@@ -2410,10 +2410,10 @@ export default function QuotexRobotAdminPage({
                 )}
 
                 <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-lg text-[10px] text-slate-300 space-y-1">
-                  <div className="font-bold text-sky-300">📌 خطوات التثبيت السريعة في Tampermonkey:</div>
+                  <div className="font-bold text-sky-300">📌 خطوات التثبيت الصحيحة في Tampermonkey (هام جداً لتفعيل الاتصال):</div>
                   <ol className="list-decimal list-inside space-y-0.5 text-slate-400">
-                    <li>اضغط <strong>نسخ كود الروبوت العائم</strong> أعلاه (يُفضل إنشاء مفتاح عضو وتضمينه أولاً).</li>
-                    <li>افتح إضافة <strong>Tampermonkey</strong> في المتصفح واختر <strong>Create a new script</strong> ثم امسح المحتوى القديم والصق الكود واحفظه (<code dir="ltr">Ctrl + S</code>).</li>
+                    <li>انشر الخادم عبر <strong>Deploy to Cloud Run</strong> (وليس استضافة الواجهة الثابتة فقط) ثم افتح لوحة المشرف من رابط Cloud Run المنشور.</li>
+                    <li>يفضّل الضغط على زر <strong>تحميل (.user.js)</strong> ثم استيراد الملف من <strong>Tampermonkey Dashboard ← Utilities ← Import from file</strong> (أو عند اللصق في سكربت جديد: اضغط <code dir="ltr">Ctrl + A</code> ثم <code dir="ltr">Delete</code> لمسح النص الافتراضي كاملاً قبل اللصق ثم <code dir="ltr">Ctrl + S</code>).</li>
                     <li>افتح منصة <strong>Quotex</strong> — سيظهر الروبوت العائم بتصميم ZAD FX الكلاسيكي ومرتبطاً مباشرة بالسيرفر، ولإدخال أو تغيير مفتاحك اضغط زر <strong>🔑 ID</strong>.</li>
                   </ol>
                 </div>

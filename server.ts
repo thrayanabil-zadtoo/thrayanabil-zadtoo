@@ -10302,6 +10302,7 @@ async function startServer() {
 // @match        *://broker-qx.pro/*
 // @match        *://*.broker-qx.pro/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM.xmlHttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @connect      *
@@ -10447,15 +10448,29 @@ async function startServer() {
         }
       };
 
-      if (typeof GM_xmlhttpRequest === 'function') {
+      const hasGmSync = typeof GM_xmlhttpRequest === 'function';
+      const hasGmAsync = typeof GM !== 'undefined' && typeof GM.xmlHttpRequest === 'function';
+
+      if (hasGmSync) {
         GM_xmlhttpRequest({
           method: method || 'GET',
           url,
-          headers: body ? { 'Content-Type': 'application/json' } : {},
+          headers: Object.assign({ Accept: 'application/json' }, body ? { 'Content-Type': 'application/json' } : {}),
           data: body ? JSON.stringify(body) : undefined,
           timeout: 8000,
           onload: (resp) => resolve(parseSafe(resp.status, resp.responseText)),
-          onerror: () => resolve({ ok: false, status: 0, data: null, error: 'تعذر الاتصال بالخادم — تأكد من نشر التطبيق على Cloud Run' }),
+          onerror: () => resolve({ ok: false, status: 0, data: null, error: 'تعذر الوصول للخادم — تأكد من نشر السيرفر على Cloud Run أو فتح رابط التطبيق' }),
+          ontimeout: () => resolve({ ok: false, status: 0, data: null, error: 'انتهت مهلة الاتصال بالسيرفر' })
+        });
+      } else if (hasGmAsync) {
+        GM.xmlHttpRequest({
+          method: method || 'GET',
+          url,
+          headers: Object.assign({ Accept: 'application/json' }, body ? { 'Content-Type': 'application/json' } : {}),
+          data: body ? JSON.stringify(body) : undefined,
+          timeout: 8000,
+          onload: (resp) => resolve(parseSafe(resp.status, resp.responseText)),
+          onerror: () => resolve({ ok: false, status: 0, data: null, error: 'تعذر الوصول للخادم — تأكد من نشر السيرفر على Cloud Run أو فتح رابط التطبيق' }),
           ontimeout: () => resolve({ ok: false, status: 0, data: null, error: 'انتهت مهلة الاتصال بالسيرفر' })
         });
       } else {
@@ -10466,12 +10481,20 @@ async function startServer() {
         })
           .then(async (r) => parseSafe(r.status, await r.text()))
           .then(resolve)
-          .catch(() => resolve({
-            ok: false,
-            status: 0,
-            data: null,
-            error: 'تعذر الاتصال — تأكد من حذف السكربت القديم كاملاً قبل اللصق في Tampermonkey ومن النشر العام'
-          }));
+          .catch(() => {
+            const hasGmInfo = typeof GM_info !== 'undefined';
+            const grants = hasGmInfo && GM_info?.script?.grant ? GM_info.script.grant.join(', ') : '';
+            const diagError = hasGmInfo
+              ? ('صلاحية الشبكة مفقودة في Tampermonkey (الحالي: ' + (grants || 'none') + ') — امسح السطور الافتراضية أعلى المحرر قبل اللصق أو استورد ملف .user.js')
+              : 'الكود يعمل بدون صلاحية Tampermonkey أو الخادم يتطلب Deploy على Cloud Run عام';
+            resolve({
+              ok: false,
+              status: 0,
+              noGmGrant: true,
+              data: null,
+              error: diagError
+            });
+          });
       }
     });
   }
@@ -10669,7 +10692,12 @@ async function startServer() {
     if (!apiKey) {
       signalHtml = '<div style="padding:10px;background:#09121d;border:1px solid #6366f1;border-radius:10px;text-align:center;color:#c7d2fe;font-size:10.5px;">🔑 اضغط زر <b>المفتاح</b> وأدخل مفتاح العضو (API Key) للبدء</div>';
     } else if (!feed && lastConnError) {
-      signalHtml = \`<div style="padding:10px;background:#450a0a;border:1px solid #ef4444;border-radius:10px;text-align:center;color:#fecaca;font-size:10.5px;line-height:1.5;">❌ \${esc(lastConnError)}</div>\`;
+      const isHtmlAuthGate = lastConnError.includes('Publish') || lastConnError.includes('Cloud Run');
+      signalHtml = \`
+        <div style="padding:9px;background:#450a0a;border:1px solid #ef4444;border-radius:10px;text-align:center;color:#fecaca;font-size:10px;line-height:1.5;">
+          <div>❌ \${esc(lastConnError)}</div>
+          \${isHtmlAuthGate ? \`<a href="\${esc(SERVER_URL)}" target="_blank" rel="noreferrer" style="display:inline-block;margin-top:6px;padding:4px 10px;border-radius:6px;background:#fbbf24;color:#020617;font-weight:800;text-decoration:none;font-size:10px;">🔗 تنشيط جلسة السيرفر في تبويب جديد</a>\` : ''}
+        </div>\`;
     } else if (!feed) {
       signalHtml = '<div style="padding:10px;background:#09121d;border:1px solid #334155;border-radius:10px;text-align:center;color:#94a3b8;font-size:10.5px;">📡 جاري الاتصال والمزامنة مع السيرفر...</div>';
     } else if (!isAuth) {
