@@ -6,287 +6,33 @@ service cloud.firestore {
     }
 
     function isValidId(id) {
-      return id is string &&
-             id.size() >= 1 &&
-             id.size() <= 128 &&
-             id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function incoming() {
       return request.resource.data;
     }
 
-    function existing() {
-      return resource.data;
-    }
-
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function isVerifiedAdminEmail() {
-      return isSignedIn() &&
-             request.auth.token.email == 'thrayanabil@gmail.com' &&
-             request.auth.token.email_verified == true;
-    }
-
-    function isAdmin() {
-      return isVerifiedAdminEmail() ||
-             (isSignedIn() &&
-              request.auth.token.email_verified == true &&
-              exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
-    }
-
-    function isValidSubscriber(data) {
-      return data.keys().hasAll(['id', 'name', 'status', 'updatedAt']) &&
-             data.keys().hasOnly([
-               'id', 'name', 'telegramUsername', 'country', 'email', 'phone',
-               'broker', 'brokerAccountId', 'subscriptionType', 'planDuration',
-               'paymentMethod', 'amountPaid', 'status', 'expiryDate',
-               'robotApiKey', 'robotExpiryDate', 'robotEnabled', 'robotDefaultMode',
-               'robotStakeUsd', 'activationLink', 'notes', 'createdAtIso', 'updatedAt'
-             ]) &&
-             isValidId(data.id) &&
-             data.name is string && data.name.size() >= 1 && data.name.size() <= 160 &&
-             data.status in ['PENDING', 'ACTIVE', 'BANNED'] &&
-             data.updatedAt is timestamp &&
-             (!('telegramUsername' in data) || (data.telegramUsername is string && data.telegramUsername.size() <= 128)) &&
-             (!('country' in data) || (data.country is string && data.country.size() <= 80)) &&
-             (!('email' in data) || (data.email is string && data.email.size() <= 160)) &&
-             (!('phone' in data) || (data.phone is string && data.phone.size() <= 64)) &&
-             (!('broker' in data) || (data.broker is string && data.broker.size() <= 80)) &&
-             (!('brokerAccountId' in data) || (data.brokerAccountId is string && data.brokerAccountId.size() <= 128)) &&
-             (!('subscriptionType' in data) || (data.subscriptionType is string && data.subscriptionType.size() <= 64)) &&
-             (!('planDuration' in data) || (data.planDuration is string && data.planDuration.size() <= 64)) &&
-             (!('paymentMethod' in data) || (data.paymentMethod is string && data.paymentMethod.size() <= 160)) &&
-             (!('amountPaid' in data) || (data.amountPaid is number && data.amountPaid >= 0 && data.amountPaid <= 1000000)) &&
-             (!('expiryDate' in data) || (data.expiryDate is string && data.expiryDate.size() <= 32)) &&
-             (!('robotApiKey' in data) || (data.robotApiKey is string && data.robotApiKey.size() <= 128)) &&
-             (!('robotExpiryDate' in data) || (data.robotExpiryDate is string && data.robotExpiryDate.size() <= 32)) &&
-             (!('robotEnabled' in data) || data.robotEnabled is bool) &&
-             (!('robotDefaultMode' in data) || data.robotDefaultMode in ['AUTO', 'MANUAL']) &&
-             (!('robotStakeUsd' in data) || (data.robotStakeUsd is number && data.robotStakeUsd >= 1 && data.robotStakeUsd <= 10000)) &&
-             (!('activationLink' in data) || (data.activationLink is string && data.activationLink.size() <= 512)) &&
-             (!('notes' in data) || (data.notes is string && data.notes.size() <= 2000)) &&
-             (!('createdAtIso' in data) || (data.createdAtIso is string && data.createdAtIso.size() <= 64));
-    }
-
-    function isValidRobotKey(data) {
-      return data.keys().hasAll(['active', 'expiryDate', 'defaultMode', 'defaultStakeUsd', 'label', 'updatedAt']) &&
-             data.keys().hasOnly(['active', 'expiryDate', 'defaultMode', 'defaultStakeUsd', 'label', 'updatedAt']) &&
-             data.active is bool &&
-             data.expiryDate is string && data.expiryDate.size() <= 32 &&
-             data.defaultMode in ['AUTO', 'MANUAL'] &&
-             data.defaultStakeUsd is number && data.defaultStakeUsd >= 1 && data.defaultStakeUsd <= 10000 &&
-             data.label is string && data.label.size() <= 80 &&
-             data.updatedAt is timestamp;
-    }
-
-    function isValidRobotPublicFeed(data) {
-      return data.keys().hasAll([
-               'updatedAt', 'serverEpochMs', 'marketOpen', 'isTradingHours',
-               'isLockedOutsideHours', 'lockReason', 'workingHoursText',
-               'nextSessionText', 'wins', 'losses', 'winRate', 'targetPair',
-               'allowedPairs', 'hasActiveSignal'
-             ]) &&
-             data.keys().hasOnly([
-               'updatedAt', 'serverEpochMs', 'marketOpen', 'isTradingHours',
-               'isLockedOutsideHours', 'lockReason', 'workingHoursText',
-               'nextSessionText', 'wins', 'losses', 'winRate', 'targetPair',
-               'allowedPairs', 'hasActiveSignal', 'signalId', 'signalAsset',
-               'signalDirection', 'signalTimeframe', 'signalEntryMinute',
-               'signalEntryTime', 'signalTargetEntryTimestamp', 'signalStatus',
-               'signalLivePrice', 'signalStrategyType', 'signalSuccessRateText',
-               'signalQualityScore'
-             ]) &&
-             data.updatedAt is timestamp &&
-             data.serverEpochMs is number &&
-             data.marketOpen is bool &&
-             data.isTradingHours is bool &&
-             data.isLockedOutsideHours is bool &&
-             data.lockReason is string && data.lockReason.size() <= 300 &&
-             data.workingHoursText is string && data.workingHoursText.size() <= 120 &&
-             data.nextSessionText is string && data.nextSessionText.size() <= 160 &&
-             data.wins is number && data.wins >= 0 &&
-             data.losses is number && data.losses >= 0 &&
-             data.winRate is number && data.winRate >= 0 && data.winRate <= 100 &&
-             data.targetPair is string && data.targetPair.size() <= 32 &&
-             data.allowedPairs is list && data.allowedPairs.size() <= 20 &&
-             (data.allowedPairs.size() == 0 || data.allowedPairs[0] is string) &&
-             data.hasActiveSignal is bool &&
-             (!('signalId' in data) || (data.signalId is string && data.signalId.size() <= 128)) &&
-             (!('signalAsset' in data) || (data.signalAsset is string && data.signalAsset.size() <= 32)) &&
-             (!('signalDirection' in data) || data.signalDirection in ['CALL', 'PUT', '']) &&
-             (!('signalTimeframe' in data) || (data.signalTimeframe is string && data.signalTimeframe.size() <= 16)) &&
-             (!('signalEntryMinute' in data) || (data.signalEntryMinute is string && data.signalEntryMinute.size() <= 32)) &&
-             (!('signalEntryTime' in data) || (data.signalEntryTime is string && data.signalEntryTime.size() <= 32)) &&
-             (!('signalTargetEntryTimestamp' in data) || data.signalTargetEntryTimestamp is number) &&
-             (!('signalStatus' in data) || (data.signalStatus is string && data.signalStatus.size() <= 32)) &&
-             (!('signalLivePrice' in data) || (data.signalLivePrice is string && data.signalLivePrice.size() <= 64)) &&
-             (!('signalStrategyType' in data) || (data.signalStrategyType is string && data.signalStrategyType.size() <= 64)) &&
-             (!('signalSuccessRateText' in data) || (data.signalSuccessRateText is string && data.signalSuccessRateText.size() <= 32)) &&
-             (!('signalQualityScore' in data) || (data.signalQualityScore is number && data.signalQualityScore >= 0 && data.signalQualityScore <= 100));
-    }
-
-    function isValidTradingSignal(data) {
-      return data.keys().hasAll(['id', 'asset', 'direction', 'timeframe', 'status', 'updatedAt']) &&
-             data.keys().hasOnly([
-               'id', 'asset', 'direction', 'timeframe', 'entryMinute', 'entryTime',
-               'status', 'livePrice', 'rsiValue', 'strategyType', 'successRateText',
-               'qualityScore', 'targetEntryTimestamp', 'createdAtIso', 'updatedAt'
-             ]) &&
-             isValidId(data.id) &&
-             data.asset is string && data.asset.size() >= 1 && data.asset.size() <= 32 &&
-             data.direction in ['CALL', 'PUT'] &&
-             data.timeframe is string && data.timeframe.size() <= 16 &&
-             data.status in ['PENDING', 'WIN', 'WIN_GALE1', 'LOSS'] &&
-             data.updatedAt is timestamp &&
-             (!('entryMinute' in data) || (data.entryMinute is string && data.entryMinute.size() <= 32)) &&
-             (!('entryTime' in data) || (data.entryTime is string && data.entryTime.size() <= 32)) &&
-             (!('livePrice' in data) || (data.livePrice is string && data.livePrice.size() <= 64)) &&
-             (!('rsiValue' in data) || data.rsiValue is number) &&
-             (!('strategyType' in data) || (data.strategyType is string && data.strategyType.size() <= 64)) &&
-             (!('successRateText' in data) || (data.successRateText is string && data.successRateText.size() <= 32)) &&
-             (!('qualityScore' in data) || (data.qualityScore is number && data.qualityScore >= 0 && data.qualityScore <= 100)) &&
-             (!('targetEntryTimestamp' in data) || data.targetEntryTimestamp is number) &&
-             (!('createdAtIso' in data) || (data.createdAtIso is string && data.createdAtIso.size() <= 64));
-    }
-
-    function isValidPublicConfig(docId, data) {
-      return (
-        (docId == 'plans' &&
-         data.keys().hasAll(['items', 'updatedAt']) &&
-         data.keys().hasOnly(['items', 'updatedAt']) &&
-         data.updatedAt is timestamp &&
-         data.items is list && data.items.size() <= 20 &&
-         (data.items.size() == 0 || data.items[0] is map)) ||
-        (docId == 'payment_methods' &&
-         data.keys().hasAll(['items', 'updatedAt']) &&
-         data.keys().hasOnly(['items', 'updatedAt']) &&
-         data.updatedAt is timestamp &&
-         data.items is list && data.items.size() <= 25 &&
-         (data.items.size() == 0 || data.items[0] is map)) ||
-        (docId == 'contact_links' &&
-         data.keys().hasAll(['updatedAt']) &&
-         data.keys().hasOnly([
-           'quotexReferralLink', 'telegramChannelUrl', 'telegramChannelUsername',
-           'telegramVipChannelUrl', 'telegramSupportUrl', 'whatsappSupportNumber',
-           'supportEmail', 'contactNotes', 'updatedAt'
-         ]) &&
-         data.updatedAt is timestamp &&
-         (!('quotexReferralLink' in data) || (data.quotexReferralLink is string && data.quotexReferralLink.size() <= 300)) &&
-         (!('telegramChannelUrl' in data) || (data.telegramChannelUrl is string && data.telegramChannelUrl.size() <= 300)) &&
-         (!('telegramChannelUsername' in data) || (data.telegramChannelUsername is string && data.telegramChannelUsername.size() <= 128)) &&
-         (!('telegramVipChannelUrl' in data) || (data.telegramVipChannelUrl is string && data.telegramVipChannelUrl.size() <= 300)) &&
-         (!('telegramSupportUrl' in data) || (data.telegramSupportUrl is string && data.telegramSupportUrl.size() <= 300)) &&
-         (!('whatsappSupportNumber' in data) || (data.whatsappSupportNumber is string && data.whatsappSupportNumber.size() <= 64)) &&
-         (!('supportEmail' in data) || (data.supportEmail is string && data.supportEmail.size() <= 160)) &&
-         (!('contactNotes' in data) || (data.contactNotes is string && data.contactNotes.size() <= 1000))) ||
-        (docId == 'robot_settings' &&
-         data.keys().hasAll(['updatedAt', 'defaultMode', 'defaultStakeUsd']) &&
-         data.keys().hasOnly([
-           'isPublishedToVisitors', 'robotTitle', 'version', 'defaultMode',
-           'strategyEngineMode', 'noMartingaleStrict', 'soundAlertsEnabled',
-           'autoSelectPair', 'autoSetExpiryM1', 'defaultStakeUsd', 'updatedAt'
-         ]) &&
-         data.updatedAt is timestamp &&
-         data.defaultMode in ['AUTO', 'MANUAL'] &&
-         data.defaultStakeUsd is number && data.defaultStakeUsd >= 1 && data.defaultStakeUsd <= 10000 &&
-         (!('isPublishedToVisitors' in data) || data.isPublishedToVisitors is bool) &&
-         (!('robotTitle' in data) || (data.robotTitle is string && data.robotTitle.size() <= 160)) &&
-         (!('version' in data) || (data.version is string && data.version.size() <= 64)) &&
-         (!('strategyEngineMode' in data) || data.strategyEngineMode in ['PUBLIC_CLASSIC', 'VIP_WITH_MPB']) &&
-         (!('noMartingaleStrict' in data) || data.noMartingaleStrict is bool) &&
-         (!('soundAlertsEnabled' in data) || data.soundAlertsEnabled is bool) &&
-         (!('autoSelectPair' in data) || data.autoSelectPair is bool) &&
-         (!('autoSetExpiryM1' in data) || data.autoSetExpiryM1 is bool))
-      );
-    }
-
-    match /admins/{adminUid} {
-      allow get: if isSignedIn() && isValidId(adminUid) && (request.auth.uid == adminUid || isAdmin());
-      allow list, create, update, delete: if false;
-    }
-
-    match /subscribers/{subId} {
-      allow get: if isValidId(subId) && isAdmin();
-      allow list: if isVerifiedAdminEmail();
-      allow create: if isValidId(subId) &&
-                       isAdmin() &&
-                       isValidSubscriber(incoming()) &&
-                       incoming().id == subId &&
-                       incoming().updatedAt == request.time;
-      allow update: if isValidId(subId) &&
-                       isAdmin() &&
-                       isValidSubscriber(incoming()) &&
-                       incoming().id == existing().id &&
-                       incoming().updatedAt == request.time;
-      allow delete: if isValidId(subId) && isAdmin();
-    }
-
-    match /robot_keys/{keyId} {
-      allow get: if isValidId(keyId);
-      allow list: if isVerifiedAdminEmail();
-      allow create: if isValidId(keyId) &&
-                       isAdmin() &&
-                       isValidRobotKey(incoming()) &&
-                       incoming().updatedAt == request.time;
-      allow update: if isValidId(keyId) &&
-                       isAdmin() &&
-                       isValidRobotKey(incoming()) &&
-                       incoming().updatedAt == request.time;
-      allow delete: if isValidId(keyId) && isAdmin();
-    }
-
-    match /robot_public_feed/{docId} {
-      allow get: if isValidId(docId) && docId == 'live';
-      allow list: if false;
-      allow create, update: if isValidId(docId) &&
-                               docId == 'live' &&
-                               isAdmin() &&
-                               isValidRobotPublicFeed(incoming()) &&
-                               incoming().updatedAt == request.time;
-      allow delete: if isValidId(docId) && docId == 'live' && isAdmin();
-    }
-
-    match /signals/{sigId} {
-      allow get: if isValidId(sigId);
-      allow list: if existing().status in ['PENDING', 'WIN', 'WIN_GALE1', 'LOSS'];
-      allow create: if isValidId(sigId) &&
-                       isAdmin() &&
-                       isValidTradingSignal(incoming()) &&
-                       incoming().id == sigId &&
-                       incoming().updatedAt == request.time;
-      allow update: if isValidId(sigId) &&
-                       isAdmin() &&
-                       isValidTradingSignal(incoming()) &&
-                       incoming().id == existing().id &&
-                       incoming().updatedAt == request.time;
-      allow delete: if isValidId(sigId) && isAdmin();
-    }
-
-    match /public_config/{docId} {
-      allow get: if isValidId(docId) && docId in ['plans', 'contact_links', 'payment_methods', 'robot_settings'];
-      allow list: if false;
-      allow create, update: if isValidId(docId) &&
-                               docId in ['plans', 'contact_links', 'payment_methods', 'robot_settings'] &&
-                               isAdmin() &&
-                               isValidPublicConfig(docId, incoming()) &&
-                               incoming().updatedAt == request.time;
-      allow delete: if false;
-    }
-
-    match /system_state/{docId} {
-      allow get: if isValidId(docId) && docId in ['platform_plans', 'platform_contact_links'];
-      allow list, write: if false;
-    }
-
-    match /robot_feed/{docId} {
-      allow read, write: if false;
+    function isValidAppState(data) {
+      return data.keys().hasAll(['updatedAt', 'payload']) &&
+             data.keys().hasOnly(['updatedAt', 'payload']) &&
+             data.updatedAt is string && data.updatedAt.size() <= 64 &&
+             data.payload is string && data.payload.size() <= 500000;
     }
 
     match /test/{docId} {
-      allow read, write: if false;
+      allow get: if isValidId(docId);
+    }
+
+    match /system_state/{docId} {
+      allow get, list: if isValidId(docId);
+      allow create, update: if isValidId(docId) && isValidAppState(incoming());
+    }
+
+    match /robot_feed/{docId} {
+      // Direct Public Stream for Quotex Robot: Zero auth cookies, global CORS, 100% direct access from broker
+      allow get: if docId == 'live';
+      allow create, update: if docId == 'live';
     }
   }
 }

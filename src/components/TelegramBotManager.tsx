@@ -27,15 +27,14 @@ import {
   Building,
   Smartphone,
   Eye,
-  EyeOff,
   ArrowRight,
   Flame,
   FileText,
-  Key,
   Lock,
   Unlock,
   Coins
 } from 'lucide-react';
+import { saveCloudTelegramBotState, loadCloudTelegramBotState } from '../firebase';
 
 export interface TelegramBotUser {
   id: string;
@@ -120,119 +119,75 @@ export interface TelegramBotConfig {
   };
 }
 
-const EMPTY_CONFIG: TelegramBotConfig = {
+const DEFAULT_CONFIG: TelegramBotConfig = {
   isEnabled: true,
-  botToken: '',
+  botToken: '9229198517:AAH026I-mlMHGtCZakEwxQuQQ6P341wKnkY',
   botUsername: '@Zadfx_bot',
-  adminTelegramUsername: '',
-  freeChannelLink: '',
-  officialWebsiteUrl: '',
-  quotexReferralUrl: '',
+  adminTelegramUsername: '@thrayanabil',
+  freeChannelLink: 'https://t.me/ZadNBFX',
+  officialWebsiteUrl: 'https://fx.zadtoo.com',
+  quotexReferralUrl: 'https://broker-qx.pro/sign-up/?lid=893976',
   egyptPayment: {
-    instapayAccount: '',
-    instapayName: '',
-    vodafoneCash: '',
-    etisalatCash: '',
-    orangeCash: '',
-    wePay: ''
+    instapayAccount: 'thraya@instapay',
+    instapayName: 'ثريا نبيل',
+    vodafoneCash: '01012345678',
+    etisalatCash: '01112345678',
+    orangeCash: '01212345678',
+    wePay: '01512345678'
   },
   palestinePayment: {
     country: 'فلسطين 🇵🇸',
     bankName: 'بنك فلسطين (Bank of Palestine)',
-    beneficiaryName: '',
+    beneficiaryName: 'ثريا نبيل / ZAD FX',
     currency: 'دولار أمريكي ($) / شيكل (ILS)',
-    accountNumber: '',
-    iban: '',
-    branch: '',
-    notes: ''
+    accountNumber: '1987654',
+    iban: 'PS92PALS00000000001987654',
+    branch: 'الفرع الرئيسي',
+    notes: 'الإيداع النقدي المباشر أو التحويل البنكي الفوري عبر تطبيق بنك فلسطين'
   },
   internationalPayment: {
     ibanEgp: {
       country: 'جمهورية مصر العربية 🇪🇬',
-      bankName: '',
-      beneficiaryName: '',
+      bankName: 'البنك الأهلي المصري (National Bank of Egypt)',
+      beneficiaryName: 'ثريا نبيل / ZAD FX',
       currency: 'الجنيه المصري (EGP)',
-      accountNumber: '',
-      iban: '',
-      swiftCode: '',
-      notes: ''
+      accountNumber: '10023456789012',
+      iban: 'EG380003000010023456789012',
+      swiftCode: 'NBEGEGCX',
+      notes: 'التحويل متاح من كافة البنوك الدولية لحساب الجنيه المصري'
     },
     ibanUsd: {
       country: 'دولي (International 🌍)',
-      bankName: '',
-      beneficiaryName: '',
+      bankName: 'البنك الأهلي المصري (National Bank of Egypt - NBE)',
+      beneficiaryName: 'Thraya Nabil / ZAD FX',
       currency: 'الدولار الأمريكي ($ - USD)',
-      accountNumber: '',
-      iban: '',
-      swiftCode: '',
-      notes: ''
+      accountNumber: '20098765432109',
+      iban: 'EG720003000020098765432109',
+      swiftCode: 'NBEGEGCX',
+      notes: 'Wire Transfer / Swift Transfer in USD accepted worldwide'
     }
   },
   usdtPayment: {
     network: 'USDT (TRC20)',
-    address: '',
+    address: 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo',
     qrImageUrl: '/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg',
-    notesAr: '',
-    notesEn: ''
+    notesAr: 'تحويل فوري مباشر بالدولار الرقمي USDT عبر شبكة ترون (TRC20) متاح لجميع المشتركين والدول',
+    notesEn: 'Direct USDT crypto payment via TRON network (TRC20) accepted worldwide'
   },
   robotGuide: {
     titleAr: 'روبوت ZAD FX للتداول الآلي الذكي على كيوتكس',
     titleEn: 'ZAD FX Quotex Automated Trading Robot',
-    videoUrl: '',
+    videoUrl: 'https://youtube.com',
     imageUrl: '/assets/aistudio/1_c5a8975d.PNG',
-    descriptionAr: '',
-    descriptionEn: ''
+    descriptionAr: 'روبوت مباشر يتصل بمنصة كيوتكس، يحلل 6 أزواج بالتوازي باستراتيجية المؤشرات الأربعة، ويفتح الصفقات بدقة 5 ثوانٍ قبل الشمعة بدون أي مضاعفات خاسرة.',
+    descriptionEn: 'Automated robot for Quotex platform, scanning 6 pairs simultaneously with 4 technical indicators and 5-second pre-candle execution.'
   }
 };
 
-const DEFAULT_CONFIG = EMPTY_CONFIG;
-
-function mergeBotConfig(serverCfg: any): TelegramBotConfig {
-  const s = serverCfg || {};
-  return {
-    ...EMPTY_CONFIG,
-    ...s,
-    egyptPayment: {
-      ...EMPTY_CONFIG.egyptPayment,
-      ...(s.egyptPayment || {})
-    },
-    palestinePayment: {
-      ...EMPTY_CONFIG.palestinePayment,
-      ...(s.palestinePayment || {})
-    },
-    internationalPayment: {
-      ibanEgp: {
-        ...EMPTY_CONFIG.internationalPayment.ibanEgp,
-        ...(s.internationalPayment?.ibanEgp || {})
-      },
-      ibanUsd: {
-        ...EMPTY_CONFIG.internationalPayment.ibanUsd,
-        ...(s.internationalPayment?.ibanUsd || {})
-      }
-    },
-    usdtPayment: {
-      ...EMPTY_CONFIG.usdtPayment,
-      ...(s.usdtPayment || {})
-    },
-    robotGuide: {
-      ...EMPTY_CONFIG.robotGuide,
-      ...(s.robotGuide || {})
-    }
-  };
-}
-
-interface TelegramBotManagerProps {
-  adminToken?: string;
-}
-
-export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminToken }) => {
+export const TelegramBotManager: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'users' | 'settings' | 'broadcast' | 'simulator'>('users');
   const [users, setUsers] = useState<TelegramBotUser[]>([]);
-  const [config, setConfig] = useState<TelegramBotConfig>(EMPTY_CONFIG);
-  const [botTokenInput, setBotTokenInput] = useState('');
-  const [showBotToken, setShowBotToken] = useState(false);
-  const [isTestingToken, setIsTestingToken] = useState(false);
-  const [tokenTestResult, setTokenTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [config, setConfig] = useState<TelegramBotConfig>(DEFAULT_CONFIG);
   const [isLoading, setIsLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
@@ -275,36 +230,75 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
   const [simName, setSimName] = useState('كريم الأحمدي');
   const [simCountry, setSimCountry] = useState('مصر');
 
-  const getAuthHeaders = (includeJson = true): Record<string, string> => ({
-    ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
-    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
-  });
-
-  // Fetch initial data from protected Admin API
+  // Fetch initial data (from Local API and Firebase Cloud)
   const fetchData = async () => {
-    if (!adminToken) return;
     setIsLoading(true);
+    let gotUsers = false;
+    let gotConfig = false;
+
     try {
-      const authHeaders = getAuthHeaders(false);
       const [resUsers, resConfig] = await Promise.all([
-        fetch('/api/telegram-bot/users', { headers: authHeaders }).catch(() => null),
-        fetch('/api/telegram-bot/config', { headers: authHeaders }).catch(() => null)
+        fetch('/api/telegram-bot/users').catch(() => null),
+        fetch('/api/telegram-bot/config').catch(() => null)
       ]);
 
       if (resUsers && resUsers.ok) {
         const dataUsers = await resUsers.json();
         if (dataUsers?.users && Array.isArray(dataUsers.users)) {
           setUsers(dataUsers.users);
+          gotUsers = true;
         }
       }
       if (resConfig && resConfig.ok) {
         const dataConfig = await resConfig.json();
         if (dataConfig?.config) {
-          setConfig(mergeBotConfig(dataConfig.config));
+          setConfig(prev => ({
+            ...prev,
+            ...dataConfig.config,
+            usdtPayment: {
+              ...DEFAULT_CONFIG.usdtPayment,
+              ...(dataConfig.config.usdtPayment || {})
+            }
+          }));
+          gotConfig = true;
         }
       }
     } catch (e) {
-      console.warn('Telegram bot API check failed:', e);
+      console.warn('Local API check failed, checking cloud Firestore:', e);
+    }
+
+    // Fallback or Two-way cloud sync: If on fx.zadtoo.com or API returned empty/failed, load from Firebase
+    try {
+      const cloudState = await loadCloudTelegramBotState();
+      if (cloudState) {
+        if (!gotConfig && cloudState.config) {
+          setConfig(prev => ({
+            ...prev,
+            ...cloudState.config,
+            usdtPayment: {
+              ...DEFAULT_CONFIG.usdtPayment,
+              ...(cloudState.config.usdtPayment || {})
+            }
+          }));
+        }
+        if (!gotUsers && Array.isArray(cloudState.users)) {
+          setUsers(cloudState.users);
+        } else if (Array.isArray(cloudState.users) && cloudState.users.length > 0) {
+          // Merge any users from cloud that might be newly registered
+          setUsers(prev => {
+            const existingIds = new Set(prev.map(u => u.telegramChatId || u.id));
+            const fresh = [...prev];
+            for (const u of cloudState.users || []) {
+              if (!existingIds.has(u.telegramChatId || u.id)) {
+                fresh.push(u);
+              }
+            }
+            return fresh;
+          });
+        }
+      }
+    } catch (errCloud) {
+      console.warn('Firebase cloud state load notice:', errCloud);
     } finally {
       setIsLoading(false);
     }
@@ -312,92 +306,56 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
 
   useEffect(() => {
     fetchData();
-  }, [adminToken]);
+  }, []);
 
   const showToast = (text: string, type: 'success' | 'error' = 'success') => {
     setStatusMessage({ text, type });
     setTimeout(() => setStatusMessage(null), 4000);
   };
 
-  // Save Settings (Saves via protected Server API)
+  // Save Settings (Saves to Server API AND Firebase Cloud Firestore)
   const handleSaveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    try {
-      const payload: any = { ...config };
-      const trimmedToken = botTokenInput.trim();
-      if (trimmedToken && trimmedToken !== 'CONFIGURED') {
-        payload.botToken = trimmedToken;
-      } else {
-        delete payload.botToken;
-      }
+    let apiSuccess = false;
+    let cloudSuccess = false;
 
+    try {
       const res = await fetch('/api/telegram-bot/config', {
         method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify(payload)
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
       });
       const data = await res.json();
-      if (res.ok && data?.ok) {
-        if (data.config) {
-          setConfig(mergeBotConfig(data.config));
-        }
-        setBotTokenInput('');
-        showToast('✅ تم حفظ كافة إعدادات بوت التليجرام والمدفوعات بنجاح ومزامنتها لحظياً!');
-      } else {
-        showToast(data?.error || '❌ تعذر حفظ الإعدادات، يرجى التحقق من صلاحية المشرف', 'error');
-      }
+      if (data?.ok) apiSuccess = true;
     } catch (_err) {
-      showToast('❌ تعذر حفظ الإعدادات، يرجى التأكد من اتصال الإنترنت', 'error');
-    } finally {
-      setIsLoading(false);
+      // API call might fail if fx.zadtoo.com runs as client-only
     }
-  };
 
-  const handleTestBotToken = async () => {
-    setIsTestingToken(true);
-    setTokenTestResult(null);
     try {
-      const trimmed = botTokenInput.trim();
-      const res = await fetch('/api/telegram-bot/test-token', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify(trimmed ? { token: trimmed } : {})
-      });
-      const data = await res.json();
-      if (res.ok && data?.ok && data?.bot) {
-        setTokenTestResult({
-          ok: true,
-          text: `✅ متصل بنجاح بالبوت: @${data.bot.username} (${data.bot.first_name})`
-        });
-      } else {
-        setTokenTestResult({
-          ok: false,
-          text: `❌ ${data?.error || 'تعذر التحقق من توكن البوت'}`
-        });
-      }
-    } catch (_err) {
-      setTokenTestResult({ ok: false, text: '❌ خطأ في الاتصال بالخادم لفحص التوكن' });
-    } finally {
-      setIsTestingToken(false);
+      cloudSuccess = await saveCloudTelegramBotState(config, users);
+    } catch (_errCloud) {}
+
+    setIsLoading(false);
+    if (apiSuccess || cloudSuccess) {
+      showToast('✅ تم حفظ كافة إعدادات بوت التليجرام والمدفوعات بنجاح ومزامنتها لحظياً!');
+    } else {
+      showToast('❌ تعذر حفظ الإعدادات، يرجى التأكد من اتصال الإنترنت', 'error');
     }
   };
 
   // Toggle user status
   const handleUpdateUserStatus = async (id: string, status: 'ACTIVE' | 'SUSPENDED' | 'BLOCKED') => {
+    const updatedUsers = users.map(u => (u.id === id ? { ...u, status } : u));
+    setUsers(updatedUsers);
     try {
-      const res = await fetch(`/api/telegram-bot/users/${id}/status`, {
+      await fetch(`/api/telegram-bot/users/${id}/status`, {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status })
-      });
-      const data = await res.json();
-      if (res.ok && data?.ok) {
-        setUsers(prev => prev.map(u => (u.id === id ? { ...u, status } : u)));
-        showToast(`✅ تم تحديث حالة العضو إلى: ${status === 'ACTIVE' ? 'نشط' : status === 'SUSPENDED' ? 'معلق' : 'موقوف'}`);
-      } else {
-        showToast(data?.error || '❌ تعذر تحديث حالة العضو', 'error');
-      }
+      }).catch(() => null);
+      await saveCloudTelegramBotState(config, updatedUsers);
+      showToast(`✅ تم تحديث حالة العضو إلى: ${status === 'ACTIVE' ? 'نشط' : status === 'SUSPENDED' ? 'معلق' : 'موقوف'}`);
     } catch (_err) {
       showToast('❌ حدث خطأ أثناء تحديث حالة العضو', 'error');
     }
@@ -406,18 +364,14 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
   // Delete User
   const handleDeleteUser = async (id: string, name: string) => {
     if (!window.confirm(`هل أنت متأكد من حذف العضو "${name}" نهائياً من سجل البوت؟`)) return;
+    const updatedUsers = users.filter(u => u.id !== id);
+    setUsers(updatedUsers);
     try {
-      const res = await fetch(`/api/telegram-bot/users/${id}`, {
-        method: 'DELETE',
-        headers: getAuthHeaders(false)
-      });
-      const data = await res.json();
-      if (res.ok && data?.ok) {
-        setUsers(prev => prev.filter(u => u.id !== id));
-        showToast(`🗑️ تم حذف العضو "${name}" بنجاح`);
-      } else {
-        showToast(data?.error || '❌ تعذر حذف العضو', 'error');
-      }
+      await fetch(`/api/telegram-bot/users/${id}`, {
+        method: 'DELETE'
+      }).catch(() => null);
+      await saveCloudTelegramBotState(config, updatedUsers);
+      showToast(`🗑️ تم حذف العضو "${name}" بنجاح ومزامنة السحابة`);
     } catch (_err) {
       showToast('❌ تعذر حذف العضو', 'error');
     }
@@ -427,22 +381,18 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
   const handleSaveEditUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingUser) return;
-    const targetUser = editingUser;
+    const updatedUsers = users.map(u => (u.id === editingUser.id ? editingUser : u));
+    setUsers(updatedUsers);
     setEditingUser(null);
 
     try {
-      const res = await fetch(`/api/telegram-bot/users/${targetUser.id}`, {
+      await fetch(`/api/telegram-bot/users/${editingUser.id}`, {
         method: 'PUT',
-        headers: getAuthHeaders(),
-        body: JSON.stringify(targetUser)
-      });
-      const data = await res.json();
-      if (res.ok && data?.ok) {
-        setUsers(prev => prev.map(u => (u.id === targetUser.id ? (data.user || targetUser) : u)));
-        showToast('✅ تم حفظ وتثبيت تعديلات ملف العضو بنجاح ومزامنتها مع البوت');
-      } else {
-        showToast(data?.error || '❌ تعذر حفظ تعديلات العضو', 'error');
-      }
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(editingUser)
+      }).catch(() => null);
+      await saveCloudTelegramBotState(config, updatedUsers);
+      showToast('✅ تم حفظ وتثبيت تعديلات ملف العضو بنجاح ومزامنتها مع البوت');
     } catch (_err) {
       showToast('❌ تعذر حفظ تعديلات العضو', 'error');
     }
@@ -458,11 +408,11 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
     try {
       const res = await fetch('/api/telegram-bot/users', {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newMember)
       });
       const data = await res.json();
-      if (res.ok && data.ok && data.user) {
+      if (data.ok && data.user) {
         setUsers(prev => [data.user, ...prev]);
         setIsAddModalOpen(false);
         setNewMember({
@@ -478,8 +428,6 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
           notes: ''
         });
         showToast('✅ تم إضافة العضو الجديد للملف بنجاح');
-      } else {
-        showToast(data?.error || '❌ تعذر إضافة العضو', 'error');
       }
     } catch (_err) {
       showToast('❌ تعذر إضافة العضو', 'error');
@@ -494,11 +442,11 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
     try {
       const res = await fetch(`/api/telegram-bot/users/${directMsgUser.id}/message`, {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: directMsgText.trim() })
       });
       const data = await res.json();
-      if (res.ok && data.ok) {
+      if (data.ok) {
         showToast(`🚀 تم إرسال الرسالة إلى ${directMsgUser.name} بنجاح عبر التليجرام!`);
         setDirectMsgText('');
         setDirectMsgUser(null);
@@ -524,7 +472,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
     try {
       const res = await fetch('/api/telegram-bot/broadcast', {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: broadcastText.trim(),
           targetLanguage: broadcastLang,
@@ -532,11 +480,11 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
         })
       });
       const data = await res.json();
-      if (res.ok && data.ok) {
+      if (data.ok) {
         showToast(`📢 تم إرسال البث الجماعي بنجاح إلى (${data.sentCount} عضو)!`);
         setBroadcastText('');
       } else {
-        showToast(`❌ حدث خطأ أثناء البث: ${data.error || 'تعذر الإرسال'}`, 'error');
+        showToast(`❌ حدث خطأ أثناء البث: ${data.error}`, 'error');
       }
     } catch (_err) {
       showToast('❌ تعذر تنفيذ البث الجماعي', 'error');
@@ -1062,108 +1010,11 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
               </button>
             </div>
 
-            {/* Missing Config Warning Banner */}
-            {(config.botToken !== 'CONFIGURED' ||
-              (!config.egyptPayment.instapayAccount?.trim() &&
-                !config.egyptPayment.vodafoneCash?.trim() &&
-                !config.palestinePayment?.iban?.trim() &&
-                !config.usdtPayment?.address?.trim())) && (
-              <div className="bg-amber-950/50 border border-amber-500/40 rounded-2xl p-4 text-xs text-amber-200 space-y-1.5">
-                <div className="font-extrabold flex items-center gap-2 text-amber-300">
-                  <AlertTriangle className="w-4 h-4 shrink-0" />
-                  <span>تنبيه: بعض بيانات البوت الأساسية أو البنكية غير مضبوطة حالياً</span>
-                </div>
-                <ul className="list-disc list-inside text-[11px] text-amber-100/90 space-y-0.5">
-                  {config.botToken !== 'CONFIGURED' && (
-                    <li>توكن البوت التفاعلي غير محفوظ — الصق توكن <strong dir="ltr">@Zadfx_bot</strong> من BotFather أدناه واضغط حفظ.</li>
-                  )}
-                  {!config.egyptPayment.instapayAccount?.trim() &&
-                    !config.egyptPayment.vodafoneCash?.trim() &&
-                    !config.palestinePayment?.iban?.trim() &&
-                    !config.usdtPayment?.address?.trim() && (
-                    <li>حقول الحسابات البنكية والمحافظ في هذا النموذج فارغة — الحقول الفارغة لن تُعرض فارغة في البوت (وسيتم الاعتماد على طرق الدفع الفعالة من مدير المدفوعات إن وُجدت أو إظهار زر الدعم الفني حتى تحفظ بياناتك هنا).</li>
-                  )}
-                </ul>
-              </div>
-            )}
-
             {/* Core Bot Setup */}
-            <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-6 shadow-md space-y-5">
-              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-700">
-                <div className="flex items-center gap-2">
-                  <Bot className="w-5 h-5 text-indigo-400" />
-                  <h3 className="text-base font-extrabold text-white">بيانات اتصال بوت التليجرام الأساسية</h3>
-                </div>
-                <span
-                  className={`px-3 py-1 rounded-full text-[11px] font-bold border ${
-                    config.botToken === 'CONFIGURED'
-                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
-                      : 'bg-amber-500/15 text-amber-300 border-amber-500/40'
-                  }`}
-                >
-                  {config.botToken === 'CONFIGURED'
-                    ? '✅ توكن البوت محفوظ ومشفر على الخادم'
-                    : '⚠️ التوكن غير مضبوط — أدخل توكن BotFather'}
-                </span>
-              </div>
-
-              {/* Dedicated BotFather Token Input + Connection Test */}
-              <div className="bg-slate-900/80 border border-indigo-500/30 rounded-xl p-4 space-y-2.5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <label className="text-xs font-extrabold text-indigo-300 flex items-center gap-1.5">
-                    <Key className="w-4 h-4" />
-                    <span>توكن البوت التفاعلي (Telegram BotFather Token)</span>
-                  </label>
-                  <span className="text-[10.5px] text-slate-400">
-                    {config.botToken === 'CONFIGURED'
-                      ? 'محفوظ حالياً — اتركه فارغاً للإبقاء عليه أو الصق توكناً جديداً لاستبداله'
-                      : 'مطلوب لتشغيل البوت التفاعلي والردود التلقائية'}
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <div className="relative flex-1 min-w-[240px]">
-                    <input
-                      type={showBotToken ? 'text' : 'password'}
-                      dir="ltr"
-                      value={botTokenInput}
-                      onChange={e => setBotTokenInput(e.target.value)}
-                      placeholder={
-                        config.botToken === 'CONFIGURED'
-                          ? '•••••••••••••••••••••••• (محفوظ على الخادم)'
-                          : '1234567890:AAHxxxxxxxxxxxxxxxxxxxxxxxx'
-                      }
-                      className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-3.5 pr-10 py-2.5 text-xs text-amber-300 focus:outline-none focus:border-indigo-500 font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowBotToken(prev => !prev)}
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
-                      title={showBotToken ? 'إخفاء التوكن' : 'إظهار التوكن'}
-                    >
-                      {showBotToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleTestBotToken}
-                    disabled={isTestingToken}
-                    className="px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-extrabold text-xs cursor-pointer flex items-center gap-1.5 shrink-0"
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${isTestingToken ? 'animate-spin' : ''}`} />
-                    <span>{isTestingToken ? 'جاري الفحص...' : '🔍 فحص اتصال البوت الآن'}</span>
-                  </button>
-                </div>
-                {tokenTestResult && (
-                  <div
-                    className={`text-xs font-bold px-3 py-2 rounded-lg border ${
-                      tokenTestResult.ok
-                        ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
-                        : 'bg-rose-950/60 border-rose-500/40 text-rose-300'
-                    }`}
-                  >
-                    {tokenTestResult.text}
-                  </div>
-                )}
+            <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-6 shadow-md">
+              <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-700">
+                <Bot className="w-5 h-5 text-indigo-400" />
+                <h3 className="text-base font-extrabold text-white">بيانات اتصال بوت التليجرام الأساسية</h3>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1185,7 +1036,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                     type="text"
                     value={config.botUsername}
                     onChange={e => setConfig({ ...config, botUsername: e.target.value })}
-                    placeholder="@Zadfx_bot"
+                    placeholder="@ZadNBFX_bot"
                     className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                 </div>
@@ -1196,12 +1047,9 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                     type="text"
                     value={config.adminTelegramUsername}
                     onChange={e => setConfig({ ...config, adminTelegramUsername: e.target.value })}
-                    placeholder="@ZadNBFX أو https://t.me/..."
+                    placeholder="@thrayanabil"
                     className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
-                  <p className="text-[10px] text-slate-400 mt-1">
-                    يقبل <span dir="ltr">@username</span> أو رابط <span dir="ltr">t.me</span> كامل، ويتزامن تلقائياً مع "إدارة الباقات والروابط".
-                  </p>
                 </div>
 
                 <div>
@@ -1765,7 +1613,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                       <div className="relative">
                         <input
                           type="text"
-                          value={config.usdtPayment?.address || ''}
+                          value={config.usdtPayment?.address || 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo'}
                           onChange={e => setConfig({
                             ...config,
                             usdtPayment: { ...(config.usdtPayment || DEFAULT_CONFIG.usdtPayment), address: e.target.value }
@@ -1781,7 +1629,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                     <label className="block text-xs font-bold text-slate-300 mb-1.5">رابط صورة باركود الدفع (QR Code Image)</label>
                     <input
                       type="text"
-                      value={config.usdtPayment?.qrImageUrl || ''}
+                      value={config.usdtPayment?.qrImageUrl || '/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg'}
                       onChange={e => setConfig({
                         ...config,
                         usdtPayment: { ...(config.usdtPayment || DEFAULT_CONFIG.usdtPayment), qrImageUrl: e.target.value }

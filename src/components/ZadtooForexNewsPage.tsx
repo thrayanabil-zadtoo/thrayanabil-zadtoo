@@ -24,17 +24,23 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, calculateEventTimes, filterActiveForexNews } from '../types/forexNews';
+import {
+  DEFAULT_FREE_BOT_TOKEN,
+  DEFAULT_FREE_CHAT_ID,
+  DEFAULT_VIP_BOT_TOKEN,
+  DEFAULT_VIP_CHAT_ID
+} from './ZadtooAdminLiveBroadcast';
+import { db } from '../firebase';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 
 interface ZadtooForexNewsPageProps {
   isAdmin: boolean;
-  adminToken?: string;
   onNavigateSignals?: () => void;
   onNavigateHome?: () => void;
 }
 
 export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
   isAdmin,
-  adminToken,
   onNavigateSignals
 }) => {
   const [news, setNews] = useState<ForexNewsItem[]>(() => filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS, 0));
@@ -92,16 +98,12 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  const getAuthHeaders = (includeJson = true): Record<string, string> => ({
-    ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
-    Accept: 'application/json',
-    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
-  });
-
-  // Fetch news from auto-purging server API with active fallback
+  // Fetch news from auto-purging server API first, then Firestore / active fallback
   const fetchNews = async () => {
     setIsLoading(true);
+    let loaded = false;
 
+    // 1. Server API first (auto-purges expired news & syncs upcoming calendar)
     try {
       const res = await fetch('/api/forex-news');
       const contentType = res.headers.get('content-type') || '';
@@ -109,12 +111,34 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
         const data = await res.json();
         if (data.ok && Array.isArray(data.news) && data.news.length > 0) {
           setNews(filterActiveForexNews(data.news));
+          loaded = true;
         }
       }
     } catch (_serverErr) {
-      // keep active local fallback
+      // fallback
     }
 
+    // 2. Fallback to persistent Firestore if server is unreachable
+    if (!loaded) {
+      try {
+        const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+        const snap = await getDoc(docRef);
+        if (snap.exists()) {
+          const d = snap.data();
+          if (d?.payload) {
+            const parsed = JSON.parse(d.payload);
+            if (Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0) {
+              setNews(filterActiveForexNews(parsed.forexNews));
+              loaded = true;
+            }
+          }
+        }
+      } catch (_firestoreErr) {
+        // fallback
+      }
+    }
+
+    // 3. Ensure upcoming events exist; fallback to active weekly schedule
     setNews(prev => {
       const cleaned = filterActiveForexNews(prev);
       if (cleaned.length === 0) {
@@ -158,6 +182,24 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
       mecca: fmt('Asia/Riyadh')
     };
   }, [deviceNow]);
+
+async function sendTelegramDirect(token: string, chatId: string, text: string) {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), 8500);
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token.trim()}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId.trim(), text }),
+      signal: ctrl.signal
+    });
+    return (await res.json()) as { ok: boolean; result?: any; description?: string };
+  } catch (err: any) {
+    return { ok: false, description: err?.message || 'تعذر الاتصال بسيرفر التليجرام' };
+  } finally {
+    clearTimeout(tid);
+  }
+}
 
 function buildNewsTelegramMessage(item: ForexNewsItem): string {
   const impactBadge =
@@ -224,7 +266,7 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
     handleRequestBroadcast(item);
   };
 
-  // Execute Telegram recommendation broadcast after confirmation via backend API
+  // Execute Telegram recommendation broadcast after confirmation
   const executeBroadcast = async (
     item: ForexNewsItem,
     sendFree: boolean = true,
@@ -243,36 +285,87 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
     setBroadcastingId(item.id);
     setBroadcastFeedback(null);
 
-    const destParts: string[] = [];
-    let errMsg: string | undefined;
+    const messageText = buildNewsTelegramMessage(item);
+    const freeToken = (localStorage.getItem('tg_bot_token') || DEFAULT_FREE_BOT_TOKEN).trim();
+    const freeChat = (localStorage.getItem('tg_chat_id') || DEFAULT_FREE_CHAT_ID).trim();
+    const vipToken = (localStorage.getItem('tg_vip_bot_token') || DEFAULT_VIP_BOT_TOKEN).trim();
+    const vipChat = (localStorage.getItem('tg_vip_chat_id') || DEFAULT_VIP_CHAT_ID).trim();
 
+    const destParts: string[] = [];
+    let freeErr: string | undefined;
+    let vipErr: string | undefined;
+    let serverOk = false;
+
+    // Step 1: Call Backend Server API (Reliable in cloud, never blocked by local ISP)
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 9000);
       const res = await fetch(`/api/forex-news/${encodeURIComponent(item.id)}/broadcast`, {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
         signal: controller.signal,
         body: JSON.stringify({
           item,
-          targetBots: { freeBot: sendFree, vipBot: sendVip }
+          targetBots: { freeBot: sendFree, vipBot: sendVip },
+          freeToken,
+          freeChatId: freeChat,
+          vipToken,
+          vipChatId: vipChat
         })
       });
       clearTimeout(timeoutId);
 
-      const d = await res.json().catch(() => null);
-      if (res.ok && d && d.ok) {
-        if (Array.isArray(d.destinations) && d.destinations.length > 0) {
-          destParts.push(...d.destinations);
-        } else {
-          if (d.sentFree) destParts.push('القناة العامة (@ZadNBFX)');
-          if (d.sentVip) destParts.push('قناة VIP (Abusalim FX VIP)');
+      if (res.ok) {
+        const d = await res.json();
+        if (d && d.ok) {
+          serverOk = true;
+          if (Array.isArray(d.destinations) && d.destinations.length > 0) {
+            destParts.push(...d.destinations);
+          } else {
+            if (d.sentFree) destParts.push('القناة العامة (@ZadNBFX)');
+            if (d.sentVip) destParts.push('قناة VIP (Abusalim FX VIP)');
+          }
+        } else if (d && d.error) {
+          freeErr = d.error;
         }
-      } else {
-        errMsg = d?.error || `تعذر إرسال التوصية (${res.status})`;
       }
-    } catch (serverErr: any) {
-      errMsg = serverErr?.message || 'تعذر الاتصال بالسيرفر لنشر التوصية.';
+    } catch (_serverErr: any) {
+      // Backend route unreachable, will try direct client dispatch below
+    }
+
+    // Step 2: Fallback to Direct Client Dispatch to Telegram if server route was unavailable
+    if (!serverOk) {
+      const clientTasks: Promise<void>[] = [];
+
+      if (sendFree && freeToken && freeChat) {
+        clientTasks.push(
+          sendTelegramDirect(freeToken, freeChat, messageText)
+            .then(r => {
+              if (r.ok) destParts.push('القناة العامة (@ZadNBFX)');
+              else freeErr = r.description;
+            })
+            .catch(e => {
+              freeErr = e?.message;
+            })
+        );
+      }
+
+      if (sendVip && vipToken && vipChat) {
+        clientTasks.push(
+          sendTelegramDirect(vipToken, vipChat, messageText)
+            .then(r => {
+              if (r.ok) destParts.push('قناة VIP (Abusalim FX VIP)');
+              else vipErr = r.description;
+            })
+            .catch(e => {
+              vipErr = e?.message;
+            })
+        );
+      }
+
+      if (clientTasks.length > 0) {
+        await Promise.allSettled(clientTasks);
+      }
     }
 
     setBroadcastingId(null);
@@ -293,6 +386,25 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
         return next;
       });
 
+      // Persist broadcast status to Firestore
+      try {
+        const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+        const snap = await getDoc(docRef);
+        const d = snap.exists() ? snap.data() : null;
+        const parsed = d?.payload ? JSON.parse(d.payload) : {};
+        const currentList = Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0
+          ? parsed.forexNews
+          : [...INITIAL_WEEKLY_FOREX_NEWS];
+        const exists = currentList.some((n: any) => n.id === item.id);
+        parsed.forexNews = exists
+          ? currentList.map((n: any) => (n.id === item.id ? updatedItem : n))
+          : [updatedItem, ...currentList];
+        await setDoc(docRef, {
+          updatedAt: new Date().toISOString(),
+          payload: JSON.stringify(parsed)
+        }, { merge: true });
+      } catch (_e) {}
+
       setBroadcastFeedback({
         id: item.id,
         success: true,
@@ -302,7 +414,7 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
       setBroadcastFeedback({
         id: item.id,
         success: false,
-        msg: errMsg || 'تعذر إرسال التوصية عبر التليجرام، تأكد من الاتصال وإعدادات الخادم.'
+        msg: freeErr || vipErr || 'تعذر إرسال التوصية عبر التليجرام، تأكد من الاتصال وتوكن البوت.'
       });
     }
 
@@ -344,24 +456,46 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
       let savedItem: ForexNewsItem | null = null;
       const isEditing = Boolean(editingItem);
 
-      // Persist directly to Server backend endpoint
-      const url = editingItem
-        ? `/api/forex-news/${encodeURIComponent(editingItem.id)}`
-        : '/api/forex-news';
-      const method = editingItem ? 'PUT' : 'POST';
-      const sRes = await fetch(url, {
-        method,
-        headers: getAuthHeaders(),
-        body: JSON.stringify(payload)
-      });
-      const sJson = await sRes.json().catch(() => null);
-      if (sRes.ok && sJson?.ok && sJson.item) {
-        savedItem = sJson.item;
-      } else {
-        throw new Error(sJson?.error || 'تعذر حفظ الخبر في السيرفر (تأكد من صلاحية المشرف).');
+      // 1. Persist directly to Server backend endpoint
+      try {
+        const url = editingItem
+          ? `/api/forex-news/${encodeURIComponent(editingItem.id)}`
+          : '/api/forex-news';
+        const method = editingItem ? 'PUT' : 'POST';
+        const sRes = await fetch(url, {
+          method,
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (sRes.ok) {
+          const sJson = await sRes.json();
+          if (sJson.ok && sJson.item) {
+            savedItem = sJson.item;
+          }
+        }
+      } catch (_serverErr) {}
+
+      // Fallback local creation if server offline
+      if (!savedItem) {
+        if (editingItem) {
+          savedItem = {
+            ...editingItem,
+            ...(payload as any),
+            id: editingItem.id,
+            updatedAt: new Date().toISOString()
+          };
+        } else {
+          savedItem = {
+            ...(payload as any),
+            id: `news-${Date.now()}`,
+            isBroadcasted: false,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+        }
       }
 
-      // Update React state & localStorage
+      // 2. Update React state & localStorage
       setNews(prev => {
         const exists = prev.some(n => n.id === savedItem!.id);
         const nextList = exists
@@ -372,6 +506,26 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
         } catch (_e) {}
         return nextList;
       });
+
+      // 3. Sync to persistent Firestore (doc: zad_main_state_v1)
+      try {
+        const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+        const snap = await getDoc(docRef);
+        const d = snap.exists() ? snap.data() : null;
+        const parsed = d?.payload ? JSON.parse(d.payload) : {};
+        const currentList: any[] = Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0
+          ? parsed.forexNews
+          : [...INITIAL_WEEKLY_FOREX_NEWS];
+        const existsInDb = currentList.some((n: any) => n.id === savedItem!.id);
+        const updatedList = existsInDb
+          ? currentList.map((n: any) => (n.id === savedItem!.id ? savedItem : n))
+          : [savedItem, ...currentList.filter((n: any) => n.id !== savedItem!.id)];
+        parsed.forexNews = updatedList;
+        await setDoc(docRef, {
+          updatedAt: new Date().toISOString(),
+          payload: JSON.stringify(parsed)
+        }, { merge: true });
+      } catch (_e) {}
 
       setIsModalOpen(false);
       setEditingItem(null);
@@ -399,31 +553,7 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
     if (!isAdmin) return;
     if (!window.confirm('هل أنت متأكد من حذف هذا الخبر نهائياً من الأجندة؟')) return;
 
-    try {
-      const res = await fetch(`/api/forex-news/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-        headers: getAuthHeaders(false)
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) {
-        setBroadcastFeedback({
-          id,
-          success: false,
-          msg: data?.error || '❌ تعذر حذف الخبر من السيرفر.'
-        });
-        setTimeout(() => setBroadcastFeedback(null), 5000);
-        return;
-      }
-    } catch (_e) {
-      setBroadcastFeedback({
-        id,
-        success: false,
-        msg: '❌ تعذر الاتصال بالسيرفر لحذف الخبر.'
-      });
-      setTimeout(() => setBroadcastFeedback(null), 5000);
-      return;
-    }
-
+    // 1. Update React state & localStorage immediately
     setNews(prev => {
       const filtered = prev.filter(n => n.id !== id);
       try {
@@ -431,6 +561,30 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
       } catch (_e) {}
       return filtered;
     });
+
+    // 2. Try server route
+    try {
+      fetch(`/api/forex-news/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { 'Accept': 'application/json' }
+      }).catch(() => {});
+    } catch (_e) {}
+
+    // 3. Sync to persistent Firestore
+    try {
+      const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+      const snap = await getDoc(docRef);
+      const d = snap.exists() ? snap.data() : null;
+      const parsed = d?.payload ? JSON.parse(d.payload) : {};
+      const currentList: any[] = Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0
+        ? parsed.forexNews
+        : [...INITIAL_WEEKLY_FOREX_NEWS];
+      parsed.forexNews = currentList.filter((n: any) => n.id !== id);
+      await setDoc(docRef, {
+        updatedAt: new Date().toISOString(),
+        payload: JSON.stringify(parsed)
+      }, { merge: true });
+    } catch (_e) {}
 
     setBroadcastFeedback({
       id,
@@ -445,65 +599,73 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
     if (!isAdmin) return;
     if (!window.confirm('هل تريد إعادة تعيين الأجندة وتحميل جدول الأخبار القياسية الأسبوعية المحدثة؟')) return;
 
+    setNews(INITIAL_WEEKLY_FOREX_NEWS);
     try {
-      const res = await fetch('/api/forex-news/seed-weekly', {
+      localStorage.setItem('cached_forex_news', JSON.stringify(INITIAL_WEEKLY_FOREX_NEWS));
+    } catch (_e) {}
+
+    try {
+      fetch('/api/forex-news/seed-weekly', {
         method: 'POST',
-        headers: getAuthHeaders(false)
-      });
-      const data = await res.json().catch(() => null);
-      if (res.ok && data?.ok) {
-        const nextNews = Array.isArray(data.news) ? data.news : INITIAL_WEEKLY_FOREX_NEWS;
-        setNews(nextNews);
-        try {
-          localStorage.setItem('cached_forex_news', JSON.stringify(nextNews));
-        } catch (_e) {}
-        setBroadcastFeedback({
-          id: 'seed',
-          success: true,
-          msg: '✅ تمت استعادة وتحميل جدول الأخبار القياسية الأسبوعية بنجاح!'
-        });
-      } else {
-        setBroadcastFeedback({
-          id: 'seed',
-          success: false,
-          msg: data?.error || '❌ تعذر استعادة جدول الأخبار'
-        });
-      }
-    } catch (_e) {
-      setBroadcastFeedback({
-        id: 'seed',
-        success: false,
-        msg: '❌ تعذر الاتصال بالسيرفر لاستعادة الجدول'
-      });
-    }
+        headers: { 'Accept': 'application/json' }
+      }).catch(() => {});
+    } catch (_e) {}
+
+    try {
+      const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+      const snap = await getDoc(docRef);
+      const d = snap.exists() ? snap.data() : null;
+      const parsed = d?.payload ? JSON.parse(d.payload) : {};
+      parsed.forexNews = INITIAL_WEEKLY_FOREX_NEWS;
+      await setDoc(docRef, {
+        updatedAt: new Date().toISOString(),
+        payload: JSON.stringify(parsed)
+      }, { merge: true });
+    } catch (_e) {}
+
+    setBroadcastFeedback({
+      id: 'seed',
+      success: true,
+      msg: '✅ تمت استعادة وتحميل جدول الأخبار القياسية الأسبوعية بنجاح!'
+    });
     setTimeout(() => setBroadcastFeedback(null), 5000);
   };
 
-  // Auto-fetch breaking news (Admin forces refresh via POST; Visitors sync via GET)
+  // Auto-fetch breaking news and high-impact economic calendar releases automatically
   const handleAutoFetchNews = async (silent = false) => {
     setIsAutoFetching(true);
     try {
-      const res = isAdmin && adminToken
-        ? await fetch('/api/forex-news/auto-fetch', {
-            method: 'POST',
-            headers: getAuthHeaders(),
-            body: JSON.stringify({ forceRefresh: true })
-          })
-        : await fetch('/api/forex-news', { headers: { Accept: 'application/json' } });
-
+      const res = await fetch('/api/forex-news/auto-fetch', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({ forceRefresh: true })
+      });
       const data = await res.json();
-      if (res.ok && data.ok && Array.isArray(data.news)) {
-        const activeList = filterActiveForexNews(data.news);
-        setNews(activeList);
+      if (data.ok && Array.isArray(data.news)) {
+        setNews(data.news);
+        localStorage.setItem('cached_forex_news', JSON.stringify(data.news));
+
+        // Sync directly to Firestore for all users in real-time
         try {
-          localStorage.setItem('cached_forex_news', JSON.stringify(activeList));
-        } catch (_e) {}
+          const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+          const snap = await getDoc(docRef);
+          const d = snap.exists() ? snap.data() : null;
+          const parsed = d?.payload ? JSON.parse(d.payload) : {};
+          parsed.forexNews = data.news;
+          await setDoc(docRef, {
+            updatedAt: new Date().toISOString(),
+            payload: JSON.stringify(parsed)
+          }, { merge: true });
+        } catch (_fErr) {}
 
         if (!silent) {
           setBroadcastFeedback({
             id: 'autofetch-success',
             success: true,
-            msg: `⚡ تم فحص وجلب وتحديث ${data.count ?? activeList.length} من الأخبار الاقتصادية العاجلة بدقة التواقيت (القاهرة 🇪🇬 ومكة 🕋 وغرينتش 🌍)!`
+            msg: `⚡ تم فحص وجلب وتحديث ${data.count} من الأخبار الاقتصادية العاجلة بدقة التواقيت (القاهرة 🇪🇬 ومكة 🕋 وغرينتش 🌍)!`
           });
           setTimeout(() => setBroadcastFeedback(null), 6000);
         }
@@ -511,7 +673,9 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
         throw new Error(data.error || 'فشل جلب الأخبار');
       }
     } catch (_err) {
-      setNews(filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS));
+      // Fallback: load canonical initial weekly news
+      setNews(INITIAL_WEEKLY_FOREX_NEWS);
+      localStorage.setItem('cached_forex_news', JSON.stringify(INITIAL_WEEKLY_FOREX_NEWS));
       if (!silent) {
         setBroadcastFeedback({
           id: 'autofetch-fallback',

@@ -30,14 +30,8 @@ import {
 import type { PaymentMethodConfig, PaymentTransactionRecord, SubscriptionPlan } from '../types/platformConfig';
 import { INITIAL_PAYMENT_METHODS } from '../types/platformConfig';
 import type { VipSubscriber } from '../App';
-import {
-  loadCloudPaymentMethods,
-  saveCloudPaymentMethods,
-  canWriteFirestoreAsAdmin
-} from '../firebase';
 
 interface ZadtooPaymentsManagerProps {
-  adminToken?: string;
   subscribers?: VipSubscriber[];
   onSubscribersUpdated?: (updated: VipSubscriber[]) => void;
   plans?: SubscriptionPlan[];
@@ -45,7 +39,6 @@ interface ZadtooPaymentsManagerProps {
 }
 
 export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
-  adminToken,
   subscribers = [],
   onSubscribersUpdated,
   plans = [],
@@ -90,46 +83,26 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
 
   useEffect(() => {
     fetchPaymentsConfig();
-  }, [adminToken]);
-
-  const getAuthHeaders = (includeJson = true): Record<string, string> => ({
-    ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
-    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
-  });
+  }, []);
 
   const fetchPaymentsConfig = async () => {
     setIsLoading(true);
-    let loadedFromServer = false;
     try {
-      const res = await fetch('/api/payments/config', {
-        headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) {
-        const data = await res.json();
-        if (data.ok) {
-          loadedFromServer = true;
-          if (Array.isArray(data.paymentMethods) && data.paymentMethods.length > 0) {
-            setPaymentMethods(data.paymentMethods);
-          }
-          if (Array.isArray(data.paymentTransactions)) {
-            setTransactions(data.paymentTransactions);
-          }
+      const res = await fetch('/api/payments/config');
+      const data = await res.json();
+      if (data.ok) {
+        if (Array.isArray(data.paymentMethods) && data.paymentMethods.length > 0) {
+          setPaymentMethods(data.paymentMethods);
+        }
+        if (Array.isArray(data.paymentTransactions)) {
+          setTransactions(data.paymentTransactions);
         }
       }
     } catch (_e) {
-      // Static hosting fallback below
+      // Keep initial
+    } finally {
+      setIsLoading(false);
     }
-
-    if (!loadedFromServer) {
-      try {
-        const cloudMethods = await loadCloudPaymentMethods<PaymentMethodConfig[]>();
-        if (Array.isArray(cloudMethods) && cloudMethods.length > 0) {
-          setPaymentMethods(cloudMethods);
-        }
-      } catch (_e) {}
-    }
-    setIsLoading(false);
   };
 
   const showNotice = (text: string, type: 'success' | 'error' = 'success') => {
@@ -143,39 +116,24 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const persistPaymentMethods = async (updatedList: PaymentMethodConfig[]): Promise<boolean> => {
-    let savedServer = false;
-    try {
-      const res = await fetch('/api/payments/methods', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ paymentMethods: updatedList })
-      });
-      const ct = res.headers.get('content-type') || '';
-      if (res.ok && ct.includes('application/json')) {
-        const data = await res.json();
-        if (data.ok) savedServer = true;
-      }
-    } catch (_e) {}
-
-    const savedCloud = canWriteFirestoreAsAdmin()
-      ? await saveCloudPaymentMethods(updatedList).catch(() => false)
-      : false;
-
-    return savedServer || savedCloud;
-  };
-
   // Toggle method active status
   const handleToggleMethodActive = async (methodId: string) => {
     const updated = paymentMethods.map(m =>
       m.id === methodId ? { ...m, isActive: !m.isActive } : m
     );
     setPaymentMethods(updated);
-    const ok = await persistPaymentMethods(updated);
-    if (ok) {
-      showNotice('تم تحديث حالة وسيلة الدفع وحفظها بنجاح ✅');
-    } else {
-      showNotice('تعذر حفظ التغيير — تأكد من تسجيل الدخول كمشرف عبر Google', 'error');
+    try {
+      const res = await fetch('/api/payments/methods', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paymentMethods: updated })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        showNotice('تم تحديث حالة وسيلة الدفع بنجاح');
+      }
+    } catch (_e) {
+      showNotice('حدث خطأ في حفظ التغيير', 'error');
     }
   };
 
@@ -199,11 +157,18 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     setPaymentMethods(updatedList);
     setEditingMethod(null);
 
-    const ok = await persistPaymentMethods(updatedList);
-    if (ok) {
-      showNotice(isNew ? 'تمت إضافة وسيلة الدفع وحفظها بنجاح ✅' : 'تم تعديل وسيلة الدفع وحفظها بنجاح ✅');
-    } else {
-      showNotice('تعذر حفظ وسيلة الدفع — تأكد من تسجيل الدخول كمشرف عبر Google', 'error');
+    try {
+      const res = await fetch('/api/payments/methods', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paymentMethods: updatedList })
+      });
+      const resData = await res.json();
+      if (resData.ok) {
+        showNotice(isNew ? 'تمت إضافة وسيلة الدفع بنجاح' : 'تم تعديل وسيلة الدفع بنجاح');
+      }
+    } catch (_e) {
+      showNotice('حدث خطأ أثناء حفظ وسيلة الدفع', 'error');
     }
   };
 
@@ -214,11 +179,18 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     setPaymentMethods(updated);
     setMethodToDelete(null);
 
-    const ok = await persistPaymentMethods(updated);
-    if (ok) {
-      showNotice('تم حذف وسيلة الدفع بنجاح');
-    } else {
-      showNotice('تعذر حذف وسيلة الدفع', 'error');
+    try {
+      const res = await fetch('/api/payments/methods', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paymentMethods: updated })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        showNotice('تم حذف وسيلة الدفع بنجاح');
+      }
+    } catch (_e) {
+      showNotice('حدث خطأ أثناء حذف وسيلة الدفع', 'error');
     }
   };
 
@@ -227,7 +199,7 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     try {
       const res = await fetch('/api/payments/review-transaction', {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           transactionId: txId,
           action: 'APPROVE',
@@ -235,7 +207,7 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
         })
       });
       const data = await res.json();
-      if (res.ok && data.ok) {
+      if (data.ok) {
         setTransactions(prev =>
           prev.map(t => (t.id === txId ? { ...t, status: 'APPROVED', reviewedAt: new Date().toISOString() } : t))
         );
@@ -257,7 +229,7 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     try {
       const res = await fetch('/api/payments/review-transaction', {
         method: 'POST',
-        headers: getAuthHeaders(),
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           transactionId: rejectingTx.id,
           action: 'REJECT',
@@ -265,14 +237,12 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
         })
       });
       const data = await res.json();
-      if (res.ok && data.ok) {
+      if (data.ok) {
         setTransactions(prev =>
           prev.map(t => (t.id === rejectingTx.id ? { ...t, status: 'REJECTED', adminNotes: rejectReason, reviewedAt: new Date().toISOString() } : t))
         );
         setRejectingTx(null);
         showNotice('تم رفض المعاملة وتحديث حالتها');
-      } else {
-        showNotice(data.error || 'تعذر رفض المعاملة', 'error');
       }
     } catch (_e) {
       showNotice('حدث خطأ في الاتصال بالخادم', 'error');

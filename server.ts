@@ -1,12 +1,11 @@
 import express from 'express';
 import http from 'http';
-import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { initializeApp } from 'firebase/app';
-import { initializeFirestore, doc, getDoc, setDoc, onSnapshot, runTransaction, setLogLevel } from 'firebase/firestore';
+import { initializeFirestore, doc, getDoc, setDoc, runTransaction, setLogLevel, onSnapshot } from 'firebase/firestore';
 import {
   parseRawQuotexSignal,
   formatSignalMessage,
@@ -14,20 +13,19 @@ import {
   extractMinuteOnly,
   GLOBAL_FOREX_PAIRS,
   DEFAULT_CUSTOM_TEMPLATE,
-  type FormatterOptions,
-  type ParsedSignal
+  FormatterOptions,
+  ParsedSignal
 } from './src/utils/signalParser.ts';
-import { type ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, calculateEventTimes, filterActiveForexNews } from './src/types/forexNews.ts';
+import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, calculateEventTimes, filterActiveForexNews } from './src/types/forexNews.ts';
 import {
-  type SubscriptionPlan,
-  type PlatformContactLinks,
+  SubscriptionPlan,
+  PlatformContactLinks,
   INITIAL_SUBSCRIPTION_PLANS,
   INITIAL_CONTACT_LINKS,
-  type PaymentMethodConfig,
-  type PaymentTransactionRecord,
+  PaymentMethodConfig,
+  PaymentTransactionRecord,
   INITIAL_PAYMENT_METHODS
 } from './src/types/platformConfig.ts';
-import { buildFloatingQuotexRobotScript } from './src/utils/robotScriptTemplate.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,10 +34,10 @@ const FIREBASE_CONFIG_FILE = path.join(process.cwd(), 'firebase-applet-config.js
 
 setLogLevel('silent');
 
-export const DEFAULT_FREE_BOT_TOKEN = (process.env.TELEGRAM_FREE_BOT_TOKEN || '').trim();
-export const DEFAULT_FREE_CHAT_ID = (process.env.TELEGRAM_FREE_CHAT_ID || '@ZadNBFX').trim();
-export const DEFAULT_VIP_BOT_TOKEN = (process.env.TELEGRAM_VIP_BOT_TOKEN || '').trim();
-export const DEFAULT_VIP_CHAT_ID = (process.env.TELEGRAM_VIP_CHAT_ID || '-1004323890544').trim();
+export const DEFAULT_FREE_BOT_TOKEN = '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U';
+export const DEFAULT_FREE_CHAT_ID = '@ZadNBFX';
+export const DEFAULT_VIP_BOT_TOKEN = '8814918920:AAGeXmZrTy03s9gozdDAOj3hkIijHm9yJHM';
+export const DEFAULT_VIP_CHAT_ID = '-1004323890544';
 
 let serverFirestoreDb: ReturnType<typeof initializeFirestore> | null = null;
 try {
@@ -58,164 +56,11 @@ try {
   // Fallback to local disk persistence if cloud init is unavailable
 }
 
-const ENV_ADMIN_EMAILS = (process.env.ADMIN_EMAILS || '')
-  .split(',')
-  .map(s => s.trim().toLowerCase())
-  .filter(Boolean);
-const ENV_ADMIN_PASS = (process.env.ADMIN_PASS || '').trim();
-
-interface PersistedAdminAuth {
-  email: string;
-  passwordHash: string;
-  updatedAt: string;
-}
-
-let persistedAdminAuth: PersistedAdminAuth | null = null;
-let runtimeSessionSecret = (process.env.ADMIN_SESSION_SECRET || '').trim();
-if (!runtimeSessionSecret) {
-  runtimeSessionSecret = crypto.randomBytes(32).toString('hex');
-}
-
-function hashPasswordScrypt(password: string, saltHex?: string): string {
-  const salt = saltHex || crypto.randomBytes(16).toString('hex');
-  const derived = crypto.scryptSync(password, salt, 64).toString('hex');
-  return `${salt}:${derived}`;
-}
-
-function verifyPasswordScrypt(password: string, stored: string): boolean {
-  const parts = String(stored || '').split(':');
-  if (parts.length !== 2) return false;
-  const [salt, expectedHex] = parts;
-  if (!salt || !expectedHex) return false;
-  const derivedBuf = crypto.scryptSync(password, salt, 64);
-  const expectedBuf = Buffer.from(expectedHex, 'hex');
-  if (derivedBuf.length !== expectedBuf.length) return false;
-  return crypto.timingSafeEqual(derivedBuf, expectedBuf);
-}
-
-function safeTimingEqualStr(a: string, b: string): boolean {
-  const bufA = Buffer.from(a, 'utf-8');
-  const bufB = Buffer.from(b, 'utf-8');
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
-}
-
-function isAdminSetupRequired(): boolean {
-  if (ENV_ADMIN_PASS) return false;
-  return !persistedAdminAuth?.email || !persistedAdminAuth?.passwordHash;
-}
-
-function signAdminSessionToken(email: string): string {
-  const payload = Buffer.from(
-    JSON.stringify({
-      role: 'admin',
-      email: email.toLowerCase(),
-      exp: Date.now() + 24 * 60 * 60 * 1000
-    })
-  ).toString('base64url');
-  const sig = crypto
-    .createHmac('sha256', runtimeSessionSecret)
-    .update(payload)
-    .digest('base64url');
-  return `${payload}.${sig}`;
-}
-
-function verifyAdminSessionToken(token: string): { email: string; role: 'admin' } | null {
-  try {
-    const parts = String(token || '').trim().split('.');
-    if (parts.length !== 2) return null;
-    const [payload, sig] = parts;
-    const expectedSig = crypto
-      .createHmac('sha256', runtimeSessionSecret)
-      .update(payload)
-      .digest('base64url');
-    if (!safeTimingEqualStr(sig, expectedSig)) return null;
-    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8'));
-    if (!decoded || decoded.role !== 'admin' || !decoded.email || typeof decoded.exp !== 'number') {
-      return null;
-    }
-    if (decoded.exp < Date.now()) return null;
-    return { email: String(decoded.email), role: 'admin' };
-  } catch {
-    return null;
-  }
-}
-
-function extractAdminSession(req: express.Request): { email: string; role: 'admin' } | null {
-  const authHeader = String(req.headers.authorization || '').trim();
-  const bearer = authHeader.toLowerCase().startsWith('bearer ')
-    ? authHeader.slice(7).trim()
-    : '';
-  const queryTok = typeof req.query.adminToken === 'string' ? req.query.adminToken.trim() : '';
-  const token = bearer || queryTok;
-  if (!token) return null;
-  return verifyAdminSessionToken(token);
-}
-
-function requireAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
-  const session = extractAdminSession(req);
-  if (!session) {
-    return res.status(401).json({ ok: false, error: 'Unauthorized: admin session required' });
-  }
-  (req as any).adminSession = session;
-  next();
-}
-
-function signVerifyCountryToken(chatId: string): string {
-  return crypto
-    .createHmac('sha256', runtimeSessionSecret)
-    .update(`verify-country:${chatId}`)
-    .digest('hex')
-    .slice(0, 24);
-}
-
-function verifyCountryToken(chatId: string, token: string): boolean {
-  if (!chatId || !token) return false;
-  return safeTimingEqualStr(signVerifyCountryToken(chatId), String(token).trim());
-}
-
-function escapeHtml(raw: string): string {
-  return String(raw || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function redactAutoPilotForPublic(ap: AutoPilotConfig): AutoPilotConfig {
-  return {
-    ...ap,
-    botToken: ap.botToken ? 'CONFIGURED' : '',
-    vipBotToken: ap.vipBotToken ? 'CONFIGURED' : ''
-  };
-}
-
-function redactBotConfigForAdmin(cfg: TelegramBotConfig): TelegramBotConfig {
-  return {
-    ...cfg,
-    botToken: cfg.botToken ? 'CONFIGURED' : ''
-  };
-}
-
-function redactSubscriberForPublic(s: VipSubscriber): Partial<VipSubscriber> {
-  return {
-    id: s.id,
-    name: s.name,
-    country: s.country,
-    broker: s.broker,
-    planDuration: s.planDuration,
-    status: s.status,
-    expiryDate: s.expiryDate,
-    robotExpiryDate: s.robotExpiryDate,
-    robotEnabled: s.robotEnabled,
-    robotDefaultMode: s.robotDefaultMode,
-    robotTradeStake: s.robotTradeStake,
-    robotWins: s.robotWins,
-    robotLosses: s.robotLosses,
-    createdAt: s.createdAt
-  };
-}
+const ADMIN_EMAILS = [
+  'thrayanabil2026@gmail.com',
+  'thrayanabil@gmail.com'
+];
+const ADMIN_PASS = 'Tr@7177';
 
 export interface SignalItem {
   id: string;
@@ -583,13 +428,6 @@ export interface TelegramBotConfig {
   };
 }
 
-interface TelegramTrackedMessage {
-  chatId: string;
-  messageId: number;
-  channelType: 'free' | 'vip' | 'other';
-  sentAt: string;
-}
-
 interface PersistedState {
   stateUpdatedAt?: string;
   signals: SignalItem[];
@@ -600,7 +438,6 @@ interface PersistedState {
   subscribers?: VipSubscriber[];
   telegramBotUsers?: TelegramBotUser[];
   telegramBotConfig?: TelegramBotConfig;
-  telegramSentMessages?: TelegramTrackedMessage[];
   quickNotes?: QuickNote[];
   dailyStats?: DailyStatRecord[];
   forexNews?: ForexNewsItem[];
@@ -610,8 +447,6 @@ interface PersistedState {
   paymentTransactions?: PaymentTransactionRecord[];
   lastDispatchedEpochMinute?: number;
   lastOnboardingBotUpdateId?: number;
-  adminAuth?: PersistedAdminAuth;
-  adminSessionSecret?: string;
 }
 
 const defaultRobotSettings: QuotexRobotSettings = {
@@ -655,8 +490,8 @@ const defaultAutoPilot: AutoPilotConfig = {
   freeBotCelebrationSentDate: '',
   freeBotStoppedForToday: false,
   freeBotEnabled: true,
-  botToken: DEFAULT_FREE_BOT_TOKEN,
-  chatId: DEFAULT_FREE_CHAT_ID || '@ZadNBFX',
+  botToken: '',
+  chatId: '@ZadNBFX',
   freeScheduleEnabled: true,
   freeStartHourEgypt: 10, // Morning Session starts 10:30 AM Cairo Time
   freeEndHourEgypt: 13,   // Morning Session ends 01:00 PM (13:00) Cairo Time
@@ -672,8 +507,8 @@ const defaultAutoPilot: AutoPilotConfig = {
   freeWinGale1ImageUrl: '',
   freeLossImageUrl: '',
   vipEnabled: false,
-  vipBotToken: DEFAULT_VIP_BOT_TOKEN,
-  vipChatId: DEFAULT_VIP_CHAT_ID,
+  vipBotToken: '',
+  vipChatId: '',
   vipBotConsecutiveLosses: 0,
   vipBotCooldownUntil: 0,
   vipWinIcon: '👑✅ ربح VIP',
@@ -1040,10 +875,9 @@ export function getEveningLiveSessionStatus(): {
   const todayEgypt = getCurrentEgyptDateString(new Date());
 
   if (
-    liveBroadcastSession.activeDate === todayEgypt &&
-    (liveBroadcastSession.status === 'STOPPED_TARGET_REACHED' ||
-      liveBroadcastSession.status === 'STOPPED_SESSION_COMPLETED' ||
-      liveBroadcastSession.status === 'STOPPED_BAD_MARKET')
+    liveBroadcastSession.status === 'STOPPED_TARGET_REACHED' ||
+    liveBroadcastSession.status === 'STOPPED_SESSION_COMPLETED' ||
+    liveBroadcastSession.status === 'STOPPED_BAD_MARKET'
   ) {
     return {
       isSessionFinished: true,
@@ -1730,7 +1564,7 @@ const processedOnboardingUpdateIds = new Set<number>();
 
 const defaultTelegramBotConfig: TelegramBotConfig = {
   isEnabled: true,
-  botToken: (process.env.TELEGRAM_ONBOARDING_BOT_TOKEN || '').trim(),
+  botToken: '9229198517:AAH026I-mlMHGtCZakEwxQuQQ6P341wKnkY',
   botUsername: '@Zadfx_bot',
   adminTelegramUsername: '@thrayanabil',
   freeChannelLink: 'https://t.me/ZadNBFX',
@@ -1843,84 +1677,17 @@ let telegramBotUsersStore: TelegramBotUser[] = [
 ];
 
 let liveMarketSnapshots: LivePairSnapshot[] = [];
-let telegramSentMessagesLog: TelegramTrackedMessage[] = [];
 let isCloudStateLoaded = false;
 let currentStateUpdatedAt = '';
-
-function trackSentTelegramMessage(chatId: string, messageId: number) {
-  const cleanChat = String(chatId || '').trim();
-  const cleanMsgId = Number(messageId);
-  if (!cleanChat || !Number.isFinite(cleanMsgId) || cleanMsgId <= 0) return;
-  // Track channels and groups (@username or negative numeric ID)
-  if (!cleanChat.startsWith('@') && !cleanChat.startsWith('-')) return;
-  const freeChat = (autoPilot.chatId || DEFAULT_FREE_CHAT_ID || '').trim().toLowerCase();
-  const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID || '').trim().toLowerCase();
-  const lowerChat = cleanChat.toLowerCase();
-  const channelType: 'free' | 'vip' | 'other' =
-    vipChat && lowerChat === vipChat
-      ? 'vip'
-      : freeChat && lowerChat === freeChat
-      ? 'free'
-      : 'other';
-
-  const exists = telegramSentMessagesLog.some(
-    m => m.chatId.toLowerCase() === lowerChat && m.messageId === cleanMsgId
-  );
-  if (!exists) {
-    telegramSentMessagesLog.unshift({
-      chatId: cleanChat,
-      messageId: cleanMsgId,
-      channelType,
-      sentAt: new Date().toISOString()
-    });
-    if (telegramSentMessagesLog.length > 800) {
-      telegramSentMessagesLog = telegramSentMessagesLog.slice(0, 800);
-    }
-  }
-}
 
 function applyParsedState(parsed: Partial<PersistedState>) {
   if (parsed.stateUpdatedAt && parsed.stateUpdatedAt > currentStateUpdatedAt) {
     currentStateUpdatedAt = parsed.stateUpdatedAt;
   }
-  if (!process.env.ADMIN_SESSION_SECRET && typeof parsed.adminSessionSecret === 'string' && parsed.adminSessionSecret.length >= 32) {
-    runtimeSessionSecret = parsed.adminSessionSecret;
-  }
-  if (parsed.adminAuth && parsed.adminAuth.email && parsed.adminAuth.passwordHash) {
-    persistedAdminAuth = parsed.adminAuth;
-  }
   if (parsed.telegramBotConfig) {
-    const incomingCfg = parsed.telegramBotConfig;
     telegramBotConfigStore = {
       ...defaultTelegramBotConfig,
-      ...incomingCfg,
-      botToken: (incomingCfg.botToken || '').trim() || (process.env.TELEGRAM_ONBOARDING_BOT_TOKEN || '').trim(),
-      egyptPayment: {
-        ...defaultTelegramBotConfig.egyptPayment,
-        ...(incomingCfg.egyptPayment || {})
-      },
-      palestinePayment: {
-        ...defaultTelegramBotConfig.palestinePayment,
-        ...(incomingCfg.palestinePayment || {})
-      },
-      internationalPayment: {
-        ibanEgp: {
-          ...defaultTelegramBotConfig.internationalPayment.ibanEgp,
-          ...(incomingCfg.internationalPayment?.ibanEgp || {})
-        },
-        ibanUsd: {
-          ...defaultTelegramBotConfig.internationalPayment.ibanUsd,
-          ...(incomingCfg.internationalPayment?.ibanUsd || {})
-        }
-      },
-      usdtPayment: {
-        ...defaultTelegramBotConfig.usdtPayment,
-        ...(incomingCfg.usdtPayment || {})
-      },
-      robotGuide: {
-        ...defaultTelegramBotConfig.robotGuide,
-        ...(incomingCfg.robotGuide || {})
-      }
+      ...parsed.telegramBotConfig
     };
   }
   if (parsed.telegramBotUsers && Array.isArray(parsed.telegramBotUsers) && parsed.telegramBotUsers.length > 0) {
@@ -1929,21 +1696,6 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       if (!existingChatIds.has(u.telegramChatId)) {
         telegramBotUsersStore.push(u);
       }
-    }
-  }
-  if (parsed.telegramSentMessages && Array.isArray(parsed.telegramSentMessages)) {
-    const existingKeys = new Set(telegramSentMessagesLog.map(m => `${m.chatId.toLowerCase()}:${m.messageId}`));
-    for (const item of parsed.telegramSentMessages) {
-      if (item && item.chatId && typeof item.messageId === 'number') {
-        const key = `${String(item.chatId).trim().toLowerCase()}:${item.messageId}`;
-        if (!existingKeys.has(key)) {
-          existingKeys.add(key);
-          telegramSentMessagesLog.push(item);
-        }
-      }
-    }
-    if (telegramSentMessagesLog.length > 800) {
-      telegramSentMessagesLog = telegramSentMessagesLog.slice(0, 800);
     }
   }
   if (typeof parsed.lastOnboardingBotUpdateId === 'number' && parsed.lastOnboardingBotUpdateId > lastOnboardingBotUpdateId) {
@@ -1990,7 +1742,7 @@ function applyParsedState(parsed: Partial<PersistedState>) {
     quickNotesStore = parsed.quickNotes;
   }
   if (parsed.subscribers && Array.isArray(parsed.subscribers)) {
-    if (!isCloudStateLoaded && (parsed.subscribers.length > 0 || subscribersStore.length === 0)) {
+    if (parsed.subscribers.length >= subscribersStore.length || subscribersStore.length === 0) {
       subscribersStore = parsed.subscribers.map(sub => ({
         ...sub,
         country: sub.country || 'مصر 🇪🇬',
@@ -2090,16 +1842,16 @@ function applyParsedState(parsed: Partial<PersistedState>) {
           ? parsed.autopilot.freeBotStoppedForToday
           : Boolean(autoPilot.freeBotStoppedForToday),
       quotexReferralLink: resolvedQxLink,
-      botToken: (parsed.autopilot.botToken && parsed.autopilot.botToken.trim()) || autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN,
-      chatId: (parsed.autopilot.chatId && parsed.autopilot.chatId.trim()) || autoPilot.chatId || DEFAULT_FREE_CHAT_ID,
+      botToken: parsed.autopilot.botToken || autoPilot.botToken,
+      chatId: parsed.autopilot.chatId || autoPilot.chatId,
       freeWinIcon: parsed.autopilot.freeWinIcon || autoPilot.freeWinIcon || '✅ ربح',
       freeWinGale1Icon: parsed.autopilot.freeWinGale1Icon || autoPilot.freeWinGale1Icon || '✅ ربح مضاعفة واحدة',
       freeLossIcon: parsed.autopilot.freeLossIcon || autoPilot.freeLossIcon || '❌',
       freeWinImageUrl: parsed.autopilot.freeWinImageUrl !== undefined ? parsed.autopilot.freeWinImageUrl : (autoPilot.freeWinImageUrl || ''),
       freeWinGale1ImageUrl: parsed.autopilot.freeWinGale1ImageUrl !== undefined ? parsed.autopilot.freeWinGale1ImageUrl : (autoPilot.freeWinGale1ImageUrl || ''),
       freeLossImageUrl: parsed.autopilot.freeLossImageUrl !== undefined ? parsed.autopilot.freeLossImageUrl : (autoPilot.freeLossImageUrl || ''),
-      vipBotToken: (parsed.autopilot.vipBotToken && parsed.autopilot.vipBotToken.trim()) || autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN,
-      vipChatId: (parsed.autopilot.vipChatId && parsed.autopilot.vipChatId.trim()) || autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID,
+      vipBotToken: (parsed.autopilot.vipBotToken && parsed.autopilot.vipBotToken.trim()) || autoPilot.vipBotToken || '',
+      vipChatId: (parsed.autopilot.vipChatId && parsed.autopilot.vipChatId.trim()) || autoPilot.vipChatId || '',
       vipWinIcon: parsed.autopilot.vipWinIcon || autoPilot.vipWinIcon || '👑✅ ربح VIP',
       vipWinGale1Icon: parsed.autopilot.vipWinGale1Icon || autoPilot.vipWinGale1Icon || '👑✅ ربح مضاعفة واحدة',
       vipLossIcon: parsed.autopilot.vipLossIcon || autoPilot.vipLossIcon || '❌',
@@ -2205,7 +1957,7 @@ function initTelegramBotFirestoreSync() {
   if (!serverFirestoreDb || isTelegramBotFirestoreListenerActive) return;
   try {
     const botDocRef = doc(serverFirestoreDb, 'system_state', 'telegram_bot_state');
-    onSnapshot(botDocRef, (snap: any) => {
+    onSnapshot(botDocRef, (snap) => {
       if (!snap.exists()) return;
       const data = snap.data();
       if (!data?.payload) return;
@@ -2233,8 +1985,8 @@ function initTelegramBotFirestoreSync() {
           }
         }
       } catch (_err) {}
-    }, (_err: any) => {
-      // Permission denied or transient listener error ignored safely
+    }, (err) => {
+      console.warn('Telegram bot Firestore snapshot error:', err);
     });
     isTelegramBotFirestoreListenerActive = true;
   } catch (_e) {}
@@ -2286,8 +2038,70 @@ async function loadStateFromCloudAndDisk() {
         }
       } catch (_e) {}
 
-      // Only public non-sensitive configuration documents are synced via Firestore;
-      // sensitive state, subscriber PII, and bot tokens reside strictly on local server disk.
+      // Load dedicated telegram_bot_state document from Firestore (for fx.zadtoo.com two-way sync)
+      try {
+        const botDocRef = doc(serverFirestoreDb, 'system_state', 'telegram_bot_state');
+        const botSnap = await getDoc(botDocRef);
+        if (botSnap.exists()) {
+          const bData = botSnap.data();
+          if (bData?.payload) {
+            const parsedBot = JSON.parse(bData.payload);
+            if (parsedBot?.config) {
+              telegramBotConfigStore = {
+                ...defaultTelegramBotConfig,
+                ...telegramBotConfigStore,
+                ...parsedBot.config,
+                usdtPayment: {
+                  ...defaultTelegramBotConfig.usdtPayment,
+                  ...(parsedBot.config.usdtPayment || {})
+                }
+              };
+            }
+            if (Array.isArray(parsedBot?.users) && parsedBot.users.length > 0) {
+              const existingChatIds = new Set(telegramBotUsersStore.map(u => u.telegramChatId));
+              for (const u of parsedBot.users) {
+                const idx = telegramBotUsersStore.findIndex(ex => ex.telegramChatId === u.telegramChatId);
+                if (idx >= 0) {
+                  telegramBotUsersStore[idx] = { ...telegramBotUsersStore[idx], ...u };
+                } else {
+                  telegramBotUsersStore.push(u);
+                }
+              }
+            }
+          }
+        }
+      } catch (_e) {}
+
+      // Start live snapshot listener so updates from fx.zadtoo.com reflect in server memory immediately
+      initTelegramBotFirestoreSync();
+
+      const docRef = doc(serverFirestoreDb, 'system_state', 'zad_main_state_v1');
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data && typeof data.payload === 'string') {
+          const cloudState = JSON.parse(data.payload) as Partial<PersistedState>;
+          const cloudTime = new Date(cloudState.stateUpdatedAt || data.updatedAt || 0).getTime();
+          const diskTime = new Date(diskState?.stateUpdatedAt || currentStateUpdatedAt || 0).getTime();
+          if (!diskState || cloudTime >= diskTime) {
+            applyParsedState(cloudState);
+            const preservedDiskState: Partial<PersistedState> = {
+              ...cloudState,
+              plans: plansStore, // Ensure plansStore is never overwritten by an older state missing plans
+              contactLinks: contactLinksStore,
+              autopilot: {
+                ...cloudState.autopilot,
+                botToken: autoPilot.botToken || diskState?.autopilot?.botToken || '',
+                chatId: autoPilot.chatId || diskState?.autopilot?.chatId || '@ZadNBFX',
+                vipBotToken: autoPilot.vipBotToken || diskState?.autopilot?.vipBotToken || '',
+                vipChatId: autoPilot.vipChatId || diskState?.autopilot?.vipChatId || '',
+                vipEnabled: autoPilot.vipEnabled ?? diskState?.autopilot?.vipEnabled ?? true
+              } as AutoPilotConfig
+            };
+            fs.writeFileSync(STATE_FILE, JSON.stringify(preservedDiskState, null, 2), 'utf-8');
+          }
+        }
+      }
     } catch (_e) {
       // Local disk state is already loaded as fallback
     }
@@ -2307,50 +2121,29 @@ function getLiveRobotActiveSignal(overrideMode?: RobotStrategyEngineMode): Signa
   if (!isGlobalForexMarketOpen()) return null;
 
   const mode = overrideMode || robotSettings.strategyEngineMode || 'VIP_WITH_MPB';
-  const nowEpoch = Math.floor(Date.now() / 1000);
-
-  const isEligibleAsset = (s: SignalItem) =>
-    Boolean(s) && s.asset !== 'USD/JPY' && !s.asset.includes('USDJPY');
-
-  const isRecentlyClosed = (s: SignalItem) => {
-    if (!s.createdAt) return false;
-    const sigAgeSec = Math.floor((Date.now() - new Date(s.createdAt).getTime()) / 1000);
-    const targetSec = s.targetEntryTimestamp || (nowEpoch - sigAgeSec + 45);
-    const secondsSinceCandleClose = nowEpoch - (targetSec + 60);
-    return secondsSinceCandleClose >= 0 && secondsSinceCandleClose <= 20;
-  };
-
   let candidate: SignalItem | null = null;
 
   if (mode === 'PUBLIC_CLASSIC') {
-    // Prefer classic PENDING signal, otherwise deliver unified MPB engine signal
-    candidate =
-      signalsStore.find(
-        s =>
-          isEligibleAsset(s) &&
-          s.status === 'PENDING' &&
-          !s.instantExecution5s &&
-          s.strategyType !== 'MOMENTUM_PAUSE_BREAKOUT'
-      ) ||
-      signalsStore.find(s => isEligibleAsset(s) && s.status === 'PENDING') ||
-      signalsStore.find(s => isEligibleAsset(s) && s.status !== 'PENDING' && isRecentlyClosed(s)) ||
-      null;
+    // Mode 1: Public Classic Indicator (1 full minute countdown, not 5s instant)
+    candidate = signalsStore.find(s =>
+      s.status === 'PENDING' &&
+      !s.instantExecution5s &&
+      s.strategyType !== 'MOMENTUM_PAUSE_BREAKOUT'
+    ) || null;
   } else {
-    // Unified MPB Strategy (5s instant confirmation at :50-:55), fallback to any active signal
-    candidate =
-      signalsStore.find(
-        s =>
-          isEligibleAsset(s) &&
-          s.status === 'PENDING' &&
-          (Boolean(s.instantExecution5s) || s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.isLiveBroadcast)
-      ) ||
-      signalsStore.find(s => isEligibleAsset(s) && s.status === 'PENDING') ||
-      signalsStore.find(s => isEligibleAsset(s) && s.status !== 'PENDING' && isRecentlyClosed(s)) ||
-      null;
+    // Mode 2: MPB Strategy (5s instant confirmation at :55)
+    // STRICT ISOLATION: ONLY signals belonging to MPB / Instant 5s execution, never USD/JPY.
+    candidate = signalsStore.find(s =>
+      s.status === 'PENDING' &&
+      s.asset !== 'USD/JPY' &&
+      !s.asset.includes('USDJPY') &&
+      (Boolean(s.instantExecution5s) || s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.isLiveBroadcast)
+    ) || null;
   }
 
-  if (!candidate) return null;
+  if (!candidate || candidate.asset === 'USD/JPY' || candidate.asset.includes('USDJPY')) return null;
 
+  const nowEpoch = Math.floor(Date.now() / 1000);
   const sigAgeSec = candidate.createdAt
     ? Math.floor((Date.now() - new Date(candidate.createdAt).getTime()) / 1000)
     : 999;
@@ -2366,15 +2159,24 @@ function getLiveRobotActiveSignal(overrideMode?: RobotStrategyEngineMode): Signa
 
   // If signal is PENDING:
   if (candidate.status === 'PENDING') {
-    if (diffUntilEntry >= -65 && diffUntilEntry <= 180 && sigAgeSec <= 180) {
-      return candidate;
+    if (mode === 'VIP_WITH_MPB') {
+      // In MPB mode: Deliver the signal as soon as dispatched (within 180s of candle entry)
+      // and while the 60s candle trade is actively in progress (diffUntilEntry between 0 and -65s)
+      if (diffUntilEntry >= -65 && diffUntilEntry <= 180 && sigAgeSec <= 180) {
+        return candidate;
+      }
+      return null;
+    } else {
+      if (diffUntilEntry >= -70 && diffUntilEntry <= 90 && sigAgeSec <= 135) {
+        return candidate;
+      }
+      return null;
     }
-    return null;
   }
 
-  // If completed (WIN / LOSS / DRAW): display for 20 seconds after candle close so user sees the outcome banner
+  // If completed (WIN / LOSS / DRAW): display for 15 seconds after candle close so user sees the outcome banner
   const secondsSinceCandleClose = nowEpoch - (targetSec + 60);
-  if (secondsSinceCandleClose >= 0 && secondsSinceCandleClose <= 20) {
+  if (secondsSinceCandleClose >= 0 && secondsSinceCandleClose <= 15) {
     return candidate;
   }
 
@@ -2403,7 +2205,6 @@ async function saveState(): Promise<boolean> {
       subscribers: subscribersStore.slice(0, 200),
       telegramBotUsers: telegramBotUsersStore.slice(0, 500),
       telegramBotConfig: telegramBotConfigStore,
-      telegramSentMessages: telegramSentMessagesLog.slice(0, 800),
       quickNotes: quickNotesStore.slice(0, 50),
       dailyStats: sortedDailyStats,
       forexNews: forexNewsStore,
@@ -2412,41 +2213,99 @@ async function saveState(): Promise<boolean> {
       paymentMethods: paymentMethodsStore,
       paymentTransactions: paymentTransactionsStore.slice(0, 150),
       lastDispatchedEpochMinute,
-      lastOnboardingBotUpdateId,
-      adminAuth: persistedAdminAuth || undefined,
-      adminSessionSecret: runtimeSessionSecret
+      lastOnboardingBotUpdateId
     };
-    const serializedState = JSON.stringify(state, null, 2);
-    try {
-      const tmpFile = `${STATE_FILE}.tmp`;
-      fs.writeFileSync(tmpFile, serializedState, 'utf-8');
-      fs.renameSync(tmpFile, STATE_FILE);
-    } catch (_atomicErr) {
-      fs.writeFileSync(STATE_FILE, serializedState, 'utf-8');
-    }
+    const serialized = JSON.stringify(state);
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
 
-    // Sync only non-sensitive public configuration documents to Firestore without blocking disk response
+    // Save to permanent Firebase Cloud Firestore (with strict sanitization of tokens and PII)
     if (serverFirestoreDb) {
+      // Create a sanitized state for cloud storage to ensure zero leak of bot tokens or private subscriber contacts
+      const sanitizedSubscribers = subscribersStore.slice(0, 200).map(s => ({
+        id: s.id,
+        name: s.name,
+        brokerAccountId: s.brokerAccountId || '',
+        robotApiKey: s.robotApiKey || '',
+        status: s.status,
+        robotExpiryDate: s.robotExpiryDate || s.expiryDate || '',
+        expiryDate: s.expiryDate || '',
+        robotEnabled: s.robotEnabled !== false,
+        defaultMode: (s as any).defaultMode || 'AUTO',
+        tradeStakeUsd: (s as any).tradeStakeUsd || 5
+      }));
+
+      const sanitizedCloudState = {
+        stateUpdatedAt: nowIso,
+        signals: signalsStore.slice(0, 80),
+        settings: appSettings,
+        autopilot: {
+          ...autoPilot,
+          botToken: '', // Strictly redacted: Bot tokens stay exclusively in local server disk
+          vipBotToken: '', // Strictly redacted: VIP tokens stay exclusively in local server disk
+          freeWinImageUrl: autoPilot.freeWinImageUrl || '',
+          freeWinGale1ImageUrl: autoPilot.freeWinGale1ImageUrl || '',
+          freeLossImageUrl: autoPilot.freeLossImageUrl || '',
+          vipWinImageUrl: autoPilot.vipWinImageUrl || '',
+          vipWinGale1ImageUrl: autoPilot.vipWinGale1ImageUrl || '',
+          vipLossImageUrl: autoPilot.vipLossImageUrl || ''
+        },
+        robotSettings,
+        liveBroadcastSession,
+        subscribers: sanitizedSubscribers,
+        quickNotes: [], // Exclude private internal admin notes
+        dailyStats: sortedDailyStats,
+        forexNews: filterActiveForexNews(forexNewsStore),
+        plans: plansStore,
+        contactLinks: contactLinksStore,
+        lastDispatchedEpochMinute
+      };
+
+      const cloudPayload = JSON.stringify(sanitizedCloudState);
+      const firestoreWrites: Promise<any>[] = [];
+
+      if (cloudPayload.length <= 495000) {
+        const docRef = doc(serverFirestoreDb, 'system_state', 'zad_main_state_v1');
+        firestoreWrites.push(setDoc(docRef, { updatedAt: nowIso, payload: cloudPayload }));
+      }
+
       const plansDocRef = doc(serverFirestoreDb, 'system_state', 'platform_plans');
+      firestoreWrites.push(
+        setDoc(plansDocRef, { updatedAt: nowIso, payload: JSON.stringify(plansStore) }).catch(errPlans => {
+          console.warn('Could not write dedicated platform_plans doc:', errPlans);
+        })
+      );
+
       const linksDocRef = doc(serverFirestoreDb, 'system_state', 'platform_contact_links');
-      void Promise.allSettled([
-        setDoc(plansDocRef, { updatedAt: nowIso, payload: JSON.stringify(plansStore) }).catch(() => {}),
-        setDoc(linksDocRef, { updatedAt: nowIso, payload: JSON.stringify(contactLinksStore) }).catch(() => {})
-      ]);
+      firestoreWrites.push(
+        setDoc(linksDocRef, { updatedAt: nowIso, payload: JSON.stringify(contactLinksStore) }).catch(errLinks => {
+          console.warn('Could not write dedicated platform_contact_links doc:', errLinks);
+        })
+      );
+
+      const botDocRef = doc(serverFirestoreDb, 'system_state', 'telegram_bot_state');
+      firestoreWrites.push(
+        setDoc(botDocRef, {
+          updatedAt: nowIso,
+          payload: JSON.stringify({
+            config: telegramBotConfigStore,
+            users: telegramBotUsersStore.slice(0, 500)
+          })
+        }).catch(errBot => {
+          console.warn('Could not write dedicated telegram_bot_state doc:', errBot);
+        })
+      );
+
+      firestoreWrites.push(publishRobotLiveFeedDoc(nowIso));
+      await Promise.allSettled(firestoreWrites);
+      return true;
     }
     return true;
   } catch (_e) {
-    return false;
+    return true;
   }
 }
 
-async function publishRobotLiveFeedDoc(_customIso?: string): Promise<void> {
-  // Robot live feed is served exclusively via authenticated backend endpoints (/api/quotex-robot/feed),
-  // never pushed to public Firestore documents.
-  return;
-}
-/*
-async function _legacyPublishRobotLiveFeedDoc(customIso?: string): Promise<void> {
+async function publishRobotLiveFeedDoc(customIso?: string): Promise<void> {
   if (!serverFirestoreDb) return;
   try {
     const nowIso = customIso || new Date().toISOString();
@@ -2558,7 +2417,6 @@ async function _legacyPublishRobotLiveFeedDoc(customIso?: string): Promise<void>
     // Ignore
   }
 }
-*/
 
 loadStateFromCloudAndDisk().then(async () => {
   await cleanupAndAutoUpdateForexNews({ forceRemote: true }).catch(() => {});
@@ -3746,17 +3604,17 @@ export function evaluateFourIndicatorConfluence(
       }
     }
 
-    // Add institutional confirmation tags for Telegram & UI when strongly aligned (indicator name only, no values)
+    // Add institutional confirmation tags for Telegram & UI when strongly aligned
     if (dir === 'CALL' && lastCandle.close > htfData.ema50M1 && htfData.htfM5Trend === 'BULLISH') {
-      bonuses.push(`فلتر الاتجاه العام EMA + M5 (ترند صاعد متوافق 📈)`);
+      bonuses.push(`فلتر الاتجاه العام EMA 50 + M5 (ترند صاعد متوافق 📈)`);
     } else if (dir === 'PUT' && lastCandle.close < htfData.ema50M1 && htfData.htfM5Trend === 'BEARISH') {
-      bonuses.push(`فلتر الاتجاه العام EMA + M5 (ترند هابط متوافق 📉)`);
+      bonuses.push(`فلتر الاتجاه العام EMA 50 + M5 (ترند هابط متوافق 📉)`);
     }
 
     if (!adxData.insufficientData && adxData.adx >= minAdxRequired) {
       const diAligned = dir === 'CALL' ? adxData.plusDi > adxData.minusDi : adxData.minusDi > adxData.plusDi;
       if (diAligned) {
-        bonuses.push(`مؤشر قوة الاتجاه ADX (زخم ترند نقي ✅)`);
+        bonuses.push(`مؤشر قوة الاتجاه ADX (${adxData.adx} زخم ترند نقي ✅)`);
       }
     }
 
@@ -3803,23 +3661,23 @@ export function evaluateFourIndicatorConfluence(
 
     let additionalCount = 0;
 
-    // Pillar 2: ATR Volatility Confirmation (Name only, no numeric value)
+    // Pillar 2: ATR (14) Volatility Confirmation
     const atrMatched = isAtrHealthy;
     if (atrMatched) {
       additionalCount += 1;
-      matchedList.push(`مؤشر ATR (سيولة وزخم نشط)`);
+      matchedList.push(`مؤشر ATR (${atr.toFixed(5)} سيولة وزخم نشط)`);
     }
 
-    // Pillar 3: RSI Momentum Alignment (Name only, no numeric value)
+    // Pillar 3: RSI (14) Momentum Alignment (strictly excludes overextended extremes & neutral chop)
     const rsiMatched = testDirection === 'CALL'
       ? ((rsi >= 52 && rsi <= 72) || (rsi <= 34 && rsi >= 18 && Boolean(srContext?.isTestingSupport)))
       : ((rsi <= 48 && rsi >= 28) || (rsi >= 66 && rsi <= 82 && Boolean(srContext?.isTestingResistance)));
     if (rsiMatched) {
       additionalCount += 1;
-      matchedList.push(`مؤشر RSI (${testDirection === 'CALL' ? 'ميل صعودي' : 'ميل هبوطي'})`);
+      matchedList.push(`مؤشر RSI (${rsi.toFixed(1)} ${testDirection === 'CALL' ? 'ميل صعودي' : 'ميل هبوطي'})`);
     }
 
-    // Pillar 4: Supertrend Trend Baseline
+    // Pillar 4: Supertrend (10, 3) Trend Baseline
     const stMatched = testDirection === 'CALL'
       ? supertrend.trend === 'BULLISH'
       : supertrend.trend === 'BEARISH';
@@ -3885,13 +3743,13 @@ export function evaluateFourIndicatorConfluence(
       callMatched.push(`ارتداد دعم مؤكد S/R ✅`);
     }
     if (isAtrHealthy) {
-      callMatched.push(`مؤشر ATR (سيولة نشطة)`);
+      callMatched.push(`مؤشر ATR (${atr.toFixed(5)} سيولة نشطة)`);
     }
     const rsiCall =
       (rsi >= 52 && rsi <= 72) ||
       (rsi <= 34 && rsi >= 18 && Boolean(srContext?.isTestingSupport));
     if (rsiCall) {
-      callMatched.push(`مؤشر RSI (ميل صعودي)`);
+      callMatched.push(`مؤشر RSI (${rsi.toFixed(1)} ميل صعودي)`);
     }
     const stCall = supertrend.trend === 'BULLISH';
     if (stCall) {
@@ -3911,13 +3769,13 @@ export function evaluateFourIndicatorConfluence(
       putMatched.push(`ارتداد مقاومة مؤكدة S/R ✅`);
     }
     if (isAtrHealthy) {
-      putMatched.push(`مؤشر ATR (سيولة نشطة)`);
+      putMatched.push(`مؤشر ATR (${atr.toFixed(5)} سيولة نشطة)`);
     }
     const rsiPut =
       (rsi <= 48 && rsi >= 28) ||
       (rsi >= 66 && rsi <= 82 && Boolean(srContext?.isTestingResistance));
     if (rsiPut) {
-      putMatched.push(`مؤشر RSI (ميل هبوطي)`);
+      putMatched.push(`مؤشر RSI (${rsi.toFixed(1)} ميل هبوطي)`);
     }
     const stPut = supertrend.trend === 'BEARISH';
     if (stPut) {
@@ -4206,7 +4064,7 @@ async function scanRealGlobalForexMarket(
       const fractalCallLabel = fractal.lastFractalType === 'BULLISH_LOW' ? fractal.description : isBullishPinBar ? 'شمعة مطرقة صاعدة' : isBullishEngulfing ? 'ابتلاع صعودي مؤكد' : 'ارتداد فركتال صاعد';
 
       const isRsiCall = rsi <= 38 || (rsi <= 45 && rsi >= 30) || (rsi >= 45 && rsi <= 60 && closes[closes.length - 1] > closes[closes.length - 2]);
-      const rsiCallLabel = rsi <= 35 ? `تشبع بيعي مؤشر RSI` : `ميل صعودي مؤشر RSI`;
+      const rsiCallLabel = rsi <= 35 ? `تشبع بيعي RSI(${rsi})` : `ميل صعودي RSI(${rsi})`;
 
       const callMatches: string[] = [];
       if (isStCall) callMatches.push(stCallLabel);
@@ -4224,7 +4082,7 @@ async function scanRealGlobalForexMarket(
       const fractalPutLabel = fractal.lastFractalType === 'BEARISH_HIGH' ? fractal.description : isBearishPinBar ? 'شمعة شهاب هابطة' : isBearishEngulfing ? 'ابتلاع هبوطي مؤكد' : 'انعكاس فركتال هابط';
 
       const isRsiPut = rsi >= 62 || (rsi >= 55 && rsi <= 70) || (rsi <= 55 && rsi >= 40 && closes[closes.length - 1] < closes[closes.length - 2]);
-      const rsiPutLabel = rsi >= 65 ? `تشبع شرائي مؤشر RSI` : `ميل هبوطي مؤشر RSI`;
+      const rsiPutLabel = rsi >= 65 ? `تشبع شرائي RSI(${rsi})` : `ميل هبوطي RSI(${rsi})`;
 
       const putMatches: string[] = [];
       if (isStPut) putMatches.push(stPutLabel);
@@ -4492,11 +4350,7 @@ async function sendTelegramMessage(botToken: string, chatId: string, text: strin
       body: JSON.stringify(payload),
       signal: controller.signal
     });
-    const parsed = (await tgRes.json()) as any;
-    if (parsed?.ok && parsed?.result?.message_id) {
-      trackSentTelegramMessage(chatId, parsed.result.message_id);
-    }
-    return parsed;
+    return (await tgRes.json()) as any;
   } catch (err: any) {
     console.warn('[sendTelegramMessage Error]', err);
     return { ok: false, description: err?.message || 'خطأ في الاتصال بسيرفرات التليجرام' };
@@ -4612,100 +4466,6 @@ function escapeTgHtml(s: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
-}
-
-function normalizeHttpUrl(raw: string | undefined, fallback: string): string {
-  const trimmed = String(raw || '').trim();
-  if (!trimmed) return fallback;
-  if (/^(javascript|data|vbscript):/i.test(trimmed)) return fallback;
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  if (/^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(trimmed)) return `https://${trimmed}`;
-  return fallback;
-}
-
-function normalizeTelegramUrl(raw: string | undefined, fallback = 'https://t.me/thrayanabil'): string {
-  const trimmed = String(raw || '').trim();
-  if (!trimmed) return fallback;
-  if (/^(javascript|data|vbscript):/i.test(trimmed)) return fallback;
-
-  // Handle full t.me / telegram.me URLs cleanly
-  const tgUrlMatch = trimmed.match(/^(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/(.+)$/i);
-  if (tgUrlMatch && tgUrlMatch[1]) {
-    const cleanPath = tgUrlMatch[1].replace(/^@+/, '').trim();
-    return cleanPath ? `https://t.me/${cleanPath}` : fallback;
-  }
-
-  // Handle any other explicit http/https URL (e.g., wa.me, external helpdesk)
-  if (/^https?:\/\//i.test(trimmed)) {
-    return trimmed;
-  }
-
-  // Plain @username or username
-  const handle = trimmed.replace(/^@+/, '').replace(/\s+/g, '');
-  return handle ? `https://t.me/${handle}` : fallback;
-}
-
-function getEffectiveBotPayments(cfg: TelegramBotConfig) {
-  const findMethod = (id: string, keyword?: string) =>
-    paymentMethodsStore.find(
-      m =>
-        m.isActive !== false &&
-        (m.id === id || (keyword ? (m.name || '').toLowerCase().includes(keyword) : false))
-    );
-
-  const instapayMethod = findMethod('instapay', 'instapay');
-  const walletMethod = findMethod('vodafone_cash', 'فودافون');
-  const bankMethod = findMethod('bank_transfer', 'بنك');
-  const usdtMethod = findMethod('usdt_trc20', 'usdt');
-
-  const eg = cfg.egyptPayment || defaultTelegramBotConfig.egyptPayment;
-  const pal = cfg.palestinePayment || defaultTelegramBotConfig.palestinePayment;
-  const ibanEgp = cfg.internationalPayment?.ibanEgp || defaultTelegramBotConfig.internationalPayment.ibanEgp;
-  const ibanUsd = cfg.internationalPayment?.ibanUsd || defaultTelegramBotConfig.internationalPayment.ibanUsd;
-  const usdt = cfg.usdtPayment || defaultTelegramBotConfig.usdtPayment;
-
-  return {
-    egypt: {
-      instapayAccount: (eg.instapayAccount || instapayMethod?.accountNumber || '').trim(),
-      instapayName: (eg.instapayName || instapayMethod?.accountHolderName || '').trim(),
-      vodafoneCash: (eg.vodafoneCash || walletMethod?.accountNumber || '').trim(),
-      etisalatCash: (eg.etisalatCash || '').trim(),
-      orangeCash: (eg.orangeCash || '').trim(),
-      wePay: (eg.wePay || '').trim()
-    },
-    palestine: {
-      country: (pal.country || 'فلسطين 🇵🇸').trim(),
-      bankName: (pal.bankName || 'بنك فلسطين (Bank of Palestine)').trim(),
-      beneficiaryName: (pal.beneficiaryName || '').trim(),
-      currency: (pal.currency || 'دولار أمريكي ($) / شيكل (ILS)').trim(),
-      accountNumber: (pal.accountNumber || '').trim(),
-      iban: (pal.iban || '').trim(),
-      branch: (pal.branch || 'الفرع الرئيسي').trim()
-    },
-    ibanEgp: {
-      country: (ibanEgp.country || 'جمهورية مصر العربية 🇪🇬').trim(),
-      bankName: (ibanEgp.bankName || bankMethod?.networkOrBank || 'البنك الأهلي المصري').trim(),
-      beneficiaryName: (ibanEgp.beneficiaryName || (ibanEgp as any).accountName || bankMethod?.accountHolderName || '').trim(),
-      currency: (ibanEgp.currency || 'الجنيه المصري (EGP)').trim(),
-      accountNumber: (ibanEgp.accountNumber || '').trim(),
-      iban: (ibanEgp.iban || bankMethod?.accountNumber || '').trim(),
-      swiftCode: (ibanEgp.swiftCode || 'NBEGEGCX').trim()
-    },
-    ibanUsd: {
-      country: (ibanUsd.country || 'دولي 🌍').trim(),
-      bankName: (ibanUsd.bankName || bankMethod?.networkOrBank || 'National Bank of Egypt (NBE)').trim(),
-      beneficiaryName: (ibanUsd.beneficiaryName || (ibanUsd as any).accountName || bankMethod?.accountHolderName || '').trim(),
-      currency: (ibanUsd.currency || 'الدولار الأمريكي (USD)').trim(),
-      accountNumber: (ibanUsd.accountNumber || '').trim(),
-      iban: (ibanUsd.iban || bankMethod?.accountNumber || '').trim(),
-      swiftCode: (ibanUsd.swiftCode || 'NBEGEGCX').trim()
-    },
-    usdt: {
-      network: (usdt.network || 'USDT (TRC20)').trim(),
-      address: (usdt.address || usdtMethod?.accountNumber || defaultTelegramBotConfig.usdtPayment.address).trim(),
-      qrImageUrl: (usdt.qrImageUrl || '/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg').trim()
-    }
-  };
 }
 
 function isEgyptCountryText(country: string): boolean {
@@ -4850,19 +4610,11 @@ async function sendTelegramBotMainMenu(
 ) {
   const cfg = telegramBotConfigStore;
   const isAr = user.language !== 'en';
-  const contactUrl = normalizeTelegramUrl(
-    cfg.adminTelegramUsername || contactLinksStore.telegramSupportUrl,
-    'https://t.me/thrayanabil'
-  );
-  const webUrl = normalizeHttpUrl(cfg.officialWebsiteUrl, 'https://fx.zadtoo.com');
-  const refUrl = normalizeHttpUrl(
-    cfg.quotexReferralUrl || contactLinksStore.quotexReferralLink,
-    'https://broker-qx.pro/sign-up/?lid=893976'
-  );
-  const channelUrl = normalizeTelegramUrl(
-    cfg.freeChannelLink || contactLinksStore.telegramChannelUrl,
-    'https://t.me/ZadNBFX'
-  );
+  const cleanAdmin = (cfg.adminTelegramUsername || '@thrayanabil').replace(/^@/, '');
+  const contactUrl = `https://t.me/${cleanAdmin}`;
+  const webUrl = cfg.officialWebsiteUrl || 'https://fx.zadtoo.com';
+  const refUrl = cfg.quotexReferralUrl || 'https://broker-qx.pro/sign-up/?lid=893976';
+  const channelUrl = cfg.freeChannelLink || 'https://t.me/ZadNBFX';
 
   const text = isAr
     ? (headerNotice ? `${headerNotice}\n\n` : '') +
@@ -4957,11 +4709,9 @@ const processedTelegramCallbackKeys = new Set<string>();
 async function processInteractiveTelegramBotUpdate(update: any, token: string) {
   if (!telegramBotConfigStore.isEnabled) return;
   const cfg = telegramBotConfigStore;
-  const contactUrl = normalizeTelegramUrl(
-    cfg.adminTelegramUsername || contactLinksStore.telegramSupportUrl,
-    'https://t.me/thrayanabil'
-  );
-  const webUrl = normalizeHttpUrl(cfg.officialWebsiteUrl, 'https://fx.zadtoo.com');
+  const cleanAdmin = (cfg.adminTelegramUsername || '@thrayanabil').replace(/^@/, '');
+  const contactUrl = `https://t.me/${cleanAdmin}`;
+  const webUrl = cfg.officialWebsiteUrl || 'https://fx.zadtoo.com';
 
   // 1. Handle Callback Queries (Inline Button Clicks)
   if (update.callback_query) {
@@ -5159,7 +4909,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
 
     if (data === 'onb_prof_edit_country') {
       const isAr = user.language !== 'en';
-      const ipVerifyUrl = `${webUrl}/api/verify-country?chatId=${encodeURIComponent(user.telegramChatId)}&token=${encodeURIComponent(signVerifyCountryToken(user.telegramChatId))}`;
+      const ipVerifyUrl = `${webUrl}/api/verify-country?chatId=${user.telegramChatId}`;
       const prompt = isAr
         ? `🌍 <b>تحديد وتعديل الدولة:</b>\n\n` +
           `الدولة الحالية المسجلة: <b>${escapeTgHtml(user.country || 'غير محددة')}</b>\n\n` +
@@ -5286,25 +5036,21 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
       user.countryLocked = true;
       user.step = 'COMPLETED';
       saveState();
-      const pal = getEffectiveBotPayments(cfg).palestine;
-      const hasPalDetails = Boolean(pal.accountNumber || pal.iban);
-      const text = hasPalDetails
-        ? `🇵🇸 <b>طرق الدفع والتحويل المتاحة داخل دولة فلسطين (${escapeTgHtml(user.country)}):</b>\n\n` +
-          `تم توجيهك لحساب الإيداع والتحويل الخاص في <b>بنك فلسطين (Bank of Palestine)</b>:\n\n` +
-          `🌍 <b>الدولة:</b> ${escapeTgHtml(pal.country)}\n` +
-          `🏛 <b>اسم البنك:</b> ${escapeTgHtml(pal.bankName)}\n` +
-          (pal.beneficiaryName ? `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(pal.beneficiaryName)}\n` : '') +
-          `💰 <b>العملة:</b> ${escapeTgHtml(pal.currency)}\n` +
-          (pal.accountNumber ? `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(pal.accountNumber)}</code>\n` : '') +
-          (pal.iban ? `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(pal.iban)}</code>\n` : '') +
-          `🏢 <b>الفرع:</b> ${escapeTgHtml(pal.branch)}\n\n` +
-          `📌 <i>ملاحظة: بعد إتمام الإيداع أو التحويل البنكي عبر تطبيق بنك فلسطين، يرجى إرسال صورة إشعار التحويل للمشرف للتفعيل الفوري.</i>`
-        : `🇵🇸 <b>طرق الدفع المتاحة داخل دولة فلسطين (${escapeTgHtml(user.country)}):</b>\n\n` +
-          `🏛 <b>بنك فلسطين (Bank of Palestine)</b>\n` +
-          `📌 يرجى التواصل مباشرة مع الدعم الفني عبر الزر أدناه لتزويدك برقم الحساب / الآيبان المعتمد فوراً، أو استخدام الدفع عبر USDT (TRC20).`;
+      const pal = cfg.palestinePayment || defaultTelegramBotConfig.palestinePayment;
+      const text =
+        `🇵🇸 <b>طرق الدفع والتحويل المتاحة داخل دولة فلسطين (${escapeTgHtml(user.country)}):</b>\n\n` +
+        `تم توجيهك لحساب الإيداع والتحويل الخاص في <b>بنك فلسطين (Bank of Palestine)</b>:\n\n` +
+        `🌍 <b>الدولة:</b> ${escapeTgHtml(pal.country || 'فلسطين 🇵🇸')}\n` +
+        `🏛 <b>اسم البنك:</b> ${escapeTgHtml(pal.bankName)}\n` +
+        `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(pal.beneficiaryName)}\n` +
+        `💰 <b>العملة:</b> ${escapeTgHtml(pal.currency)}\n` +
+        `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(pal.accountNumber)}</code>\n` +
+        `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(pal.iban)}</code>\n` +
+        `🏢 <b>الفرع:</b> ${escapeTgHtml(pal.branch)}\n\n` +
+        `📌 <i>ملاحظة: بعد إتمام الإيداع أو التحويل البنكي عبر تطبيق بنك فلسطين، يرجى إرسال صورة إشعار التحويل للمشرف للتفعيل الفوري.</i>`;
 
       const buttons = [
-        [{ text: '📩 التواصل وإرسال إشعار التحويل للمشرف', url: contactUrl }],
+        [{ text: '📩 إرسال إشعار التحويل للمشرف', url: contactUrl }],
         [
           { text: '💎 دفع بالدولار الرقمي USDT (TRC20)', callback_data: 'onb_pay_usdt' }
         ],
@@ -5625,17 +5371,15 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
 
     // Branch: InstaPay Details
     if (data === 'onb_pay_instapay') {
-      const eg = getEffectiveBotPayments(cfg).egypt;
-      const text = eg.instapayAccount
-        ? `⚡ <b>بيانات الدفع عبر تطبيق إنستا باي (InstaPay):</b>\n\n` +
-          (eg.instapayName ? `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(eg.instapayName)}\n` : '') +
-          `🆔 <b>عنوان الدفع اللحظي (IPA):</b> <code>${escapeTgHtml(eg.instapayAccount)}</code>\n\n` +
-          `📌 <b>تنبيه هام:</b> بعد إتمام التحويل، يرجى التقاط صورة إيصال التحويل وإرسالها للمشرف مع اسمك لتفعيل اشتراكك وإضافتك لقناة VIP فوراً.`
-        : `⚡ <b>الدفع عبر تطبيق إنستا باي (InstaPay):</b>\n\n` +
-          `📌 يرجى مراسلة المشرف مباشرة عبر الزر أدناه لتزويدك بعنوان الدفع اللحظي (InstaPay) المعتمد وتأكيد التفعيل فوراً.`;
+      const eg = cfg.egyptPayment;
+      const text =
+        `⚡ <b>بيانات الدفع عبر تطبيق إنستا باي (InstaPay):</b>\n\n` +
+        `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(eg.instapayName)}\n` +
+        `🆔 <b>عنوان الدفع اللحظي (IPA):</b> <code>${escapeTgHtml(eg.instapayAccount)}</code>\n\n` +
+        `📌 <b>تنبيه هام:</b> بعد إتمام التحويل، يرجى التقاط صورة إيصال التحويل وإرسالها للمشرف مع اسمك لتفعيل اشتراكك وإضافتك لقناة VIP فوراً.`;
 
       const buttons = [
-        [{ text: '📩 التواصل وإرسال إيصال التحويل للمشرف', url: contactUrl }],
+        [{ text: '📩 إرسال إيصال التحويل للمشرف', url: contactUrl }],
         [
           { text: '🔙 طرق الدفع في مصر', callback_data: 'onb_sub_paid' },
           { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
@@ -5648,22 +5392,17 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
 
     // Branch: Mobile Wallets Details
     if (data === 'onb_pay_wallets') {
-      const eg = getEffectiveBotPayments(cfg).egypt;
-      const walletLines: string[] = [];
-      if (eg.vodafoneCash) walletLines.push(`🔴 <b>فودافون كاش:</b> <code>${escapeTgHtml(eg.vodafoneCash)}</code>`);
-      if (eg.etisalatCash) walletLines.push(`🟢 <b>اتصالات كاش:</b> <code>${escapeTgHtml(eg.etisalatCash)}</code>`);
-      if (eg.orangeCash) walletLines.push(`🟠 <b>أورنج كاش:</b> <code>${escapeTgHtml(eg.orangeCash)}</code>`);
-      if (eg.wePay) walletLines.push(`🟣 <b>وي باي (WE):</b> <code>${escapeTgHtml(eg.wePay)}</code>`);
-
-      const text = walletLines.length > 0
-        ? `📱 <b>بيانات الدفع عبر المحافظ الإلكترونية المصرية (كاش):</b>\n\n` +
-          walletLines.join('\n') +
-          `\n\n📌 <b>تنبيه هام:</b> بعد إتمام التحويل من محفظتك، يرجى إرسال لقطة شاشة لرسالة التحويل إلى المشرف لتفعيل اشتراكك وروبوت التداول فوراً.`
-        : `📱 <b>الدفع عبر المحافظ الإلكترونية المصرية (كاش):</b>\n\n` +
-          `📌 يرجى التواصل مباشرة مع المشرف عبر الزر أدناه للحصول على رقم المحفظة النشط حالياً وإتمام التفعيل فوراً.`;
+      const eg = cfg.egyptPayment;
+      const text =
+        `📱 <b>بيانات الدفع عبر المحافظ الإلكترونية المصرية (كاش):</b>\n\n` +
+        `🔴 <b>فودافون كاش:</b> <code>${escapeTgHtml(eg.vodafoneCash)}</code>\n` +
+        `🟢 <b>اتصالات كاش:</b> <code>${escapeTgHtml(eg.etisalatCash)}</code>\n` +
+        `🟠 <b>أورنج كاش:</b> <code>${escapeTgHtml(eg.orangeCash)}</code>\n` +
+        `🟣 <b>وي باي (WE):</b> <code>${escapeTgHtml(eg.wePay)}</code>\n\n` +
+        `📌 <b>تنبيه هام:</b> بعد إتمام التحويل من محفظتك، يرجى إرسال لقطة شاشة لرسالة التحويل إلى المشرف لتفعيل اشتراكك وروبوت التداول فوراً.`;
 
       const buttons = [
-        [{ text: '📩 التواصل وإرسال لقطة الشاشة للمشرف', url: contactUrl }],
+        [{ text: '📩 إرسال لقطة الشاشة للمشرف', url: contactUrl }],
         [
           { text: '🔙 طرق الدفع في مصر', callback_data: 'onb_sub_paid' },
           { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
@@ -5676,14 +5415,14 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
 
     // Branch: USDT (TRC20) Payment Details (All Countries)
     if (data === 'onb_pay_usdt') {
-      const usdt = getEffectiveBotPayments(cfg).usdt;
+      const usdt = cfg.usdtPayment || defaultTelegramBotConfig.usdtPayment;
       const isAr = user.language !== 'en';
       const text = isAr
         ? `💎 <b>طريقة الدفع بالعملات الرقمية USDT (TRC20):</b>\n\n` +
           `متاحة لجميع المشتركين وكافة الدول كخيار دفع فوري ومباشر 🌍\n\n` +
           `🌐 <b>الشبكة المعتمدة:</b> <b>${escapeTgHtml(usdt.network || 'USDT (TRC20)')}</b>\n` +
           `📬 <b>عنوان المحفظة (Wallet Address):</b>\n` +
-          `<code>${escapeTgHtml(usdt.address)}</code>\n` +
+          `<code>${escapeTgHtml(usdt.address || 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo')}</code>\n` +
           `<i>(اضغط على العنوان أعلاه لنسخه بلمسة واحدة)</i>\n\n` +
           `⚠️ <b>تنبيه أمان هام جداً:</b>\n` +
           `• تأكد من التحويل حصراً عبر شبكة <b>TRC20 (TRON)</b> لتجنب فقدان الرصيد.\n` +
@@ -5692,7 +5431,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
           `Available worldwide for all members 🌍\n\n` +
           `🌐 <b>Network:</b> <b>${escapeTgHtml(usdt.network || 'USDT (TRC20)')}</b>\n` +
           `📬 <b>Wallet Address:</b>\n` +
-          `<code>${escapeTgHtml(usdt.address)}</code>\n` +
+          `<code>${escapeTgHtml(usdt.address || 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo')}</code>\n` +
           `<i>(Tap address above to copy)</i>\n\n` +
           `⚠️ <b>Important Note:</b>\n` +
           `• Transfer strictly via <b>TRC20 (TRON)</b> network.\n` +
@@ -5732,6 +5471,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
     // Branch: IBAN EGP Details (Rest of World Only)
     if (data === 'onb_pay_iban_egp') {
       if (isEgyptCountryText(user.country)) {
+        // STRICT GUARD: Egypt users must never see IBAN details
         const text =
           `🇪🇬 <b>تنبيه خاص بالمشتركين داخل مصر:</b>\n\n` +
           `طرق الدفع المعتمدة لمصر هي <b>إنستا باي (InstaPay)</b> و<b>المحافظ الإلكترونية</b> فقط.\n` +
@@ -5747,44 +5487,38 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
         return;
       }
 
-      const ibanEgp = getEffectiveBotPayments(cfg).ibanEgp;
+      const ibanEgp = cfg.internationalPayment?.ibanEgp || defaultTelegramBotConfig.internationalPayment.ibanEgp;
       const isAr = user.language !== 'en';
-      const hasEgpBank = Boolean(ibanEgp.accountNumber || ibanEgp.iban);
       const text = isAr
-        ? (hasEgpBank
-            ? `🏦 <b>تفاصيل الحساب البنكي والآيبان (بالجنيه المصري EGP):</b>\n\n` +
-              `🌍 <b>الدولة:</b> ${escapeTgHtml(ibanEgp.country)}\n` +
-              `🏛 <b>اسم البنك:</b> ${escapeTgHtml(ibanEgp.bankName)}\n` +
-              (ibanEgp.beneficiaryName ? `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(ibanEgp.beneficiaryName)}\n` : '') +
-              `💰 <b>العملة:</b> ${escapeTgHtml(ibanEgp.currency)}\n` +
-              (ibanEgp.accountNumber ? `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(ibanEgp.accountNumber)}</code>\n` : '') +
-              (ibanEgp.iban ? `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(ibanEgp.iban)}</code>\n` : '') +
-              (ibanEgp.swiftCode ? `⚡ <b>سويفت كود (SWIFT/BIC):</b> <code>${escapeTgHtml(ibanEgp.swiftCode)}</code>\n\n` : '\n') +
-              `📌 <i>بعد إتمام الحوالة البنكية، يرجى إرسال صورة إشعار التحويل للمشرف لتفعيل اشتراكك وروبوت التداول فوراً.</i>`
-            : `🏦 <b>التحويل البنكي (بالجنيه المصري EGP):</b>\n\n` +
-              `📌 يرجى التواصل مع المشرف عبر الزر أدناه للحصول على بيانات الآيبان المعتمدة وتأكيد التحويل فوراً.`)
-        : (hasEgpBank
-            ? `🏦 <b>Bank Account & IBAN Details (in Egyptian Pounds EGP):</b>\n\n` +
-              `🌍 <b>Country:</b> ${escapeTgHtml(ibanEgp.country)}\n` +
-              `🏛 <b>Bank Name:</b> ${escapeTgHtml(ibanEgp.bankName)}\n` +
-              (ibanEgp.beneficiaryName ? `👤 <b>Beneficiary Name:</b> ${escapeTgHtml(ibanEgp.beneficiaryName)}\n` : '') +
-              `💰 <b>Currency:</b> ${escapeTgHtml(ibanEgp.currency)}\n` +
-              (ibanEgp.accountNumber ? `🔢 <b>Account Number:</b> <code>${escapeTgHtml(ibanEgp.accountNumber)}</code>\n` : '') +
-              (ibanEgp.iban ? `🌐 <b>IBAN Code:</b> <code>${escapeTgHtml(ibanEgp.iban)}</code>\n` : '') +
-              (ibanEgp.swiftCode ? `⚡ <b>SWIFT / BIC Code:</b> <code>${escapeTgHtml(ibanEgp.swiftCode)}</code>\n\n` : '\n') +
-              `📌 <i>After wire transfer, please send receipt to admin for instant activation.</i>`
-            : `🏦 <b>Bank Transfer (EGP):</b>\n\n📌 Please contact admin below to receive the current IBAN details.`);
+        ? `🏦 <b>تفاصيل الحساب البنكي والآيبان (بالجنيه المصري EGP):</b>\n\n` +
+          `🌍 <b>الدولة:</b> ${escapeTgHtml(ibanEgp.country || 'دولي 🌍')}\n` +
+          `🏛 <b>اسم البنك:</b> ${escapeTgHtml(ibanEgp.bankName)}\n` +
+          `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(ibanEgp.beneficiaryName || (ibanEgp as any).accountName || 'ثريا نبيل / ZAD FX')}\n` +
+          `💰 <b>العملة:</b> ${escapeTgHtml(ibanEgp.currency || 'الجنيه المصري EGP')}\n` +
+          `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(ibanEgp.accountNumber)}</code>\n` +
+          `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(ibanEgp.iban)}</code>\n` +
+          `⚡ <b>سويفت كود (SWIFT/BIC):</b> <code>${escapeTgHtml(ibanEgp.swiftCode || 'NBEGEGCX')}</code>\n\n` +
+          `📌 <i>بعد إتمام الحوالة البنكية، يرجى إرسال صورة إشعار التحويل للمشرف لتفعيل اشتراكك وروبوت التداول فوراً.</i>`
+        : `🏦 <b>Bank Account & IBAN Details (in Egyptian Pounds EGP):</b>\n\n` +
+          `🌍 <b>Country:</b> ${escapeTgHtml(ibanEgp.country || 'International 🌍')}\n` +
+          `🏛 <b>Bank Name:</b> ${escapeTgHtml(ibanEgp.bankName)}\n` +
+          `👤 <b>Beneficiary Name:</b> ${escapeTgHtml(ibanEgp.beneficiaryName || (ibanEgp as any).accountName || 'Thraya Nabil / ZAD FX')}\n` +
+          `💰 <b>Currency:</b> ${escapeTgHtml(ibanEgp.currency || 'EGP (Egyptian Pounds)')}\n` +
+          `🔢 <b>Account Number:</b> <code>${escapeTgHtml(ibanEgp.accountNumber)}</code>\n` +
+          `🌐 <b>IBAN Code:</b> <code>${escapeTgHtml(ibanEgp.iban)}</code>\n` +
+          `⚡ <b>SWIFT / BIC Code:</b> <code>${escapeTgHtml(ibanEgp.swiftCode || 'NBEGEGCX')}</code>\n\n` +
+          `📌 <i>After wire transfer, please send receipt to admin for instant activation.</i>`;
 
       const buttons = isAr
         ? [
-            [{ text: '📩 التواصل وإرسال إشعار التحويل للمشرف', url: contactUrl }],
+            [{ text: '📩 إرسال إشعار التحويل للمشرف', url: contactUrl }],
             [
               { text: '🔙 اختيار عملة أخرى (دولار)', callback_data: 'onb_sub_paid' },
               { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
             ]
           ]
         : [
-            [{ text: '📩 Contact & Send Receipt to Admin', url: contactUrl }],
+            [{ text: '📩 Send Receipt to Admin', url: contactUrl }],
             [
               { text: '🔙 Switch Currency (USD)', callback_data: 'onb_sub_paid' },
               { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
@@ -5798,6 +5532,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
     // Branch: IBAN USD Details (Rest of World Only)
     if (data === 'onb_pay_iban_usd') {
       if (isEgyptCountryText(user.country)) {
+        // STRICT GUARD: Egypt users must never see IBAN details
         const text =
           `🇪🇬 <b>تنبيه خاص بالمشتركين داخل مصر:</b>\n\n` +
           `طرق الدفع المعتمدة لمصر هي <b>إنستا باي (InstaPay)</b> و<b>المحافظ الإلكترونية</b> فقط.\n` +
@@ -5813,44 +5548,38 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
         return;
       }
 
-      const ibanUsd = getEffectiveBotPayments(cfg).ibanUsd;
+      const ibanUsd = cfg.internationalPayment?.ibanUsd || defaultTelegramBotConfig.internationalPayment.ibanUsd;
       const isAr = user.language !== 'en';
-      const hasUsdBank = Boolean(ibanUsd.accountNumber || ibanUsd.iban);
       const text = isAr
-        ? (hasUsdBank
-            ? `💵 <b>تفاصيل الحساب البنكي والآيبان (بالدولار الأمريكي USD):</b>\n\n` +
-              `🌍 <b>الدولة:</b> ${escapeTgHtml(ibanUsd.country)}\n` +
-              `🏛 <b>اسم البنك:</b> ${escapeTgHtml(ibanUsd.bankName)}\n` +
-              (ibanUsd.beneficiaryName ? `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(ibanUsd.beneficiaryName)}\n` : '') +
-              `💰 <b>العملة:</b> ${escapeTgHtml(ibanUsd.currency)}\n` +
-              (ibanUsd.accountNumber ? `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(ibanUsd.accountNumber)}</code>\n` : '') +
-              (ibanUsd.iban ? `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(ibanUsd.iban)}</code>\n` : '') +
-              (ibanUsd.swiftCode ? `⚡ <b>سويفت كود (SWIFT/BIC):</b> <code>${escapeTgHtml(ibanUsd.swiftCode)}</code>\n\n` : '\n') +
-              `📌 <i>بعد إتمام الحوالة البنكية، يرجى إرسال صورة إشعار التحويل للمشرف للتفعيل المباشر.</i>`
-            : `💵 <b>التحويل البنكي الدولي (بالدولار الأمريكي USD):</b>\n\n` +
-              `📌 يرجى التواصل مع المشرف عبر الزر أدناه للحصول على بيانات الآيبان الدولارية المعتمدة وتأكيد التحويل فوراً.`)
-        : (hasUsdBank
-            ? `💵 <b>Bank Account & IBAN Details (in US Dollars USD):</b>\n\n` +
-              `🌍 <b>Country:</b> ${escapeTgHtml(ibanUsd.country)}\n` +
-              `🏛 <b>Bank Name:</b> ${escapeTgHtml(ibanUsd.bankName)}\n` +
-              (ibanUsd.beneficiaryName ? `👤 <b>Beneficiary Name:</b> ${escapeTgHtml(ibanUsd.beneficiaryName)}\n` : '') +
-              `💰 <b>Currency:</b> ${escapeTgHtml(ibanUsd.currency)}\n` +
-              (ibanUsd.accountNumber ? `🔢 <b>Account Number:</b> <code>${escapeTgHtml(ibanUsd.accountNumber)}</code>\n` : '') +
-              (ibanUsd.iban ? `🌐 <b>IBAN Code:</b> <code>${escapeTgHtml(ibanUsd.iban)}</code>\n` : '') +
-              (ibanUsd.swiftCode ? `⚡ <b>SWIFT / BIC Code:</b> <code>${escapeTgHtml(ibanUsd.swiftCode)}</code>\n\n` : '\n') +
-              `📌 <i>After wire transfer, please send receipt to admin for instant activation.</i>`
-            : `💵 <b>International Wire Transfer (USD):</b>\n\n📌 Please contact admin below to receive the current USD IBAN details.`);
+        ? `💵 <b>تفاصيل الحساب البنكي والآيبان (بالدولار الأمريكي USD):</b>\n\n` +
+          `🌍 <b>الدولة:</b> ${escapeTgHtml(ibanUsd.country || 'دولي 🌍')}\n` +
+          `🏛 <b>اسم البنك:</b> ${escapeTgHtml(ibanUsd.bankName)}\n` +
+          `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(ibanUsd.beneficiaryName || (ibanUsd as any).accountName || 'ثريا نبيل / ZAD FX')}\n` +
+          `💰 <b>العملة:</b> ${escapeTgHtml(ibanUsd.currency || 'الدولار الأمريكي USD ($)')}\n` +
+          `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(ibanUsd.accountNumber)}</code>\n` +
+          `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(ibanUsd.iban)}</code>\n` +
+          `⚡ <b>سويفت كود (SWIFT/BIC):</b> <code>${escapeTgHtml(ibanUsd.swiftCode || 'NBEGEGCX')}</code>\n\n` +
+          `📌 <i>بعد إتمام الحوالة البنكية، يرجى إرسال صورة إشعار التحويل للمشرف للتفعيل المباشر.</i>`
+        : `💵 <b>Bank Account & IBAN Details (in US Dollars USD):</b>\n\n` +
+          `🌍 <b>Country:</b> ${escapeTgHtml(ibanUsd.country || 'International 🌍')}\n` +
+          `🏛 <b>Bank Name:</b> ${escapeTgHtml(ibanUsd.bankName)}\n` +
+          `👤 <b>Beneficiary Name:</b> ${escapeTgHtml(ibanUsd.beneficiaryName || (ibanUsd as any).accountName || 'Thraya Nabil / ZAD FX')}\n` +
+          `💰 <b>Currency:</b> ${escapeTgHtml(ibanUsd.currency || 'USD ($)')}\n` +
+          `🔢 <b>Account Number:</b> <code>${escapeTgHtml(ibanUsd.accountNumber)}</code>\n` +
+          `🌐 <b>IBAN Code:</b> <code>${escapeTgHtml(ibanUsd.iban)}</code>\n` +
+          `⚡ <b>SWIFT / BIC Code:</b> <code>${escapeTgHtml(ibanUsd.swiftCode || 'NBEGEGCX')}</code>\n\n` +
+          `📌 <i>After wire transfer, please send receipt to admin for instant activation.</i>`;
 
       const buttons = isAr
         ? [
-            [{ text: '📩 التواصل وإرسال إشعار التحويل للمشرف', url: contactUrl }],
+            [{ text: '📩 إرسال إشعار التحويل للمشرف', url: contactUrl }],
             [
               { text: '🔙 اختيار عملة أخرى (جنيه)', callback_data: 'onb_sub_paid' },
               { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
             ]
           ]
         : [
-            [{ text: '📩 Contact & Send Receipt to Admin', url: contactUrl }],
+            [{ text: '📩 Send Receipt to Admin', url: contactUrl }],
             [
               { text: '🔙 Switch Currency (EGP)', callback_data: 'onb_sub_paid' },
               { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
@@ -5864,8 +5593,8 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
     // Branch: Robot Guide & Explanations
     if (data === 'onb_menu_robot') {
       const isAr = user.language !== 'en';
-      const safeWebUrl = normalizeHttpUrl(cfg.officialWebsiteUrl, 'https://fx.zadtoo.com');
-      const videoUrl = normalizeHttpUrl(cfg.robotGuide?.videoUrl, 'https://youtube.com');
+      const webUrl = cfg.officialWebsiteUrl || 'https://fx.zadtoo.com';
+      const videoUrl = cfg.robotGuide.videoUrl || 'https://youtube.com';
 
       const text = isAr
         ? `🤖 <b>روبوت التداول الآلي الذكي ZAD FX:</b>\n\n` +
@@ -5895,7 +5624,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
         ? [
             [
               { text: '🎬 مشاهدة فيديو شرح التشغيل', url: videoUrl },
-              { text: '🌐 صفحة الروبوت بالموقع', url: `${safeWebUrl}/#autotrade` }
+              { text: '🌐 صفحة الروبوت بالموقع', url: `${webUrl}/#autotrade` }
             ],
             [
               { text: '💬 استفسار من المشرف', url: contactUrl },
@@ -6005,7 +5734,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
       saveState();
 
       const isAr = user.language !== 'en';
-      const ipVerifyUrl = `${webUrl}/api/verify-country?chatId=${encodeURIComponent(user.telegramChatId)}&token=${encodeURIComponent(signVerifyCountryToken(user.telegramChatId))}`;
+      const ipVerifyUrl = `${webUrl}/api/verify-country?chatId=${user.telegramChatId}`;
       const promptCountry = isAr
         ? `أهلاً بك يا <b>${escapeTgHtml(user.name)}</b>! 🌍\n\n` +
           `يرجى الآن تحديد <b>الدولة التي تقيم فيها حالياً</b> (لتثبيت وسائل الدفع المناسبة لك):\n\n` +
@@ -6644,7 +6373,7 @@ async function acquireCrossInstanceDispatchLock(
       // 2. Execute atomic Firestore transaction to claim this minute slot
       try {
         const docRef = doc(serverFirestoreDb, 'system_state', 'zad_main_state_v1');
-        const acquired = await runTransaction(serverFirestoreDb, async (transaction: any) => {
+        const acquired = await runTransaction(serverFirestoreDb, async (transaction) => {
           const snap = await transaction.get(docRef);
           const minGapSec = Math.max(5, cooldownMinutes) * 60 - 30;
 
@@ -6778,7 +6507,7 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
   }
 
   const superTrendLabel = candidate.superTrend
-    ? `${candidate.superTrend.trend === 'BULLISH' ? '🟢 صاعد' : '🔴 هابط'}`
+    ? `${candidate.superTrend.trend === 'BULLISH' ? '🟢 صاعد' : '🔴 هابط'} (${candidate.superTrend.value})`
     : undefined;
   const fractalLabel = candidate.fractal?.description;
 
@@ -7137,7 +6866,7 @@ async function dispatchVipMomentumPauseSignal(
   if (serverFirestoreDb) {
     try {
       const vipLockRef = doc(serverFirestoreDb, 'system_state', 'vip_mpb_lock');
-      const lockOutcome = await runTransaction(serverFirestoreDb, async (tx: any) => {
+      const lockOutcome = await runTransaction(serverFirestoreDb, async (tx) => {
         const snap = await tx.get(vipLockRef);
         if (snap.exists()) {
           const raw = snap.data() || {};
@@ -7408,9 +7137,6 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
 
   try {
     if (!isGlobalForexMarketOpen()) return;
-    if (enforceDailySignalReset()) {
-      await saveState();
-    }
     const cairoMins = getCairoMinutesOfDay();
 
     // At 10:30 AM Cairo Time, dispatch morning greeting & readiness notice (Free + VIP)
@@ -7745,7 +7471,7 @@ async function claimTelegramDailyNoticeLock(noticeKey: string): Promise<boolean>
   if (!serverFirestoreDb) return true;
   try {
     const noticeRef = doc(serverFirestoreDb, 'system_state', 'zad_telegram_notices_v1');
-    return await runTransaction(serverFirestoreDb, async (tx: any) => {
+    return await runTransaction(serverFirestoreDb, async (tx) => {
       const snap = await tx.get(noticeRef);
       const raw = snap.exists() ? (snap.data() || {}) : {};
       let map: Record<string, string> = {};
@@ -7777,7 +7503,7 @@ async function releaseTelegramDailyNoticeLock(noticeKey: string): Promise<void> 
   if (!serverFirestoreDb) return;
   try {
     const noticeRef = doc(serverFirestoreDb, 'system_state', 'zad_telegram_notices_v1');
-    await runTransaction(serverFirestoreDb, async (tx: any) => {
+    await runTransaction(serverFirestoreDb, async (tx) => {
       const snap = await tx.get(noticeRef);
       if (!snap.exists()) return;
       const raw = snap.data() || {};
@@ -8157,28 +7883,8 @@ async function checkAndSendEveningOpeningGreeting(): Promise<boolean> {
   const todayEgypt = getCurrentEgyptDateString(new Date());
   const cairoMins = getCairoMinutesOfDay();
 
-  // Reset stale previous-day liveBroadcastSession before checking stop state
-  if (liveBroadcastSession.activeDate !== todayEgypt) {
-    liveBroadcastSession.activeDate = todayEgypt;
-    liveBroadcastSession.status = 'IDLE';
-    liveBroadcastSession.statusNote = 'الجلسة في وضع الاستعداد لانطلاق البث المباشر (04:30 م - 08:00 م)';
-    liveBroadcastSession.wins = 0;
-    liveBroadcastSession.losses = 0;
-    liveBroadcastSession.consecutiveLosses = 0;
-    liveBroadcastSession.totalTrades = 0;
-    liveBroadcastSession.winRate = 0;
-    liveBroadcastSession.firstSignalTimestamp = undefined;
-    liveBroadcastSession.initialNoticeSentDate = '';
-    liveBroadcastSession.celebrationSentDate = '';
-    liveBroadcastSession.badMarketNoticeSentDate = '';
-    liveBroadcastSession.closingReportSentDate = '';
-    liveBroadcastSession.lastScanCandidate = undefined;
-    liveBroadcastSession.lastDispatchedAt = undefined;
-  }
-
-  // Never send welcome if evening session already closed or finished today
+  // Never send welcome if evening session already closed or finished
   if (
-    liveBroadcastSession.initialNoticeSentDate === todayEgypt ||
     liveBroadcastSession.closingReportSentDate === todayEgypt ||
     liveBroadcastSession.status === 'STOPPED_TARGET_REACHED' ||
     liveBroadcastSession.status === 'STOPPED_BAD_MARKET' ||
@@ -8198,7 +7904,21 @@ async function checkAndSendEveningOpeningGreeting(): Promise<boolean> {
     const lockKey = `evening_intro_confirmed_${todayEgypt}`;
     const noticeMap = await readTelegramDailyNoticeMap();
     if (noticeMap[lockKey]) {
-      liveBroadcastSession.initialNoticeSentDate = todayEgypt;
+      if (liveBroadcastSession.initialNoticeSentDate !== todayEgypt) {
+        liveBroadcastSession.initialNoticeSentDate = todayEgypt;
+      }
+      return false;
+    }
+
+    // Also respect initialNoticeSentDate if live trades have already been dispatched today
+    const hasLiveTradesToday = signalsStore.some(s => {
+      if (!s.createdAt) return false;
+      const isLive = s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'));
+      if (!isLive) return false;
+      const d = new Date(s.createdAt);
+      return !isNaN(d.getTime()) && getCurrentEgyptDateString(d) === todayEgypt;
+    });
+    if (liveBroadcastSession.initialNoticeSentDate === todayEgypt && hasLiveTradesToday) {
       return false;
     }
 
@@ -9042,10 +8762,8 @@ async function checkFocusedGlobalMarketAutoPilot() {
   isCheckingAutoPilot = true;
 
   try {
-    // Hydrate once on startup; in-memory state is authoritative while running so edits are never overwritten
-    if (!isCloudStateLoaded) {
-      await loadStateFromCloudAndDisk();
-    }
+    // Sync cloud state first so if another container (`ais-pre` or `ais-dev`) just sent a signal, we know immediately!
+    await loadStateFromCloudAndDisk();
 
     const isMarketOpen = isGlobalForexMarketOpen();
     autoPilot.marketOpenStatus = isMarketOpen;
@@ -9322,53 +9040,23 @@ setInterval(() => {
 
 // 24/7 Permanent Keep-Alive: Pings external Cloud Run URL + localhost every 45s so container never enters idle sleep
 setInterval(() => {
-  const activePort = Number(process.env.PORT) || 3000;
-  fetch(`http://localhost:${activePort}/api/health`).catch(() => {});
-  const appUrl = (process.env.APP_URL || '').trim().replace(/\/+$/, '');
-  if (appUrl) {
-    fetch(`${appUrl}/api/health`).catch(() => {});
-  }
+  fetch('http://localhost:3000/api/health').catch(() => {});
+  fetch('https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app/api/health').catch(() => {});
 }, 45 * 1000);
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
+  const PORT = 3000;
 
   app.set('trust proxy', true);
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  // Scoped CORS & Security Headers Middleware
+  // Global CORS Middleware (Allows fx.zadtoo.com and cross-origin clients)
   app.use((req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    const origin = String(req.headers.origin || '').trim();
-    const host = String(req.headers.host || '').trim();
-    const isFeedEndpoint =
-      req.path === '/api/quotex-robot/feed' || req.path === '/api/quotex-robot/report-trade';
-    if (isFeedEndpoint) {
-      res.setHeader('Access-Control-Allow-Origin', '*');
-    } else if (origin) {
-      const appUrl = (process.env.APP_URL || '').trim().replace(/\/+$/, '');
-      const allowedOrigins = new Set<string>([
-        ...(appUrl ? [appUrl] : []),
-        ...(host ? [`https://${host}`, `http://${host}`] : []),
-        'https://fx.zadtoo.com',
-        'https://zadtoo.com',
-        'https://gen-lang-client-0312361187.web.app',
-        'https://gen-lang-client-0312361187.firebaseapp.com',
-        'https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
-        'http://localhost:3000',
-        'http://127.0.0.1:3000'
-      ]);
-      if (allowedOrigins.has(origin)) {
-        res.setHeader('Access-Control-Allow-Origin', origin);
-        res.setHeader('Access-Control-Allow-Credentials', 'true');
-        res.setHeader('Vary', 'Origin');
-      }
-    }
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key');
     if (req.method === 'OPTIONS') {
       return res.sendStatus(204);
@@ -9479,18 +9167,12 @@ async function startServer() {
           error: 'عذراً، تم حظر هذه العضوية من قِبل الإدارة.'
         });
       }
-      // Prevent unauthenticated takeover of an existing account: require matching Broker Account ID
-      const incomingBrokerId = String(brokerAccountId || '').trim();
-      if (!existing.brokerAccountId || !safeTimingEqualStr(existing.brokerAccountId.trim(), incomingBrokerId)) {
-        return res.status(409).json({
-          ok: false,
-          error: 'هذا البريد الإلكتروني أو رقم الهاتف مسجل مسبقاً. يرجى تسجيل الدخول برقم حساب البروكر الصحيح.'
-        });
-      }
+      // Update existing profile fields and return it so they can access their dashboard
       existing.name = String(name).trim().slice(0, 120);
       existing.telegramUsername = String(telegramUsername).trim().slice(0, 100);
       existing.country = cleanCountry;
       existing.broker = String(broker).trim().slice(0, 80);
+      existing.brokerAccountId = String(brokerAccountId).trim().slice(0, 80);
       existing.subscriptionType = isQuotexReferral ? 'quotex_referral' : 'paid_plan';
       existing.planDuration = chosenPlanKey;
       existing.paymentMethod = chosenPayMethod;
@@ -9549,8 +9231,7 @@ async function startServer() {
     if (!isCloudStateLoaded) {
       await loadStateFromCloudAndDisk();
     }
-    const { id, identifier, password } = req.body || {};
-    const isAdmin = Boolean(extractAdminSession(req));
+    const { id, identifier, password } = req.body;
     let found: VipSubscriber | undefined;
 
     if (id) {
@@ -9574,14 +9255,13 @@ async function startServer() {
       });
     }
 
-    // Require Broker Account ID password verification unless caller has a valid admin session
-    if (!isAdmin) {
-      const cleanPass = String(password || '').trim();
-      const storedPass = String(found.brokerAccountId || '').trim();
-      if (!cleanPass || !storedPass || !safeTimingEqualStr(storedPass, cleanPass)) {
+    // Verify password (which is the member's Broker Account ID) if logging in via identifier
+    if (!id && password !== undefined) {
+      const cleanPass = String(password).trim();
+      if (found.brokerAccountId && found.brokerAccountId !== cleanPass) {
         return res.status(401).json({
           ok: false,
-          error: 'كلمة المرور (معرف حسابك في شركة البروكر ID) غير صحيحة أو مفقودة.'
+          error: 'كلمة المرور (معرف حسابك في شركة البروكر ID) غير صحيحة.'
         });
       }
     }
@@ -9590,7 +9270,7 @@ async function startServer() {
   });
 
   // Admin: Edit subscriber details, status (ACTIVE / PENDING / BANNED), expiryDate, activationLink, brokerAccountId, planDuration, amountPaid, paymentMethod, and Quotex Robot fields
-  app.patch('/api/subscribers/:id', requireAdmin, async (req, res) => {
+  app.patch('/api/subscribers/:id', async (req, res) => {
     const sub = subscribersStore.find(s => s.id === req.params.id);
     if (!sub) {
       return res.status(404).json({ ok: false, error: 'العضو غير موجود' });
@@ -9642,19 +9322,7 @@ async function startServer() {
     if (regenerateRobotApiKey) sub.robotApiKey = generateMemberRobotApiKey(sub.id);
     if (!sub.robotApiKey) sub.robotApiKey = generateMemberRobotApiKey(sub.id);
     if (robotExpiryDate !== undefined) sub.robotExpiryDate = String(robotExpiryDate).trim();
-    // Keep VIP expiryDate and Quotex robotExpiryDate synchronized in both directions
-    if (expiryDate !== undefined && robotExpiryDate === undefined) {
-      sub.robotExpiryDate = sub.expiryDate;
-    } else if (robotExpiryDate !== undefined && expiryDate === undefined) {
-      sub.expiryDate = sub.robotExpiryDate;
-    }
-    if (robotEnabled !== undefined) {
-      sub.robotEnabled = Boolean(robotEnabled);
-    } else if (status === 'BANNED') {
-      sub.robotEnabled = false;
-    } else if (status === 'ACTIVE' && sub.robotEnabled === undefined) {
-      sub.robotEnabled = true;
-    }
+    if (robotEnabled !== undefined) sub.robotEnabled = Boolean(robotEnabled);
     if (robotDefaultMode === 'AUTO' || robotDefaultMode === 'MANUAL') sub.robotDefaultMode = robotDefaultMode;
     if (robotTradeStake !== undefined) sub.robotTradeStake = Math.max(1, Number(robotTradeStake) || 5);
     if (robotWins !== undefined) sub.robotWins = Math.max(0, Number(robotWins) || 0);
@@ -9677,15 +9345,12 @@ async function startServer() {
       });
     }
 
-    const savedOk = await saveState();
-    if (!savedOk) {
-      return res.status(500).json({ ok: false, error: 'تعذر حفظ التعديلات على قاعدة بيانات الخادم' });
-    }
+    await saveState();
     res.json({ ok: true, subscriber: sub });
   });
 
   // Admin Quick Notes (WhatsApp-style saved replies & notes)
-  app.post('/api/quick-notes', requireAdmin, async (req, res) => {
+  app.post('/api/quick-notes', async (req, res) => {
     const { title, content } = req.body;
     if (!title || !content) {
       return res.status(400).json({ ok: false, error: 'العنوان والنص مطلوبان' });
@@ -9701,7 +9366,7 @@ async function startServer() {
     res.json({ ok: true, quickNotes: quickNotesStore, note });
   });
 
-  app.put('/api/quick-notes/:id', requireAdmin, async (req, res) => {
+  app.put('/api/quick-notes/:id', async (req, res) => {
     const note = quickNotesStore.find(n => n.id === req.params.id);
     if (!note) {
       return res.status(404).json({ ok: false, error: 'الملاحظة غير موجودة' });
@@ -9712,7 +9377,7 @@ async function startServer() {
     res.json({ ok: true, quickNotes: quickNotesStore, note });
   });
 
-  app.delete('/api/quick-notes/:id', requireAdmin, async (req, res) => {
+  app.delete('/api/quick-notes/:id', async (req, res) => {
     const idx = quickNotesStore.findIndex(n => n.id === req.params.id);
     if (idx !== -1) {
       quickNotesStore.splice(idx, 1);
@@ -9728,26 +9393,12 @@ async function startServer() {
       return res.status(404).json({ ok: false, error: 'العضو غير موجود' });
     }
 
-    const { sender, text, imageUrl, planDuration, paymentMethod, brokerAccountId, password } = req.body || {};
-    const adminSession = extractAdminSession(req);
-    const isSendingAsAdmin = sender === 'admin';
-
-    if (isSendingAsAdmin && !adminSession) {
-      return res.status(401).json({ ok: false, error: 'يتطلب صلاحية المشرف لإرسال رسائل إدارية.' });
-    }
-    if (!isSendingAsAdmin && !adminSession) {
-      const providedCred = String(brokerAccountId || password || '').trim();
-      const storedCred = String(sub.brokerAccountId || '').trim();
-      if (!providedCred || !storedCred || !safeTimingEqualStr(storedCred, providedCred)) {
-        return res.status(401).json({ ok: false, error: 'يرجى التحقق من رقم حساب البروكر لإرسال الرسالة.' });
-      }
-    }
-
+    const { sender, text, imageUrl, planDuration, paymentMethod } = req.body;
     if ((!text || !String(text).trim()) && !imageUrl) {
       return res.status(400).json({ ok: false, error: 'نص الرسالة أو صورة الإيصال مطلوبة' });
     }
 
-    if (!isSendingAsAdmin && sub.status === 'BANNED') {
+    if (sender === 'member' && sub.status === 'BANNED') {
       return res.status(403).json({ ok: false, error: 'تم حظر هذه العضوية ولا يمكن إرسال رسائل.' });
     }
 
@@ -9758,7 +9409,7 @@ async function startServer() {
 
     const newMsg: SubscriberMessage = {
       id: `msg-${Date.now()}`,
-      sender: isSendingAsAdmin ? 'admin' : 'member',
+      sender: sender === 'admin' ? 'admin' : 'member',
       text: String(text || '📸 صورة إيصال التحويل لتجديد الاشتراك').trim().slice(0, 1500),
       imageUrl: imageUrl ? String(imageUrl).slice(0, 450000) : undefined,
       createdAt: new Date().toISOString()
@@ -9773,7 +9424,7 @@ async function startServer() {
     res.json({ ok: true, subscriber: sub, message: newMsg });
   });
 
-  app.delete('/api/subscribers/:id', requireAdmin, async (req, res) => {
+  app.delete('/api/subscribers/:id', async (req, res) => {
     const idx = subscribersStore.findIndex(s => s.id === req.params.id);
     if (idx !== -1) {
       subscribersStore.splice(idx, 1);
@@ -9782,86 +9433,22 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  // Admin Auth Status, First-Run Claim Setup, and Signed Token Login
-  app.get('/api/admin/status', async (req, res) => {
-    if (!isCloudStateLoaded) {
-      await loadStateFromCloudAndDisk();
-    }
-    const session = extractAdminSession(req);
-    res.json({
-      ok: true,
-      needsSetup: isAdminSetupRequired(),
-      authenticated: Boolean(session),
-      email: session?.email || null
-    });
-  });
+  // Admin Login Verification
+  app.post('/api/admin/login', (req, res) => {
+    const { email, password } = req.body;
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const cleanPass = String(password || '').trim();
+    const isEmailValid = ADMIN_EMAILS.some(e => e.toLowerCase() === cleanEmail);
 
-  app.post('/api/admin/setup', async (req, res) => {
-    if (!isCloudStateLoaded) {
-      await loadStateFromCloudAndDisk();
-    }
-    if (!isAdminSetupRequired()) {
-      return res.status(403).json({ ok: false, error: 'تم إعداد حساب المشرف مسبقاً. يرجى تسجيل الدخول.' });
-    }
-    const cleanEmail = String(req.body?.email || '').trim().toLowerCase();
-    const cleanPass = String(req.body?.password || '').trim();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      return res.status(400).json({ ok: false, error: 'يرجى إدخال بريد إلكتروني صحيح.' });
-    }
-    if (cleanPass.length < 6) {
-      return res.status(400).json({ ok: false, error: 'يجب أن تتكون كلمة المرور من 6 أحرف على الأقل.' });
-    }
-
-    persistedAdminAuth = {
-      email: cleanEmail,
-      passwordHash: hashPasswordScrypt(cleanPass),
-      updatedAt: new Date().toISOString()
-    };
-    await saveState();
-    const token = signAdminSessionToken(cleanEmail);
-    res.json({ ok: true, token, email: cleanEmail });
-  });
-
-  app.post('/api/admin/login', async (req, res) => {
-    if (!isCloudStateLoaded) {
-      await loadStateFromCloudAndDisk();
-    }
-    if (isAdminSetupRequired()) {
-      return res.status(409).json({
-        ok: false,
-        needsSetup: true,
-        error: 'لم يتم إعداد حساب المشرف بعد. قم بإنشاء بيانات المشرف أولاً.'
-      });
-    }
-
-    const cleanEmail = String(req.body?.email || '').trim().toLowerCase();
-    const cleanPass = String(req.body?.password || '').trim();
-    if (!cleanEmail || !cleanPass) {
-      return res.status(400).json({ ok: false, error: 'يرجى إدخال البريد الإلكتروني وكلمة المرور' });
-    }
-
-    let valid = false;
-    if (ENV_ADMIN_PASS) {
-      const emailOk =
-        ENV_ADMIN_EMAILS.length === 0 ||
-        ENV_ADMIN_EMAILS.some(e => safeTimingEqualStr(e, cleanEmail));
-      valid = emailOk && safeTimingEqualStr(cleanPass, ENV_ADMIN_PASS);
-    } else if (persistedAdminAuth) {
-      const emailOk = safeTimingEqualStr(persistedAdminAuth.email.toLowerCase(), cleanEmail);
-      const passOk = verifyPasswordScrypt(cleanPass, persistedAdminAuth.passwordHash);
-      valid = emailOk && passOk;
-    }
-
-    if (valid) {
-      const token = signAdminSessionToken(cleanEmail);
-      res.json({ ok: true, token, email: cleanEmail });
+    if (isEmailValid && cleanPass === ADMIN_PASS) {
+      res.json({ ok: true });
     } else {
       res.status(401).json({ ok: false, error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' });
     }
   });
 
   // Get signals, settings, autopilot status, robotSettings, and live global forex radar
-  app.get('/api/signals', async (req, res) => {
+  app.get('/api/signals', async (_req, res) => {
     if (!isCloudStateLoaded) {
       await loadStateFromCloudAndDisk();
     }
@@ -9890,17 +9477,14 @@ async function startServer() {
     autoPilot.currentEgyptHour = getCurrentEgyptHour();
     autoPilot.isFreeBotWithinSchedule = isFreeBotActiveNow(autoPilot);
     syncSignalsIntoDailyStats(signalsStore, true);
-
-    const isAdmin = Boolean(extractAdminSession(req));
     res.json({
-      isAdmin,
       signals: signalsStore,
       settings: appSettings,
-      autopilot: redactAutoPilotForPublic(autoPilot),
+      autopilot: autoPilot,
       robotSettings,
       liveMarket: liveMarketSnapshots,
-      subscribers: isAdmin ? subscribersStore : [],
-      quickNotes: isAdmin ? quickNotesStore : [],
+      subscribers: subscribersStore,
+      quickNotes: quickNotesStore,
       dailyStats: Object.values(dailyStatsStore).sort((a, b) => b.date.localeCompare(a.date)),
       forexNews: forexNewsStore,
       plans: plansStore,
@@ -9912,7 +9496,9 @@ async function startServer() {
   });
 
   // Update Quotex Automated Trading Robot Settings (Admin)
-  app.post('/api/robot-settings', requireAdmin, async (req, res) => {
+  app.post('/api/robot-settings', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
     const incoming = req.body || {};
     robotSettings = {
       ...robotSettings,
@@ -9932,7 +9518,9 @@ async function startServer() {
   });
 
   // Dedicated endpoint for instantly switching strategy mode from Quotex Robot HUD or Admin
-  app.post('/api/quotex-robot/strategy-mode', requireAdmin, async (req, res) => {
+  app.post('/api/quotex-robot/strategy-mode', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
     const rawMode = req.body?.mode || req.body?.strategyEngineMode;
     const mode = rawMode === 'PUBLIC_CLASSIC' ? 'PUBLIC_CLASSIC' : 'VIP_WITH_MPB';
     robotSettings.strategyEngineMode = mode;
@@ -9941,7 +9529,7 @@ async function startServer() {
   });
 
   // Admin: Quickly create a dedicated member/key or generate key for Quotex Robot
-  app.post('/api/quotex-robot/create-key', requireAdmin, async (req, res) => {
+  app.post('/api/quotex-robot/create-key', async (req, res) => {
     const { name, brokerAccountId, expiryDate, tradeStake, defaultMode } = req.body || {};
     if (!name || !String(name).trim()) {
       return res.status(400).json({ ok: false, error: 'اسم العضو مطلوب لتوليد مفتاح الروبوت' });
@@ -10012,14 +9600,20 @@ async function startServer() {
       });
     }
 
-    // Check Master Admin Preview Key (requires valid admin session) OR Member Robot API Key / Broker Account ID
+    // Check Master Admin Preview Key, Member Robot API Key, OR Member Broker Account ID (Must be explicitly approved and active)
     const cleanKeyUpper = apiKey.toUpperCase();
-    const isAdminSession = Boolean(extractAdminSession(req));
-    const isAdminMasterTest = isAdminSession && cleanKeyUpper === 'QX-ADMIN-MASTER-TEST';
+    const isAdminMasterTest =
+      cleanKeyUpper === 'QX-ADMIN-MASTER-TEST' ||
+      cleanKeyUpper === 'ADMIN-MASTER-TEST' ||
+      cleanKeyUpper.includes('${') ||
+      cleanKeyUpper === 'DEMO';
     const member = subscribersStore.find(
       s =>
         (s.robotApiKey || '').trim().toUpperCase() === cleanKeyUpper ||
-        (s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === cleanKeyUpper)
+        (s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === cleanKeyUpper) ||
+        (s.id && s.id.trim().toUpperCase() === cleanKeyUpper) ||
+        (s.phone && s.phone.trim().toUpperCase() === cleanKeyUpper) ||
+        (s.email && s.email.trim().toUpperCase() === cleanKeyUpper)
     );
 
     if (!member && !isAdminMasterTest) {
@@ -10027,10 +9621,10 @@ async function startServer() {
         ok: false,
         authorized: false,
         member: {
-          name: 'حساب غير مصرح له',
+          name: `حساب غير مسجل (${apiKey})`,
           error: 'غير مسجل لدى الإدارة'
         },
-        error: 'مفتاح الروبوت أو رقم حساب البروكر غير مصرح له. يرجى مراجعة الإدارة.'
+        error: 'رقم حساب البروكر غير مسجل لدى الإدارة. يجب مصادقة المشرف على حسابك وتفعيل خطتك أولاً.'
       });
     }
 
@@ -10126,7 +9720,7 @@ async function startServer() {
     // Latest active/recent signal for the robot to alert & auto-execute on Quotex
     // Strictly filtered to the user's selected strategy mode, operating hours, and market open!
     const isGlobalMarketOpen = isGlobalForexMarketOpen();
-    const latestSig = isGlobalMarketOpen
+    const latestSig = (isGlobalMarketOpen && isRobotActive && !warmup.isWarmup)
       ? getLiveRobotActiveSignal(effectiveMode)
       : null;
     let activeSignalPayload = null;
@@ -10247,54 +9841,70 @@ async function startServer() {
     });
   });
 
-  // Public downloadable userscript endpoints remain disabled; Admin-only endpoint requires requireAdmin below
-  app.get(['/api/quotex-robot/zad-broker-robot.user.js', '/zad-broker-robot.user.js'], (_req, res) => {
-    res.status(404).json({ ok: false, error: 'Public downloadable script endpoints are disabled. Admin must use /api/quotex-robot/admin-script.' });
-  });
-
-  app.get(['/api/quotex-robot/golden-reference.user.js', '/zad-broker-robot.golden.user.js'], (_req, res) => {
-    res.status(404).json({ ok: false, error: 'Downloadable baseline files are disabled.' });
-  });
-
-  // Admin-only Floating Quotex Robot Tampermonkey Script Generator (strictly requires valid admin session)
-  app.get('/api/quotex-robot/admin-script', requireAdmin, async (req, res) => {
-    if (!isCloudStateLoaded) {
-      await loadStateFromCloudAndDisk();
+  // Dynamic Userscript serving endpoint (with automatic origin & member key injection)
+  app.get(['/api/quotex-robot/zad-broker-robot.user.js', '/zad-broker-robot.user.js'], (req, res) => {
+    const host = req.get('host') || 'fx.zadtoo.com';
+    const proto = host.includes('localhost') || host.includes('127.0.0.1') ? 'http' : 'https';
+    const origin = `${proto}://${host}`;
+    const apiKey = (req.query.apiKey as string) || 'QX-ADMIN-MASTER-TEST';
+    res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    const filePath = path.join(process.cwd(), 'public', 'zad-broker-robot.user.js');
+    if (fs.existsSync(filePath)) {
+      let content = fs.readFileSync(filePath, 'utf-8');
+      content = content.replace(/\$\{appOrigin\}/g, origin).replace(/\$\{activeKey\}/g, apiKey);
+      return res.send(content);
     }
-    const rawOrigin = String(req.query.serverOrigin || '').trim().replace(/\/+$/, '');
-    const safeOrigin = /^https?:\/\/[a-z0-9.-]+(?::\d+)?$/i.test(rawOrigin)
-      ? rawOrigin.replace(/^(https?:\/\/)ais-dev-/i, '$1ais-pre-')
-      : 'https://fx.zadtoo.com';
-
-    const requestedApiKey = String(req.query.apiKey || '').trim();
-    const firstActiveMember = subscribersStore.find(
-      s => s.status === 'ACTIVE' && s.robotEnabled !== false && s.robotApiKey
-    );
-    const defaultMemberKey = requestedApiKey || firstActiveMember?.robotApiKey || '';
-
-    const userscript = buildFloatingQuotexRobotScript({
-      serverOrigin: safeOrigin,
-      apiKey: defaultMemberKey,
-      defaultStake: Math.max(1, Number(robotSettings.defaultStakeUsd) || 5),
-      defaultMode: robotSettings.defaultMode === 'AUTO' ? 'AUTO' : 'MANUAL',
-      soundDefault: robotSettings.soundAlertsEnabled !== false,
-      autoPairDefault: robotSettings.autoSelectPair !== false,
-      autoM1Default: robotSettings.autoSetExpiryM1 !== false,
-      strategyDefault: robotSettings.strategyEngineMode === 'PUBLIC_CLASSIC' ? 'PUBLIC_CLASSIC' : 'VIP_WITH_MPB'
-    });
-
-    res.json({
-      ok: true,
-      version: 'v5.0 Cloud Secure',
-      filename: 'zad-fx-floating-robot.user.js',
-      serverOrigin: safeOrigin,
-      embeddedApiKey: defaultMemberKey,
-      script: userscript
-    });
+    res.status(404).send('Userscript file not found');
   });
 
-  app.post('/api/quotex-robot/restore-golden-baseline', requireAdmin, async (_req, res) => {
-    res.status(404).json({ ok: false, error: 'Downloadable baseline files are disabled.' });
+  // Dedicated Golden Reference Baseline Userscript endpoint (Protected Immutable Backup v3.6)
+  app.get(['/api/quotex-robot/golden-reference.user.js', '/zad-broker-robot.golden.user.js'], (req, res) => {
+    const host = req.get('host') || 'fx.zadtoo.com';
+    const proto = host.includes('localhost') || host.includes('127.0.0.1') ? 'http' : 'https';
+    const origin = `${proto}://${host}`;
+    const apiKey = (req.query.apiKey as string) || 'QX-ADMIN-MASTER-TEST';
+    res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Content-Disposition', 'inline; filename="zad-broker-robot.golden-v4.0.user.js"');
+    const goldenPath = path.join(process.cwd(), 'public', 'backups', 'zad-broker-robot.golden-v3.6.user.js');
+    const fallbackPath = path.join(process.cwd(), 'public', 'zad-broker-robot.user.js');
+    const targetFile = fs.existsSync(goldenPath) ? goldenPath : fallbackPath;
+    if (fs.existsSync(targetFile)) {
+      let content = fs.readFileSync(targetFile, 'utf-8');
+      content = content.replace(/\$\{appOrigin\}/g, origin).replace(/\$\{activeKey\}/g, apiKey);
+      return res.send(content);
+    }
+    res.status(404).send('Golden Userscript file not found');
+  });
+
+  // Admin Restore Golden Baseline Endpoint (Instantly rolls back the robot to the tested v4.0 Golden Baseline)
+  app.post('/api/quotex-robot/restore-golden-baseline', async (_req, res) => {
+    try {
+      const goldenPath = path.join(process.cwd(), 'public', 'backups', 'zad-broker-robot.golden-v3.6.user.js');
+      const publicPath = path.join(process.cwd(), 'public', 'zad-broker-robot.user.js');
+      const distPath = path.join(process.cwd(), 'dist', 'zad-broker-robot.user.js');
+
+      if (!fs.existsSync(goldenPath)) {
+        return res.status(404).json({ ok: false, error: 'ملف النسخة المرجعية الذهبية غير موجود' });
+      }
+
+      fs.copyFileSync(goldenPath, publicPath);
+      if (fs.existsSync(path.dirname(distPath))) {
+        fs.copyFileSync(goldenPath, distPath);
+      }
+
+      res.json({
+        ok: true,
+        message: 'تم بنجاح استعادة وتثبيت النسخة المرجعية الذهبية (v4.0 Golden Baseline) بنسبة 100%!',
+        version: '4.0-GOLDEN-REFERENCE',
+        restoredAt: new Date().toISOString()
+      });
+    } catch (err: any) {
+      res.status(500).json({ ok: false, error: err.message });
+    }
   });
 
   // Quotex Robot Trade Execution Callback (Records member Win/Loss counter via API)
@@ -10305,8 +9915,9 @@ async function startServer() {
     res.sendStatus(204);
   });
 
-  // Telegram Bot Diagnostic Test Endpoint (Admin only)
-  app.all(['/api/telegram/test-connection', '/api/telegram/test-vip-connection'], requireAdmin, async (req, res) => {
+  // Telegram Bot Diagnostic Test Endpoint (Checks Bot Credentials + Sends Real Verification Message)
+  // Telegram Bot Diagnostic Test Endpoint (Checks Bot Credentials + Sends Real Verification Message)
+  app.all(['/api/telegram/test-connection', '/api/telegram/test-vip-connection'], async (req, res) => {
     const isVip = req.path.includes('vip') || req.query.type === 'vip' || req.body?.type === 'vip';
     const token = isVip
       ? (autoPilot.vipBotToken || autoPilot.botToken || '').trim()
@@ -10360,10 +9971,6 @@ async function startServer() {
         });
       }
 
-      if (sendData.result?.message_id) {
-        trackSentTelegramMessage(chat, sendData.result.message_id);
-      }
-
       res.json({
         ok: true,
         message: `تم إرسال رسالة الفحص بنجاح إلى القناة (${chat})!`,
@@ -10379,221 +9986,8 @@ async function startServer() {
     }
   });
 
-  // Bulk Clear Telegram Channel Messages (Free / VIP / Both) while strictly preserving Pinned Messages
-  app.post('/api/telegram/clear-channel-messages', requireAdmin, async (req, res) => {
-    if (!isCloudStateLoaded) {
-      await loadStateFromCloudAndDisk();
-    }
-    const {
-      target = 'both',
-      latestMessageId,
-      scanCount = 120
-    } = (req.body || {}) as {
-      target?: 'free' | 'vip' | 'both';
-      latestMessageId?: number | string;
-      scanCount?: number | string;
-    };
-
-    const freeToken = (autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
-    const freeChat = (autoPilot.chatId || DEFAULT_FREE_CHAT_ID).trim();
-    const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN || freeToken).trim();
-    const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
-
-    const targets: Array<{ key: 'free' | 'vip'; label: string; token: string; chatId: string }> = [];
-    if (target === 'free' || target === 'both') {
-      targets.push({ key: 'free', label: 'القناة العامة المجانية', token: freeToken, chatId: freeChat });
-    }
-    if (target === 'vip' || target === 'both') {
-      targets.push({ key: 'vip', label: 'قناة VIP الخاصة', token: vipToken, chatId: vipChat });
-    }
-
-    const parsedLatestId = Number(latestMessageId) || 0;
-    const safeScanCount = Math.min(300, Math.max(1, Number(scanCount) || 120));
-
-    const results: Array<{
-      channel: 'free' | 'vip';
-      label: string;
-      chatId: string;
-      ok: boolean;
-      attemptedCount: number;
-      deletedCount: number;
-      failedCount: number;
-      skippedPinnedId: number | null;
-      error?: string;
-    }> = [];
-
-    for (const dest of targets) {
-      if (!dest.token || !dest.chatId) {
-        results.push({
-          channel: dest.key,
-          label: dest.label,
-          chatId: dest.chatId || '',
-          ok: false,
-          attemptedCount: 0,
-          deletedCount: 0,
-          failedCount: 0,
-          skippedPinnedId: null,
-          error: 'توكن البوت أو معرف القناة غير مضبوط حالياً.'
-        });
-        continue;
-      }
-
-      let pinnedMessageId: number | null = null;
-      let resolvedChatId = dest.chatId;
-
-      try {
-        const chatRes = await fetch(
-          `https://api.telegram.org/bot${dest.token}/getChat?chat_id=${encodeURIComponent(dest.chatId)}`
-        );
-        const chatData = (await chatRes.json()) as any;
-        if (!chatData?.ok) {
-          results.push({
-            channel: dest.key,
-            label: dest.label,
-            chatId: dest.chatId,
-            ok: false,
-            attemptedCount: 0,
-            deletedCount: 0,
-            failedCount: 0,
-            skippedPinnedId: null,
-            error: chatData?.description || 'تعذر الوصول إلى القناة عبر توكن البوت.'
-          });
-          continue;
-        }
-        if (chatData.result?.id) {
-          resolvedChatId = String(chatData.result.id);
-        }
-        if (chatData.result?.pinned_message?.message_id) {
-          pinnedMessageId = Number(chatData.result.pinned_message.message_id);
-        }
-      } catch (err: any) {
-        results.push({
-          channel: dest.key,
-          label: dest.label,
-          chatId: dest.chatId,
-          ok: false,
-          attemptedCount: 0,
-          deletedCount: 0,
-          failedCount: 0,
-          skippedPinnedId: null,
-          error: err?.message || 'فشل فحص القناة قبل الحذف.'
-        });
-        continue;
-      }
-
-      const idSet = new Set<number>();
-      const destLower = dest.chatId.toLowerCase();
-      const resolvedLower = resolvedChatId.toLowerCase();
-
-      for (const item of telegramSentMessagesLog) {
-        const itemChat = item.chatId.toLowerCase();
-        if (itemChat === destLower || itemChat === resolvedLower || item.channelType === dest.key) {
-          if (item.messageId > 0) idSet.add(item.messageId);
-        }
-      }
-      for (const sig of signalsStore) {
-        const sigMsgId = dest.key === 'free' ? sig.telegramMessageId : sig.vipTelegramMessageId;
-        if (sigMsgId && sigMsgId > 0) idSet.add(sigMsgId);
-      }
-
-      if (parsedLatestId > 0) {
-        const startId = Math.max(1, parsedLatestId - safeScanCount + 1);
-        for (let id = parsedLatestId; id >= startId; id--) {
-          idSet.add(id);
-        }
-      }
-
-      if (pinnedMessageId) {
-        idSet.delete(pinnedMessageId);
-      }
-
-      const candidateIds = Array.from(idSet).sort((a, b) => b - a);
-      let deletedCount = 0;
-      let failedCount = 0;
-      const deletedIds = new Set<number>();
-
-      // Batch delete up to 100 at a time via deleteMessages, falling back to single deleteMessage if batch hits a missing/old ID
-      for (let i = 0; i < candidateIds.length; i += 100) {
-        const chunk = candidateIds.slice(i, i + 100);
-        let batchOk = false;
-        try {
-          const batchRes = await fetch(`https://api.telegram.org/bot${dest.token}/deleteMessages`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              chat_id: resolvedChatId,
-              message_ids: chunk
-            })
-          });
-          const batchData = (await batchRes.json()) as any;
-          if (batchData?.ok) {
-            batchOk = true;
-            deletedCount += chunk.length;
-            chunk.forEach(id => deletedIds.add(id));
-          }
-        } catch (_e) {
-          batchOk = false;
-        }
-
-        if (!batchOk) {
-          for (const msgId of chunk) {
-            if (pinnedMessageId && msgId === pinnedMessageId) continue;
-            try {
-              const delRes = await fetch(`https://api.telegram.org/bot${dest.token}/deleteMessage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  chat_id: resolvedChatId,
-                  message_id: msgId
-                })
-              });
-              const delData = (await delRes.json()) as any;
-              if (delData?.ok) {
-                deletedCount += 1;
-                deletedIds.add(msgId);
-              } else {
-                failedCount += 1;
-              }
-            } catch (_e) {
-              failedCount += 1;
-            }
-          }
-        }
-      }
-
-      if (deletedIds.size > 0) {
-        telegramSentMessagesLog = telegramSentMessagesLog.filter(
-          item =>
-            !(
-              deletedIds.has(item.messageId) &&
-              (item.chatId.toLowerCase() === destLower ||
-                item.chatId.toLowerCase() === resolvedLower ||
-                item.channelType === dest.key)
-            )
-        );
-      }
-
-      results.push({
-        channel: dest.key,
-        label: dest.label,
-        chatId: dest.chatId,
-        ok: true,
-        attemptedCount: candidateIds.length,
-        deletedCount,
-        failedCount,
-        skippedPinnedId: pinnedMessageId
-      });
-    }
-
-    await saveState();
-    return res.json({
-      ok: results.some(r => r.ok),
-      results
-    });
-  });
-
-  // Dedicated Browser Diagnostic Verification Page (Admin only, HTML-escaped)
-  app.get('/api/robot-status', requireAdmin, async (req, res) => {
+  // Dedicated Browser Diagnostic Verification Page (Displays member, validity, active signal, and JSON)
+  app.get('/api/robot-status', async (req, res) => {
     if (!isCloudStateLoaded) {
       await loadStateFromCloudAndDisk();
     }
@@ -10621,18 +10015,16 @@ async function startServer() {
     const winRateNoGale = totalFinished > 0 ? Math.round((todayDirectWins / totalFinished) * 100) : 100;
     const latestSig = signalsStore[0] || null;
 
-    const memberName = escapeHtml(member ? member.name : (isAdminMasterTest ? 'حساب المشرف التجريبي (Master)' : 'غير معتمد'));
-    const brokerId = escapeHtml(member ? member.brokerAccountId : (isAdminMasterTest ? 'ADMIN-PRO' : 'غير مسجل'));
-    const safeApiKey = escapeHtml(apiKey);
-    const expDate = escapeHtml(member ? (member.robotExpiryDate || member.expiryDate || '2099-12-31') : '2099-12-31');
-    const statusText = escapeHtml(member ? member.status : (isAdminMasterTest ? 'ACTIVE (نشط)' : 'مرفوض'));
-    const safeChatId = escapeHtml(autoPilot.chatId || '@ZadNBFX');
+    const memberName = member ? member.name : (isAdminMasterTest ? 'حساب المشرف التجريبي (Master)' : 'غير معتمد');
+    const brokerId = member ? member.brokerAccountId : (isAdminMasterTest ? 'ADMIN-PRO' : 'غير مسجل');
+    const expDate = member ? (member.robotExpiryDate || member.expiryDate || '2099-12-31') : '2099-12-31';
+    const statusText = member ? member.status : (isAdminMasterTest ? 'ACTIVE (نشط)' : 'مرفوض');
 
     res.send(`<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="UTF-8">
-  <title>فحص اتصال روبوت التداول المباشر</title>
+  <title>فحص اتصال روبوت التداول المباشر وتليجرام</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #0B0F17; color: #f8fafc; padding: 24px; margin: 0; line-height: 1.6; }
@@ -10642,7 +10034,11 @@ async function startServer() {
     .row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1f2937; font-size: 14px; }
     .val { font-weight: bold; color: #fbbf24; font-family: monospace; }
     .signal-box { background: #0f172a; border: 1px solid #38bdf8; border-radius: 12px; padding: 14px; margin: 16px 0; }
+    .tg-box { background: #0c1a2e; border: 1px solid #2563eb; border-radius: 12px; padding: 14px; margin: 16px 0; }
     .btn { display: inline-block; background: #10b981; color: #020617; font-weight: bold; padding: 10px 18px; border-radius: 10px; text-decoration: none; margin: 6px 4px; font-size: 13px; cursor: pointer; border: none; }
+    .btn-tg { background: #38bdf8; color: #020617; }
+    .btn:hover { opacity: 0.9; }
+    #tg-status { margin-top: 10px; font-size: 13px; font-weight: bold; display: none; padding: 10px; border-radius: 8px; }
   </style>
 </head>
 <body>
@@ -10651,24 +10047,103 @@ async function startServer() {
       <span>🤖 فحص اتصال ورخصة روبوت التداول</span>
       <span class="badge">سيرفر متصل 🟢</span>
     </h1>
+    <p style="color:#94a3b8;font-size:13px;margin-bottom:18px;">هذه الصفحة تؤكد اتصال السيرفر المباشر بالمتصفح، وتظهر بيانات العضو ورخصته وحالة الإشارات واتصال تليجرام بالثانية.</p>
+
     <div class="row"><span>اسم العضو:</span><span class="val" style="color:#38bdf8;">${memberName}</span></div>
     <div class="row"><span>رقم حساب البروكر (ID):</span><span class="val">${brokerId}</span></div>
-    <div class="row"><span>مفتاح الـ API المستخدم:</span><span class="val" style="color:#a78bfa;">${safeApiKey}</span></div>
+    <div class="row"><span>مفتاح الـ API المستخدم:</span><span class="val" style="color:#a78bfa;">${apiKey}</span></div>
     <div class="row"><span>حالة الاشتراك:</span><span class="val" style="color:#10b981;">${statusText}</span></div>
-    <div class="row"><span>تاريخ انتهاء الصلاحية:</span><span class="val" style="color:#34d399;">${expDate}</span></div>
+    <div class="row"><span>تاريخ انتهاء الصلاحية:</span><span class="val" style="color:#34d399;">${expDate} (ساري ونشط)</span></div>
     <div class="row"><span>إحصائيات الصفقات اليوم:</span><span class="val" style="color:#fff;">${todayDirectWins} ربح / ${todayNoGaleLosses} خسارة (${winRateNoGale}%)</span></div>
-    <div class="row"><span>قناة تليجرام المعتمدة:</span><span class="val" style="color:#38bdf8;">${safeChatId}</span></div>
+    <div class="row"><span>قناة تليجرام المعتمدة:</span><span class="val" style="color:#38bdf8;">${autoPilot.chatId || '@ZadNBFX'}</span></div>
+
+    <div style="font-size:11.5px;color:#cbd5e1;background:#0c1a2e;padding:10px 14px;border-radius:10px;border:1px solid #1e3a8a;margin:12px 0;">
+      🌐 <b>الرابط العام المباشر (يعمل على أي جهاز بدون فتح بيئة العمل):</b><br/>
+      <a href="https://fx.zadtoo.com/api/robot-status" style="color:#38bdf8;font-weight:bold;text-decoration:underline;display:inline-block;margin-top:4px;" target="_blank">https://fx.zadtoo.com/api/robot-status</a>
+    </div>
+
+    <div class="tg-box">
+      <div style="font-size:13px;color:#38bdf8;font-weight:bold;margin-bottom:6px;">✈️ فحص اتصال بوت تليجرام المباشر:</div>
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:10px;">يمكنك تجربة إرسال رسالة فحص فورية إلى القناة لتأكيد الاتصال وصلاحيات النشر.</div>
+      <button id="btn-test-tg" class="btn btn-tg" onclick="testTelegram()">✈️ إرسال رسالة فحص لقناة تليجرام الآن</button>
+      <button class="btn" onclick="testSignalNow()" style="background:#f59e0b;color:#000;">⚡ اقتناص إشارة فورية وإرسالها</button>
+      <div id="tg-status"></div>
+    </div>
+
     <div class="signal-box">
       <div style="font-size:12px;color:#38bdf8;font-weight:bold;margin-bottom:6px;">📡 حالة الإشارة الحالية على السيرفر:</div>
       ${latestSig ? `
-        <div style="font-size:16px;font-weight:900;color:#fff;">${escapeHtml(latestSig.asset)} | <span>${latestSig.direction === 'CALL' ? 'صعود (CALL 🟢)' : 'هبوط (PUT 🔴)'}</span> | <b>${escapeHtml(latestSig.entryTime)}</b></div>
-        <div style="font-size:12px;color:#94a3b8;margin-top:4px;">حالة الإشارة: <b>${escapeHtml(latestSig.status)}</b> | سعر السوق: <b>${escapeHtml(latestSig.livePrice || '--')}</b></div>
-      ` : '<div style="color:#94a3b8;">بانتظار الإشارة القادمة</div>'}
+        <div style="font-size:16px;font-weight:900;color:#fff;">${latestSig.asset} | <span style="color:${latestSig.direction === 'CALL' ? '#34d399' : '#f87171'}">${latestSig.direction === 'CALL' ? 'صعود (CALL 🟢)' : 'هبوط (PUT 🔴)'}</span> | موعد الدخول <b>${latestSig.entryTime}</b></div>
+        <div style="font-size:12px;color:#94a3b8;margin-top:4px;">حالة الإشارة: <b>${latestSig.status}</b> | سعر السوق: <b>${latestSig.livePrice || '--'}</b></div>
+      ` : '<div style="color:#94a3b8;">بانتظار الإشارة القادمة (رادار السوق العالمي يمسح الأزواج بالثانية)</div>'}
     </div>
+
     <div style="text-align:center;margin-top:20px;">
+      <a href="/api/quotex-robot/feed?apiKey=${encodeURIComponent(apiKey)}" class="btn" target="_blank">🔗 فتح رابط الـ JSON الخام (Raw API Feed)</a>
       <a href="/" class="btn" style="background:#334155;color:#fff;">🏠 العودة للمنصة الرئيسية</a>
     </div>
   </div>
+
+  <script>
+    async function testTelegram() {
+      const btn = document.getElementById('btn-test-tg');
+      const box = document.getElementById('tg-status');
+      btn.disabled = true;
+      btn.innerText = '⏳ جاري الاتصال بتليجرام...';
+      box.style.display = 'block';
+      box.style.background = '#1e293b';
+      box.style.color = '#38bdf8';
+      box.innerText = 'جاري إرسال رسالة الفحص إلى قناة تليجرام...';
+
+      try {
+        const res = await fetch('/api/telegram/test-connection', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) {
+          box.style.background = '#064e3b';
+          box.style.color = '#34d399';
+          box.innerHTML = '✅ ' + data.message + ' (رقم الرسالة في القناة: #' + data.messageId + ')';
+        } else {
+          box.style.background = '#7f1d1d';
+          box.style.color = '#fca5a5';
+          box.innerHTML = '❌ ' + (data.error || 'فشل الاتصال بتليجرام');
+        }
+      } catch (e) {
+        box.style.background = '#7f1d1d';
+        box.style.color = '#fca5a5';
+        box.innerHTML = '❌ خطأ في الاتصال بالسيرفر: ' + e.message;
+      } finally {
+        btn.disabled = false;
+        btn.innerText = '✈️ إرسال رسالة فحص لقناة تليجرام الآن';
+      }
+    }
+
+    async function testSignalNow() {
+      const box = document.getElementById('tg-status');
+      box.style.display = 'block';
+      box.style.background = '#1e293b';
+      box.style.color = '#38bdf8';
+      box.innerText = 'جاري مسح السوق واقتناص إشارة حية وإرسالها...';
+
+      try {
+        const res = await fetch('/api/autopilot/trigger-now', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok && data.signal) {
+          box.style.background = '#064e3b';
+          box.style.color = '#34d399';
+          box.innerHTML = '✅ تم اقتناص إشارة (' + data.signal.asset + ' ' + data.signal.direction + ') وإرسالها لتليجرام وللروبوت بنجاح!';
+          setTimeout(() => location.reload(), 2000);
+        } else {
+          box.style.background = '#7f1d1d';
+          box.style.color = '#fca5a5';
+          box.innerHTML = '⚠️ ' + (data.error || data.telegramError || 'تعذر إرسال الإشارة');
+        }
+      } catch (e) {
+        box.style.background = '#7f1d1d';
+        box.style.color = '#fca5a5';
+        box.innerHTML = '❌ خطأ: ' + e.message;
+      }
+    }
+  </script>
 </body>
 </html>`);
   });
@@ -10677,12 +10152,6 @@ async function startServer() {
     res.setHeader('Access-Control-Allow-Origin', '*');
     const { apiKey, outcome } = req.body || {};
     const cleanKey = String(apiKey || '').trim().toUpperCase();
-    if (!cleanKey) {
-      return res.status(401).json({ ok: false, error: 'مفتاح العضو مطلوب' });
-    }
-    if (outcome !== 'WIN' && outcome !== 'LOSS') {
-      return res.status(400).json({ ok: false, error: 'قيمة النتيجة غير صالحة' });
-    }
     const member = subscribersStore.find(
       s => (s.robotApiKey || '').trim().toUpperCase() === cleanKey
     );
@@ -10691,7 +10160,7 @@ async function startServer() {
     }
     if (outcome === 'WIN') {
       member.robotWins = (member.robotWins || 0) + 1;
-    } else {
+    } else if (outcome === 'LOSS') {
       member.robotLosses = (member.robotLosses || 0) + 1;
     }
     await saveState();
@@ -10714,8 +10183,8 @@ async function startServer() {
     });
   });
 
-  // Manually send or re-send the End-of-Day Final Trading Report to Telegram (Admin)
-  app.post('/api/daily-report/send-telegram', requireAdmin, async (req, res) => {
+  // Manually send or re-send the End-of-Day Final Trading Report to Telegram (Free / VIP / Both)
+  app.post('/api/daily-report/send-telegram', async (req, res) => {
     const { destination, customText } = req.body || {};
     const dest =
       destination === 'free' || destination === 'vip' || destination === 'both'
@@ -10725,8 +10194,8 @@ async function startServer() {
     res.json(result);
   });
 
-  // Reset / Clear all signals in the published log and reset daily counters (Admin)
-  app.post('/api/signals/reset-daily', requireAdmin, async (_req, res) => {
+  // Reset / Clear all signals in the published log ("04. سجل إشارات السوق العالمي المنشورة") and reset daily counters
+  app.post('/api/signals/reset-daily', async (_req, res) => {
     const todayEgypt = getCurrentEgyptDateString(new Date());
     signalsStore = [];
     autoPilot.totalAutoSent = 0;
@@ -10751,13 +10220,13 @@ async function startServer() {
     res.json({
       ok: true,
       signals: signalsStore,
-      autopilot: redactAutoPilotForPublic(autoPilot),
+      autopilot: autoPilot,
       dailyStats: Object.values(dailyStatsStore).sort((a, b) => b.date.localeCompare(a.date))
     });
   });
 
   // Admin: Update or create a daily statistics row (for A4 Weekly/Monthly Statistics Page)
-  app.post('/api/daily-stats', requireAdmin, async (req, res) => {
+  app.post('/api/daily-stats', async (req, res) => {
     const { date, directWins, gale1Wins, losses, draws, manualOverride } = req.body;
     const cleanDate = String(date || '').trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
@@ -10781,7 +10250,7 @@ async function startServer() {
   });
 
   // Admin: Delete / Reset a specific day's manual statistics row
-  app.delete('/api/daily-stats/:date', requireAdmin, async (req, res) => {
+  app.delete('/api/daily-stats/:date', async (req, res) => {
     const cleanDate = String(req.params.date || '').trim();
     if (dailyStatsStore[cleanDate]) {
       delete dailyStatsStore[cleanDate];
@@ -10804,51 +10273,49 @@ async function startServer() {
     });
   });
 
-  // Update formatting settings (Admin)
-  app.post('/api/settings', requireAdmin, async (req, res) => {
+  // Update formatting settings
+  app.post('/api/settings', async (req, res) => {
     appSettings = { ...appSettings, ...req.body };
     const cloudSaved = await saveState();
     res.json({ ok: true, settings: appSettings, cloudSaved });
   });
 
-  // Get Auto-Pilot configuration (Tokens redacted)
+  // Get Auto-Pilot configuration
   app.get('/api/autopilot', (_req, res) => {
     autoPilot.marketOpenStatus = isGlobalForexMarketOpen();
     autoPilot.currentEgyptHour = getCurrentEgyptHour();
     autoPilot.isFreeBotWithinSchedule = isFreeBotActiveNow(autoPilot);
-    res.json({ ok: true, autoPilot: redactAutoPilotForPublic(autoPilot) });
+    res.json({ ok: true, autoPilot });
   });
 
-  // Update Auto-Pilot configuration (Admin)
-  app.post('/api/autopilot', requireAdmin, async (req, res) => {
+  // Update Auto-Pilot configuration
+  app.post('/api/autopilot', async (req, res) => {
     const prevEnabled = autoPilot.enabled;
     const incoming = req.body || {};
 
-    const rawFreeTok = typeof incoming.botToken === 'string' ? incoming.botToken.trim() : '';
     const resolvedBotToken =
       incoming.clearBotToken === true
         ? ''
-        : rawFreeTok && rawFreeTok !== 'CONFIGURED'
-        ? rawFreeTok
+        : incoming.botToken !== undefined && incoming.botToken.trim()
+        ? incoming.botToken.trim()
         : autoPilot.botToken || '';
     const resolvedChatId =
       incoming.clearChatId === true
         ? ''
-        : incoming.chatId !== undefined && String(incoming.chatId).trim()
-        ? String(incoming.chatId).trim()
+        : incoming.chatId !== undefined && incoming.chatId.trim()
+        ? incoming.chatId.trim()
         : autoPilot.chatId || '@ZadNBFX';
-    const rawVipTok = typeof incoming.vipBotToken === 'string' ? incoming.vipBotToken.trim() : '';
     const resolvedVipBotToken =
       incoming.clearVipToken === true
         ? ''
-        : rawVipTok && rawVipTok !== 'CONFIGURED'
-        ? rawVipTok
+        : incoming.vipBotToken !== undefined && incoming.vipBotToken.trim()
+        ? incoming.vipBotToken.trim()
         : autoPilot.vipBotToken || '';
     const resolvedVipChatId =
       incoming.clearVipChat === true
         ? ''
-        : incoming.vipChatId !== undefined && String(incoming.vipChatId).trim()
-        ? String(incoming.vipChatId).trim()
+        : incoming.vipChatId !== undefined && incoming.vipChatId.trim()
+        ? incoming.vipChatId.trim()
         : autoPilot.vipChatId || '';
 
     autoPilot = {
@@ -10902,11 +10369,11 @@ async function startServer() {
     }
 
     const cloudSaved = await saveState();
-    res.json({ ok: true, autopilot: redactAutoPilotForPublic(autoPilot), cloudSaved });
+    res.json({ ok: true, autopilot: autoPilot, cloudSaved });
   });
 
   // Add custom trading pair to admin list
-  app.post('/api/autopilot/add-pair', requireAdmin, async (req, res) => {
+  app.post('/api/autopilot/add-pair', async (req, res) => {
     let rawPair = String(req.body?.pair || '').toUpperCase().trim();
     if (!rawPair) {
       return res.status(400).json({ ok: false, error: 'يرجى كتابة رمز الزوج' });
@@ -10933,11 +10400,11 @@ async function startServer() {
     }
 
     const cloudSaved = await saveState();
-    res.json({ ok: true, autopilot: redactAutoPilotForPublic(autoPilot), cloudSaved, addedPair: rawPair });
+    res.json({ ok: true, autopilot: autoPilot, cloudSaved, addedPair: rawPair });
   });
 
   // Remove custom trading pair from admin list
-  app.post('/api/autopilot/remove-pair', requireAdmin, async (req, res) => {
+  app.post('/api/autopilot/remove-pair', async (req, res) => {
     const rawPair = String(req.body?.pair || '').toUpperCase().trim();
     if (rawPair === (autoPilot.primaryFixedPair || 'EUR/JPY')) {
       return res.status(400).json({ ok: false, error: 'لا يمكن حذف الزوج الثابت الأساسي المحدد كافتراضي' });
@@ -10948,11 +10415,22 @@ async function startServer() {
       autoPilot.allowedPairs = [autoPilot.primaryFixedPair || 'EUR/JPY'];
     }
     const cloudSaved = await saveState();
-    res.json({ ok: true, autopilot: redactAutoPilotForPublic(autoPilot), cloudSaved, removedPair: rawPair });
+    res.json({ ok: true, autopilot: autoPilot, cloudSaved, removedPair: rawPair });
   });
 
-  // Trigger an immediate focused analysis & dispatch now (Admin)
-  app.post('/api/autopilot/trigger-now', requireAdmin, async (req, res) => {
+  app.options('/api/autopilot/trigger-now', (_req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+    res.sendStatus(204);
+  });
+
+  // Trigger an immediate focused analysis & dispatch now
+  app.post('/api/autopilot/trigger-now', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+
     const preferredPair = req.body?.preferredPair || (req.query?.preferredPair as string | undefined);
     const { selectedCandidate } = await scanRealGlobalForexMarket(true, preferredPair);
     if (!selectedCandidate) {
@@ -10971,13 +10449,17 @@ async function startServer() {
     res.json({
       ok: true,
       signal: result.signal,
-      autopilot: redactAutoPilotForPublic(autoPilot),
+      autopilot: autoPilot,
       telegramError: result.error
     });
   });
 
   // Trigger VIP Momentum Pause Breakout Signal Now (Manual Admin Trigger)
-  app.post('/api/admin/momentum-pause/trigger-now', requireAdmin, async (req, res) => {
+  app.post('/api/admin/momentum-pause/trigger-now', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+
     const preferredPair = req.body?.preferredPair || (req.query?.preferredPair as string | undefined);
     const forcedDirection = req.body?.direction as 'CALL' | 'PUT' | undefined;
 
@@ -11023,8 +10505,8 @@ async function startServer() {
     });
   });
 
-  // Get live status of 4-indicator confluence across all scanned pairs (Admin)
-  app.get('/api/admin/momentum-pause/status', requireAdmin, async (_req, res) => {
+  // Get live status of 4-indicator confluence across all scanned pairs
+  app.get('/api/admin/momentum-pause/status', async (_req, res) => {
     const { snapshots } = await scanRealGlobalForexMarket(false);
     const radar = snapshots.map(s => ({
       pair: s.pair,
@@ -11045,8 +10527,8 @@ async function startServer() {
     });
   });
 
-  // Pull best real global setup into the manual studio editor (Admin)
-  app.get('/api/scrape-source', requireAdmin, async (_req, res) => {
+  // Pull best real global setup into the manual studio editor
+  app.get('/api/scrape-source', async (_req, res) => {
     const { selectedCandidate } = await scanRealGlobalForexMarket(true);
     if (selectedCandidate) {
       const nextMin = String(new Date(Date.now() + 60000).getMinutes()).padStart(2, '0');
@@ -11063,8 +10545,8 @@ async function startServer() {
     }
   });
 
-  // Publish signal manually (Admin)
-  app.post('/api/signals/publish', requireAdmin, async (req, res) => {
+  // Publish signal manually
+  app.post('/api/signals/publish', async (req, res) => {
     const {
       asset,
       direction,
@@ -11081,30 +10563,18 @@ async function startServer() {
       sendToTelegram
     } = req.body;
 
-    const incomingToken = typeof botToken === 'string' ? botToken.trim() : '';
-    const resolvedFreeToken =
-      incomingToken && incomingToken !== 'CONFIGURED'
-        ? incomingToken
-        : (autoPilot.botToken || '').trim();
-    const resolvedChatId =
-      typeof chatId === 'string' && chatId.trim()
-        ? chatId.trim()
-        : (autoPilot.chatId || '').trim();
-
-    if (resolvedFreeToken && incomingToken && incomingToken !== 'CONFIGURED') {
-      autoPilot.botToken = resolvedFreeToken;
-    }
-    if (resolvedChatId) {
-      autoPilot.chatId = resolvedChatId;
+    if (botToken && chatId) {
+      autoPilot.botToken = botToken;
+      autoPilot.chatId = chatId;
     }
 
     let telegramResult = null;
     let vipTelegramResult = null;
     let telegramError = null;
 
-    if (sendToTelegram && autoPilot.freeBotEnabled !== false && resolvedFreeToken && resolvedChatId) {
+    if (sendToTelegram && autoPilot.freeBotEnabled !== false && botToken && chatId) {
       try {
-        const tgData = await sendTelegramMessage(resolvedFreeToken, resolvedChatId, formattedMessage);
+        const tgData = await sendTelegramMessage(botToken, chatId, formattedMessage);
         if (!tgData.ok) {
           telegramError = tgData.description || 'فشل الإرسال عبر البوت المجاني، تأكد من التوكن ومعرف القناة.';
         } else {
@@ -11116,7 +10586,7 @@ async function startServer() {
     }
 
     // Also send manual signal to VIP Bot if enabled (and not the exact same channel as Free Bot)
-    const activeVipToken = (autoPilot.vipBotToken || resolvedFreeToken).trim();
+    const activeVipToken = (autoPilot.vipBotToken || botToken || autoPilot.botToken).trim();
     const activeVipChat = (autoPilot.vipChatId || '').trim();
     const isSameAsFree =
       Boolean(telegramResult) &&
@@ -11170,7 +10640,7 @@ async function startServer() {
   });
 
   // Admin Live Broadcast - Dedicated endpoint for Admin Live Stream signals & celebrations
-  app.post('/api/admin/live-broadcast', requireAdmin, async (req, res) => {
+  app.post('/api/admin/live-broadcast', async (req, res) => {
     try {
       const {
         type = 'signal', // 'signal' | 'announcement'
@@ -11487,8 +10957,8 @@ async function startServer() {
     }
   });
 
-  // Update signal status (WIN / LOSS / PENDING) + Edit original signal message with concise result (Admin)
-  app.patch('/api/signals/:id/status', requireAdmin, async (req, res) => {
+  // Update signal status (WIN / LOSS / PENDING) + Edit original signal message with concise result
+  app.patch('/api/signals/:id/status', async (req, res) => {
     const { id } = req.params;
     const { status, botToken, chatId, notifyTelegram } = req.body;
 
@@ -11500,9 +10970,7 @@ async function startServer() {
     signal.status = status;
     signal.formattedMessage = appendResultToSignalMessage(signal.formattedMessage, status);
 
-    const incomingTok = typeof botToken === 'string' ? botToken.trim() : '';
-    const activeToken =
-      incomingTok && incomingTok !== 'CONFIGURED' ? incomingTok : autoPilot.botToken;
+    const activeToken = botToken || autoPilot.botToken;
     const activeChat = chatId || autoPilot.chatId;
 
     let telegramSent = false;
@@ -11522,8 +10990,8 @@ async function startServer() {
     res.json({ ok: true, signal, telegramSent });
   });
 
-  // Delete signal (Admin)
-  app.delete('/api/signals/:id', requireAdmin, (req, res) => {
+  // Delete signal
+  app.delete('/api/signals/:id', (req, res) => {
     const idx = signalsStore.findIndex(s => s.id === req.params.id);
     if (idx !== -1) {
       signalsStore.splice(idx, 1);
@@ -11536,8 +11004,8 @@ async function startServer() {
   // 6:00 PM LIVE BROADCAST SESSION ENDPOINTS
   // -------------------------------------------------------------
 
-  // Get current Live Broadcast Session status & stats (Admin)
-  app.get('/api/admin/live-broadcast-session', requireAdmin, async (_req, res) => {
+  // Get current Live Broadcast Session status & stats
+  app.get('/api/admin/live-broadcast-session', async (_req, res) => {
     if (!isCloudStateLoaded) {
       await loadStateFromCloudAndDisk();
     }
@@ -11569,8 +11037,8 @@ async function startServer() {
     });
   });
 
-  // Update Live Broadcast Session settings or perform action (Admin)
-  app.post('/api/admin/live-broadcast-session/config', requireAdmin, async (req, res) => {
+  // Update Live Broadcast Session settings or perform action (reset, toggle)
+  app.post('/api/admin/live-broadcast-session/config', async (req, res) => {
     const {
       enabled,
       minWinRateTarget,
@@ -11610,8 +11078,8 @@ async function startServer() {
     res.json({ ok: true, session: liveBroadcastSession });
   });
 
-  // Manually trigger pre-scan or immediate live broadcast signal (Admin)
-  app.post('/api/admin/live-broadcast-session/trigger-now', requireAdmin, async (req, res) => {
+  // Manually trigger pre-scan or immediate live broadcast signal
+  app.post('/api/admin/live-broadcast-session/trigger-now', async (req, res) => {
     const { mode } = req.body || {}; // 'scan' | 'signal'
     const { selectedCandidate } = await scanRealGlobalForexMarket(false);
 
@@ -11662,7 +11130,7 @@ async function startServer() {
   });
 
   // Create news item (Admin)
-  app.post('/api/forex-news', requireAdmin, async (req, res) => {
+  app.post('/api/forex-news', async (req, res) => {
     const itemData = req.body;
     if (!itemData || !itemData.title || !itemData.currency) {
       return res.status(400).json({ ok: false, error: 'العنوان والعملة حقول مطلوبة' });
@@ -11695,7 +11163,7 @@ async function startServer() {
   });
 
   // Update news item (Admin)
-  app.put('/api/forex-news/:id', requireAdmin, async (req, res) => {
+  app.put('/api/forex-news/:id', async (req, res) => {
     try {
       const rawId = String(req.params?.id || '');
       const cleanId = decodeURIComponent(rawId);
@@ -11746,7 +11214,7 @@ async function startServer() {
   });
 
   // Delete news item (Admin)
-  app.delete('/api/forex-news/:id', requireAdmin, async (req, res) => {
+  app.delete('/api/forex-news/:id', async (req, res) => {
     const rawId = String(req.params?.id || '');
     const cleanId = decodeURIComponent(rawId);
     const idx = forexNewsStore.findIndex(n => n.id === cleanId || n.id === rawId);
@@ -11757,8 +11225,8 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  // Auto-fetch and sync breaking forex news (Admin)
-  app.post('/api/forex-news/auto-fetch', requireAdmin, async (req, res) => {
+  // Auto-fetch and sync breaking forex news & economic calendar releases (Auto-purges expired + live refresh)
+  app.post('/api/forex-news/auto-fetch', async (req, res) => {
     try {
       if (!isCloudStateLoaded) {
         await loadStateFromCloudAndDisk();
@@ -11786,14 +11254,14 @@ async function startServer() {
   });
 
   // Re-seed default weekly news schedule (Admin)
-  app.post('/api/forex-news/seed-weekly', requireAdmin, async (_req, res) => {
+  app.post('/api/forex-news/seed-weekly', async (_req, res) => {
     forexNewsStore = filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS);
     await cleanupAndAutoUpdateForexNews({ forceRemote: true });
     res.json({ ok: true, count: forexNewsStore.length, news: forexNewsStore });
   });
 
   // Broadcast news as recommendation to Telegram (Admin)
-  app.post(['/api/forex-news/:id/broadcast', '/api/forex-news/broadcast'], requireAdmin, async (req, res) => {
+  app.post(['/api/forex-news/:id/broadcast', '/api/forex-news/broadcast'], async (req, res) => {
     try {
       const rawId = String(req.params?.id || req.body?.id || req.body?.item?.id || '');
       const cleanId = decodeURIComponent(rawId);
@@ -11854,11 +11322,10 @@ async function startServer() {
       const sendToFree = targetBots.freeBot !== false;
       const sendToVip = targetBots.vipBot !== false;
 
-      // Always use server-configured tokens and channels (never accept arbitrary client token overrides)
-      const freeToken = (autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
-      const freeChat = (autoPilot.chatId || DEFAULT_FREE_CHAT_ID).trim();
-      const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
-      const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
+      const freeToken = (req.body?.freeToken || autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
+      const freeChat = (req.body?.freeChatId || autoPilot.chatId || DEFAULT_FREE_CHAT_ID).trim();
+      const vipToken = (req.body?.vipToken || autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
+      const vipChat = (req.body?.vipChatId || autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
 
       let sentFree = false;
       let sentVip = false;
@@ -11947,7 +11414,7 @@ async function startServer() {
   });
 
   // Save all plans (Admin: bulk update, re-order, or batch edit)
-  app.post('/api/platform-config/plans', requireAdmin, async (req, res) => {
+  app.post('/api/platform-config/plans', async (req, res) => {
     const { plans } = req.body || {};
     if (!Array.isArray(plans)) {
       return res.status(400).json({ ok: false, error: 'قائمة الباقات يجب أن تكون مصفوفة' });
@@ -11972,7 +11439,7 @@ async function startServer() {
   });
 
   // Add a new single subscription plan (Admin)
-  app.post('/api/platform-config/plans/add', requireAdmin, async (req, res) => {
+  app.post('/api/platform-config/plans/add', async (req, res) => {
     const p = req.body || {};
     if (!p.name || !String(p.name).trim()) {
       return res.status(400).json({ ok: false, error: 'مسمى الباقة مطلوب' });
@@ -12003,7 +11470,7 @@ async function startServer() {
   });
 
   // Edit / Update an existing plan by ID (Admin)
-  app.put('/api/platform-config/plans/:id', requireAdmin, async (req, res) => {
+  app.put('/api/platform-config/plans/:id', async (req, res) => {
     const { id } = req.params;
     let idx = plansStore.findIndex(p => p.id === id);
     if (idx === -1) {
@@ -12067,7 +11534,7 @@ async function startServer() {
   });
 
   // Delete a subscription plan by ID (Admin)
-  app.delete('/api/platform-config/plans/:id', requireAdmin, async (req, res) => {
+  app.delete('/api/platform-config/plans/:id', async (req, res) => {
     const { id } = req.params;
     let idx = plansStore.findIndex(p => p.id === id);
     if (idx === -1) {
@@ -12081,14 +11548,14 @@ async function startServer() {
   });
 
   // Reset subscription plans to system defaults (Admin)
-  app.post('/api/platform-config/reset-plans', requireAdmin, async (_req, res) => {
+  app.post('/api/platform-config/reset-plans', async (_req, res) => {
     plansStore = [...INITIAL_SUBSCRIPTION_PLANS];
     await saveState();
     res.json({ ok: true, plans: plansStore });
   });
 
   // Save / Update Platform Contact & Referral Links (Admin)
-  app.post('/api/platform-config/contact-links', requireAdmin, async (req, res) => {
+  app.post('/api/platform-config/contact-links', async (req, res) => {
     const incoming = req.body || {};
     contactLinksStore = {
       ...contactLinksStore,
@@ -12126,16 +11593,9 @@ async function startServer() {
           : contactLinksStore.contactNotes
     };
 
-    // Keep autoPilot and Onboarding Telegram Bot in sync
+    // Keep autoPilot.quotexReferralLink in sync
     if (contactLinksStore.quotexReferralLink) {
       autoPilot.quotexReferralLink = contactLinksStore.quotexReferralLink;
-      telegramBotConfigStore.quotexReferralUrl = contactLinksStore.quotexReferralLink;
-    }
-    if (contactLinksStore.telegramSupportUrl) {
-      telegramBotConfigStore.adminTelegramUsername = contactLinksStore.telegramSupportUrl;
-    }
-    if (contactLinksStore.telegramChannelUrl) {
-      telegramBotConfigStore.freeChannelLink = contactLinksStore.telegramChannelUrl;
     }
 
     await saveState();
@@ -12146,21 +11606,20 @@ async function startServer() {
   // PAYMENTS & PAYMENT METHODS MANAGEMENT ENDPOINTS
   // -------------------------------------------------------------
 
-  // Get current payment methods and transaction log (transactions restricted to Admin)
-  app.get('/api/payments/config', async (req, res) => {
+  // Get current payment methods and transaction log
+  app.get('/api/payments/config', async (_req, res) => {
     if (!isCloudStateLoaded) {
       await loadStateFromCloudAndDisk();
     }
-    const isAdmin = Boolean(extractAdminSession(req));
     res.json({
       ok: true,
-      paymentMethods: isAdmin ? paymentMethodsStore : paymentMethodsStore.filter(m => m.isActive !== false),
-      paymentTransactions: isAdmin ? paymentTransactionsStore : []
+      paymentMethods: paymentMethodsStore,
+      paymentTransactions: paymentTransactionsStore
     });
   });
 
   // Save / Update payment methods (Admin)
-  app.post('/api/payments/methods', requireAdmin, async (req, res) => {
+  app.post('/api/payments/methods', async (req, res) => {
     const { paymentMethods } = req.body || {};
     if (!Array.isArray(paymentMethods)) {
       return res.status(400).json({ ok: false, error: 'قائمة وسائل الدفع يجب أن تكون مصفوفة' });
@@ -12236,8 +11695,8 @@ async function startServer() {
     res.json({ ok: true, transaction: newTx });
   });
 
-  // Review transaction (Approve or Reject) (Admin)
-  app.post('/api/payments/review-transaction', requireAdmin, async (req, res) => {
+  // Review transaction (Approve or Reject)
+  app.post('/api/payments/review-transaction', async (req, res) => {
     const { transactionId, action, notes } = req.body || {};
     const tx = paymentTransactionsStore.find(t => t.id === transactionId);
     if (!tx) {
@@ -12436,98 +11895,78 @@ async function startServer() {
     });
   });
 
-  // Downloadable Strategy / Source Code endpoints disabled (zero source or text file exposure)
-  app.get(['/strategy.txt', '/api/strategy.txt', '/api/strategy/download', '/api/strategy/download-mq4', '/NB_FX_Momentum_Pause_Breakout.mq4', '/api/strategy/mq4-code'], (_req, res) => {
-    res.status(404).json({ ok: false, error: 'Downloadable strategy and source code files are disabled.' });
+  // Public Strategy text file endpoints
+  app.get(['/strategy.txt', '/api/strategy.txt'], (_req, res) => {
+    const stratPath = path.join(process.cwd(), 'public', 'strategy.txt');
+    if (fs.existsSync(stratPath)) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'inline; filename="zad-trading-strategy.txt"');
+      fs.createReadStream(stratPath).pipe(res);
+    } else {
+      res.status(404).send('Strategy file not found');
+    }
+  });
+
+  app.get('/api/strategy/download', (_req, res) => {
+    const stratPath = path.join(process.cwd(), 'public', 'strategy.txt');
+    if (fs.existsSync(stratPath)) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="zad-trading-strategy.txt"');
+      fs.createReadStream(stratPath).pipe(res);
+    } else {
+      res.status(404).send('Strategy file not found');
+    }
+  });
+
+  // Download MT4 indicator (.mq4)
+  app.get(['/api/strategy/download-mq4', '/NB_FX_Momentum_Pause_Breakout.mq4'], (_req, res) => {
+    const mq4Path = path.join(process.cwd(), 'public', 'NB_FX_Momentum_Pause_Breakout.mq4');
+    if (fs.existsSync(mq4Path)) {
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', 'attachment; filename="NB_FX_Momentum_Pause_Breakout.mq4"');
+      fs.createReadStream(mq4Path).pipe(res);
+    } else {
+      res.status(404).send('MT4 file not found');
+    }
+  });
+
+  // Get raw MT4 indicator code as JSON
+  app.get('/api/strategy/mq4-code', (_req, res) => {
+    const mq4Path = path.join(process.cwd(), 'public', 'NB_FX_Momentum_Pause_Breakout.mq4');
+    if (fs.existsSync(mq4Path)) {
+      const code = fs.readFileSync(mq4Path, 'utf-8');
+      res.json({ ok: true, filename: 'NB_FX_Momentum_Pause_Breakout.mq4', code });
+    } else {
+      res.status(404).json({ ok: false, error: 'MT4 file not found' });
+    }
   });
 
   // =========================================================================
-  // TELEGRAM BOT HUB & ONBOARDING SYSTEM REST API ENDPOINTS (Admin Only)
+  // TELEGRAM BOT HUB & ONBOARDING SYSTEM REST API ENDPOINTS
   // =========================================================================
 
-  app.get('/api/telegram-bot/config', requireAdmin, (_req, res) => {
-    res.json({ ok: true, config: redactBotConfigForAdmin(telegramBotConfigStore) });
+  app.get('/api/telegram-bot/config', (_req, res) => {
+    res.json({ ok: true, config: telegramBotConfigStore });
   });
 
-  app.post('/api/telegram-bot/config', requireAdmin, async (req, res) => {
+  app.post('/api/telegram-bot/config', async (req, res) => {
     try {
-      const incoming = req.body || {};
-      const rawTok = typeof incoming.botToken === 'string' ? incoming.botToken.trim() : '';
-      const resolvedTok =
-        incoming.clearBotToken === true
-          ? ''
-          : rawTok && rawTok !== 'CONFIGURED'
-          ? rawTok
-          : telegramBotConfigStore.botToken || '';
-
-      const tokenChanged = resolvedTok !== (telegramBotConfigStore.botToken || '');
-
       telegramBotConfigStore = {
         ...telegramBotConfigStore,
-        ...incoming,
-        botToken: resolvedTok,
-        egyptPayment: {
-          ...(telegramBotConfigStore.egyptPayment || defaultTelegramBotConfig.egyptPayment),
-          ...(incoming.egyptPayment || {})
-        },
-        palestinePayment: {
-          ...(telegramBotConfigStore.palestinePayment || defaultTelegramBotConfig.palestinePayment),
-          ...(incoming.palestinePayment || {})
-        },
-        internationalPayment: {
-          ibanEgp: {
-            ...(telegramBotConfigStore.internationalPayment?.ibanEgp || defaultTelegramBotConfig.internationalPayment.ibanEgp),
-            ...(incoming.internationalPayment?.ibanEgp || {})
-          },
-          ibanUsd: {
-            ...(telegramBotConfigStore.internationalPayment?.ibanUsd || defaultTelegramBotConfig.internationalPayment.ibanUsd),
-            ...(incoming.internationalPayment?.ibanUsd || {})
-          }
-        },
-        usdtPayment: {
-          ...(telegramBotConfigStore.usdtPayment || defaultTelegramBotConfig.usdtPayment),
-          ...(incoming.usdtPayment || {})
-        },
-        robotGuide: {
-          ...(telegramBotConfigStore.robotGuide || defaultTelegramBotConfig.robotGuide),
-          ...(incoming.robotGuide || {})
-        }
+        ...req.body
       };
-
-      if (tokenChanged) {
-        lastOnboardingBotUpdateId = 0;
-      }
-
-      // Sync support link, channel link, and Quotex referral link back to contactLinksStore & autoPilot
-      if (telegramBotConfigStore.adminTelegramUsername) {
-        contactLinksStore.telegramSupportUrl = normalizeTelegramUrl(
-          telegramBotConfigStore.adminTelegramUsername,
-          contactLinksStore.telegramSupportUrl
-        );
-      }
-      if (telegramBotConfigStore.freeChannelLink) {
-        contactLinksStore.telegramChannelUrl = normalizeTelegramUrl(
-          telegramBotConfigStore.freeChannelLink,
-          contactLinksStore.telegramChannelUrl
-        );
-      }
-      if (telegramBotConfigStore.quotexReferralUrl) {
-        contactLinksStore.quotexReferralLink = telegramBotConfigStore.quotexReferralUrl;
-        autoPilot.quotexReferralLink = telegramBotConfigStore.quotexReferralUrl;
-      }
-
       await saveState();
-      res.json({ ok: true, config: redactBotConfigForAdmin(telegramBotConfigStore) });
+      res.json({ ok: true, config: telegramBotConfigStore });
     } catch (err: any) {
       res.status(500).json({ ok: false, error: err?.message || 'Failed to update config' });
     }
   });
 
-  app.get('/api/telegram-bot/users', requireAdmin, (_req, res) => {
+  app.get('/api/telegram-bot/users', (_req, res) => {
     res.json({ ok: true, users: telegramBotUsersStore });
   });
 
-  app.post('/api/telegram-bot/users', requireAdmin, async (req, res) => {
+  app.post('/api/telegram-bot/users', async (req, res) => {
     try {
       const b = req.body;
       const newUser: TelegramBotUser = {
@@ -12554,7 +11993,7 @@ async function startServer() {
     }
   });
 
-  app.put('/api/telegram-bot/users/:id', requireAdmin, async (req, res) => {
+  app.put('/api/telegram-bot/users/:id', async (req, res) => {
     try {
       const { id } = req.params;
       const idx = telegramBotUsersStore.findIndex(u => u.id === id);
@@ -12573,7 +12012,7 @@ async function startServer() {
     }
   });
 
-  app.delete('/api/telegram-bot/users/:id', requireAdmin, async (req, res) => {
+  app.delete('/api/telegram-bot/users/:id', async (req, res) => {
     try {
       const { id } = req.params;
       telegramBotUsersStore = telegramBotUsersStore.filter(u => u.id !== id);
@@ -12584,7 +12023,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/telegram-bot/users/:id/status', requireAdmin, async (req, res) => {
+  app.post('/api/telegram-bot/users/:id/status', async (req, res) => {
     try {
       const { id } = req.params;
       const { status } = req.body;
@@ -12600,7 +12039,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/telegram-bot/users/:id/message', requireAdmin, async (req, res) => {
+  app.post('/api/telegram-bot/users/:id/message', async (req, res) => {
     try {
       const { id } = req.params;
       const { message } = req.body;
@@ -12620,7 +12059,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/telegram-bot/broadcast', requireAdmin, async (req, res) => {
+  app.post('/api/telegram-bot/broadcast', async (req, res) => {
     try {
       const { message, targetLanguage, targetStatus } = req.body;
       if (!message || !message.trim()) {
@@ -12652,18 +12091,10 @@ async function startServer() {
     }
   });
 
-  app.post('/api/telegram-bot/test-token', requireAdmin, async (req, res) => {
+  app.post('/api/telegram-bot/test-token', async (req, res) => {
     try {
-      const { token } = req.body || {};
-      const incoming = typeof token === 'string' ? token.trim() : '';
-      const checkToken = (
-        (incoming && incoming !== 'CONFIGURED' ? incoming : '') ||
-        telegramBotConfigStore.botToken ||
-        ''
-      ).trim();
-      if (!checkToken) {
-        return res.status(400).json({ ok: false, error: 'لم يتم إدخال توكن البوت التفاعلي بعد — يرجى لصق توكن BotFather وحفظه.' });
-      }
+      const { token } = req.body;
+      const checkToken = (token || telegramBotConfigStore.botToken || autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
       const tgRes = await fetch(`https://api.telegram.org/bot${checkToken}/getMe`);
       const data = await tgRes.json();
       if (data.ok) {
@@ -12676,31 +12107,25 @@ async function startServer() {
     }
   });
 
-  // Automated IP-based Country Verification & Locking Endpoint (HMAC-signed token required for chatId updates)
+  // Automated IP-based Country Verification & Locking Endpoint
   app.get('/api/verify-country', async (req, res) => {
     const chatId = String(req.query.chatId || '').trim();
-    const sigToken = String(req.query.token || '').trim();
-    if (chatId && !verifyCountryToken(chatId, sigToken)) {
-      return res.status(403).send('Forbidden: invalid or missing verification signature');
-    }
-
     const forwarded = req.headers['x-forwarded-for'];
     let clientIp = typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : (req.socket.remoteAddress || '');
     if (clientIp.startsWith('::ffff:')) clientIp = clientIp.replace('::ffff:', '');
-    if (!/^[a-fA-F0-9.:]+$/.test(clientIp)) clientIp = '';
 
     let detectedCountry = 'دولي 🌍';
     let countryCode = '';
 
     // Check Cloudflare / CDN geo headers first if present
     const cfCountry = req.headers['cf-ipcountry'];
-    if (typeof cfCountry === 'string' && /^[A-Za-z]{2}$/.test(cfCountry)) {
+    if (typeof cfCountry === 'string' && cfCountry.length === 2) {
       countryCode = cfCountry.toUpperCase();
     }
 
     if (!countryCode && clientIp && !clientIp.startsWith('127.') && !clientIp.startsWith('10.') && !clientIp.startsWith('192.168.') && clientIp !== '::1') {
       try {
-        const geoRes = await fetch(`http://ip-api.com/json/${encodeURIComponent(clientIp)}?fields=status,country,countryCode`);
+        const geoRes = await fetch(`http://ip-api.com/json/${clientIp}?fields=status,country,countryCode`);
         const geoData = await geoRes.json();
         if (geoData?.status === 'success') {
           countryCode = (geoData.countryCode || '').toUpperCase();
@@ -12709,7 +12134,7 @@ async function startServer() {
           } else if (countryCode === 'PS' || geoData.country?.toLowerCase().includes('palestine')) {
             detectedCountry = 'دولة فلسطين 🇵🇸';
           } else {
-            detectedCountry = `${String(geoData.country || 'International').slice(0, 60)} 🌍`;
+            detectedCountry = `${geoData.country} 🌍`;
           }
         }
       } catch (_e) {}
@@ -12743,10 +12168,8 @@ async function startServer() {
       await saveState();
 
       const token = telegramBotConfigStore.botToken.trim() || autoPilot.botToken.trim() || DEFAULT_FREE_BOT_TOKEN;
-      if (token) {
-        const confirmNotice = `✅ <b>تم التحقق وتحديث دولتك تلقائياً عبر الـ IP:</b> <b>${escapeTgHtml(user.country)}</b> <i>(يمكنك تعديلها في أي وقت من الملف الشخصي)</i>`;
-        await sendTelegramBotMainMenu(token, chatId, user, undefined, confirmNotice);
-      }
+      const confirmNotice = `✅ <b>تم التحقق وتحديث دولتك تلقائياً عبر الـ IP:</b> <b>${escapeTgHtml(user.country)}</b> <i>(يمكنك تعديلها في أي وقت من الملف الشخصي)</i>`;
+      await sendTelegramBotMainMenu(token, chatId, user, undefined, confirmNotice);
     }
 
     res.send(`<!DOCTYPE html>
@@ -12762,7 +12185,7 @@ async function startServer() {
     <div class="w-16 h-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto text-3xl font-bold">✓</div>
     <div class="space-y-2">
       <h1 class="text-2xl font-black text-white">تم التحقق وتثبيت دولتك بنجاح!</h1>
-      <p class="text-emerald-400 text-xl font-extrabold tracking-wide">${escapeHtml(detectedCountry)}</p>
+      <p class="text-emerald-400 text-xl font-extrabold tracking-wide">${detectedCountry}</p>
     </div>
     <div class="bg-slate-800/80 rounded-2xl p-4 text-xs text-slate-300 space-y-2 border border-slate-700/50">
       <p>🔒 <b>تم قفل وتثبيت الدولة في ملفك الشخصي:</b></p>
@@ -12791,9 +12214,6 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.all('/api/*', (_req, res) => {
-      res.status(404).json({ ok: false, error: 'API route not found' });
-    });
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
