@@ -32,6 +32,11 @@ import {
   X
 } from 'lucide-react';
 import type { AutoPilotConfig, SignalItem } from '../App';
+import {
+  saveSignalToFirestore,
+  syncRobotPublicFeedToFirestore,
+  canWriteFirestoreAsAdmin
+} from '../firebase';
 
 interface ZadtooAdminLiveBroadcastProps {
   adminToken?: string;
@@ -271,11 +276,47 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     setConfirmSignalModalOpen(true);
   };
 
-  // Execute sending the live signal after confirmation via secure backend API
+  // Execute sending the live signal after confirmation via secure backend API or Cloud Firestore fallback
   const executeSendLiveSignal = async () => {
     setConfirmSignalModalOpen(false);
     setIsSendingSignal(true);
     setSignalFeedback(null);
+
+    const publishLiveSignalViaFirestore = async () => {
+      const now = new Date();
+      const nextMin = new Date(now.getTime() + 60000);
+      nextMin.setSeconds(0, 0);
+      const entryMinuteStr = String(nextMin.getMinutes()).padStart(2, '0');
+      const entryTimeStr = `${String(nextMin.getHours()).padStart(2, '0')}:${entryMinuteStr}`;
+      const liveSig: SignalItem = {
+        id: `live_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        asset: selectedPair,
+        isOtc: false,
+        direction,
+        timeframe: 'M1',
+        entryMinute: entryMinuteStr,
+        entryTime: entryTimeStr,
+        targetEntryTimestamp: Math.floor(nextMin.getTime() / 1000),
+        status: 'PENDING',
+        livePrice: '',
+        analysisReason: customNotes.trim() || 'إشارة بث حي مباشرة من المشرف ZAD FX',
+        formattedMessage: `🔴 بث حي مباشر: ${selectedPair} | ${direction === 'CALL' ? 'صعود 🟢' : 'هبوط 🔴'} | ${entryTimeStr}`,
+        rawOriginal: `${selectedPair} ${direction}`,
+        createdAt: now.toISOString(),
+        isLiveBroadcast: true
+      };
+
+      await saveSignalToFirestore(liveSig);
+      await syncRobotPublicFeedToFirestore([liveSig], { targetPair: selectedPair });
+
+      setSignalFeedback({
+        type: 'success',
+        text: `✅ تم بث إشارة ${selectedPair} (${direction === 'CALL' ? 'صعود 🟢' : 'هبوط 🔴'}) عبر سحابة fx.zadtoo.com والروبوت العائم بنجاح!`,
+        details: 'وصلت الإشارة مباشرة إلى الروبوت العائم وصفحة الزوار عبر السحابة.'
+      });
+      if (onSignalCreated) onSignalCreated(liveSig);
+      if (onRefreshSignals) onRefreshSignals();
+    };
 
     try {
       const controller = new AbortController();
@@ -316,6 +357,11 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
           detailsText += ` | ملاحظة بوت VIP: ${serverData.vipTelegramError}`;
         }
 
+        if (canWriteFirestoreAsAdmin() && serverData.signal) {
+          saveSignalToFirestore(serverData.signal).catch(() => {});
+          syncRobotPublicFeedToFirestore([serverData.signal], { targetPair: selectedPair }).catch(() => {});
+        }
+
         setSignalFeedback({
           type: 'success',
           text: `تم إرسال إشارة ${selectedPair} (${direction === 'CALL' ? 'صعود 🟢' : 'هبوط 🔴'}) بنجاح!`,
@@ -324,6 +370,8 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
 
         if (serverData.signal && onSignalCreated) onSignalCreated(serverData.signal);
         if (onRefreshSignals) onRefreshSignals();
+      } else if ((!contentType.includes('application/json') || !res.ok) && canWriteFirestoreAsAdmin()) {
+        await publishLiveSignalViaFirestore();
       } else {
         setSignalFeedback({
           type: 'error',
@@ -331,6 +379,10 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
         });
       }
     } catch (err: any) {
+      if (canWriteFirestoreAsAdmin()) {
+        await publishLiveSignalViaFirestore();
+        return;
+      }
       const msg = err?.message === 'Failed to fetch'
         ? 'تعذر الاتصال بالخادم. يرجى التأكد من اتصال الإنترنت ثم إعادة المحاولة.'
         : (err?.message || 'حدث خطأ أثناء إرسال الإشارة.');

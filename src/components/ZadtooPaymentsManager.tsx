@@ -30,6 +30,11 @@ import {
 import type { PaymentMethodConfig, PaymentTransactionRecord, SubscriptionPlan } from '../types/platformConfig';
 import { INITIAL_PAYMENT_METHODS } from '../types/platformConfig';
 import type { VipSubscriber } from '../App';
+import {
+  loadCloudPaymentMethods,
+  saveCloudPaymentMethods,
+  canWriteFirestoreAsAdmin
+} from '../firebase';
 
 interface ZadtooPaymentsManagerProps {
   adminToken?: string;
@@ -94,24 +99,37 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
 
   const fetchPaymentsConfig = async () => {
     setIsLoading(true);
+    let loadedFromServer = false;
     try {
       const res = await fetch('/api/payments/config', {
         headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
       });
-      const data = await res.json();
-      if (data.ok) {
-        if (Array.isArray(data.paymentMethods) && data.paymentMethods.length > 0) {
-          setPaymentMethods(data.paymentMethods);
-        }
-        if (Array.isArray(data.paymentTransactions)) {
-          setTransactions(data.paymentTransactions);
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (data.ok) {
+          loadedFromServer = true;
+          if (Array.isArray(data.paymentMethods) && data.paymentMethods.length > 0) {
+            setPaymentMethods(data.paymentMethods);
+          }
+          if (Array.isArray(data.paymentTransactions)) {
+            setTransactions(data.paymentTransactions);
+          }
         }
       }
     } catch (_e) {
-      // Keep initial
-    } finally {
-      setIsLoading(false);
+      // Static hosting fallback below
     }
+
+    if (!loadedFromServer) {
+      try {
+        const cloudMethods = await loadCloudPaymentMethods<PaymentMethodConfig[]>();
+        if (Array.isArray(cloudMethods) && cloudMethods.length > 0) {
+          setPaymentMethods(cloudMethods);
+        }
+      } catch (_e) {}
+    }
+    setIsLoading(false);
   };
 
   const showNotice = (text: string, type: 'success' | 'error' = 'success') => {
@@ -125,26 +143,39 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  const persistPaymentMethods = async (updatedList: PaymentMethodConfig[]): Promise<boolean> => {
+    let savedServer = false;
+    try {
+      const res = await fetch('/api/payments/methods', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ paymentMethods: updatedList })
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (data.ok) savedServer = true;
+      }
+    } catch (_e) {}
+
+    const savedCloud = canWriteFirestoreAsAdmin()
+      ? await saveCloudPaymentMethods(updatedList).catch(() => false)
+      : false;
+
+    return savedServer || savedCloud;
+  };
+
   // Toggle method active status
   const handleToggleMethodActive = async (methodId: string) => {
     const updated = paymentMethods.map(m =>
       m.id === methodId ? { ...m, isActive: !m.isActive } : m
     );
     setPaymentMethods(updated);
-    try {
-      const res = await fetch('/api/payments/methods', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ paymentMethods: updated })
-      });
-      const data = await res.json();
-      if (res.ok && data.ok) {
-        showNotice('تم تحديث حالة وسيلة الدفع بنجاح');
-      } else {
-        showNotice(data.error || 'تعذر حفظ التغيير (تأكد من صلاحية المشرف)', 'error');
-      }
-    } catch (_e) {
-      showNotice('حدث خطأ في حفظ التغيير', 'error');
+    const ok = await persistPaymentMethods(updated);
+    if (ok) {
+      showNotice('تم تحديث حالة وسيلة الدفع وحفظها بنجاح ✅');
+    } else {
+      showNotice('تعذر حفظ التغيير — تأكد من تسجيل الدخول كمشرف عبر Google', 'error');
     }
   };
 
@@ -168,20 +199,11 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     setPaymentMethods(updatedList);
     setEditingMethod(null);
 
-    try {
-      const res = await fetch('/api/payments/methods', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ paymentMethods: updatedList })
-      });
-      const resData = await res.json();
-      if (res.ok && resData.ok) {
-        showNotice(isNew ? 'تمت إضافة وسيلة الدفع بنجاح' : 'تم تعديل وسيلة الدفع بنجاح');
-      } else {
-        showNotice(resData.error || 'تعذر حفظ وسيلة الدفع', 'error');
-      }
-    } catch (_e) {
-      showNotice('حدث خطأ أثناء حفظ وسيلة الدفع', 'error');
+    const ok = await persistPaymentMethods(updatedList);
+    if (ok) {
+      showNotice(isNew ? 'تمت إضافة وسيلة الدفع وحفظها بنجاح ✅' : 'تم تعديل وسيلة الدفع وحفظها بنجاح ✅');
+    } else {
+      showNotice('تعذر حفظ وسيلة الدفع — تأكد من تسجيل الدخول كمشرف عبر Google', 'error');
     }
   };
 
@@ -192,20 +214,11 @@ export const ZadtooPaymentsManager: React.FC<ZadtooPaymentsManagerProps> = ({
     setPaymentMethods(updated);
     setMethodToDelete(null);
 
-    try {
-      const res = await fetch('/api/payments/methods', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({ paymentMethods: updated })
-      });
-      const data = await res.json();
-      if (res.ok && data.ok) {
-        showNotice('تم حذف وسيلة الدفع بنجاح');
-      } else {
-        showNotice(data.error || 'تعذر حذف وسيلة الدفع', 'error');
-      }
-    } catch (_e) {
-      showNotice('حدث خطأ أثناء حذف وسيلة الدفع', 'error');
+    const ok = await persistPaymentMethods(updated);
+    if (ok) {
+      showNotice('تم حذف وسيلة الدفع بنجاح');
+    } else {
+      showNotice('تعذر حذف وسيلة الدفع', 'error');
     }
   };
 

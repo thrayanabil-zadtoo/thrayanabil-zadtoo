@@ -23,6 +23,14 @@ import {
   AlertCircle
 } from 'lucide-react';
 import type { SubscriptionPlan, PlatformContactLinks } from '../types/platformConfig';
+import { INITIAL_SUBSCRIPTION_PLANS } from '../types/platformConfig';
+import {
+  loadCloudPlans,
+  saveCloudPlans,
+  loadCloudContactLinks,
+  saveCloudContactLinks,
+  canWriteFirestoreAsAdmin
+} from '../firebase';
 
 interface ZadtooPlansAndLinksManagerProps {
   adminToken?: string;
@@ -112,31 +120,61 @@ export const ZadtooPlansAndLinksManager: React.FC<ZadtooPlansAndLinksManagerProp
 
   const fetchConfig = async () => {
     setIsLoading(true);
+    let loadedFromServer = false;
     try {
       const res = await fetch('/api/platform-config');
-      const data = await res.json();
-      if (data.ok) {
-        if (Array.isArray(data.plans) && data.plans.length > 0) {
-          setPlans(data.plans);
-          try {
-            localStorage.setItem('zad_platform_plans', JSON.stringify(data.plans));
-          } catch (_e) {}
-        }
-        if (data.contactLinks) {
-          setContactLinks(data.contactLinks);
-          try {
-            localStorage.setItem('zad_platform_contact_links', JSON.stringify(data.contactLinks));
-          } catch (_e) {}
-        }
-        if (onConfigChanged) {
-          onConfigChanged(data.plans || [], data.contactLinks || contactLinks);
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (data.ok) {
+          loadedFromServer = true;
+          if (Array.isArray(data.plans) && data.plans.length > 0) {
+            setPlans(data.plans);
+            try {
+              localStorage.setItem('zad_platform_plans', JSON.stringify(data.plans));
+            } catch (_e) {}
+          }
+          if (data.contactLinks) {
+            setContactLinks(data.contactLinks);
+            try {
+              localStorage.setItem('zad_platform_contact_links', JSON.stringify(data.contactLinks));
+            } catch (_e) {}
+          }
+          if (onConfigChanged) {
+            onConfigChanged(data.plans || [], data.contactLinks || contactLinks);
+          }
         }
       }
     } catch (_e) {
-      // Keep cached/initial
-    } finally {
-      setIsLoading(false);
+      // Static hosting fallback below
     }
+
+    if (!loadedFromServer) {
+      try {
+        const [cloudPlans, cloudLinks] = await Promise.all([
+          loadCloudPlans<SubscriptionPlan[]>(),
+          loadCloudContactLinks<PlatformContactLinks>()
+        ]);
+        const nextPlans = Array.isArray(cloudPlans) && cloudPlans.length > 0 ? cloudPlans : plans;
+        const nextLinks = cloudLinks || contactLinks;
+        if (Array.isArray(cloudPlans) && cloudPlans.length > 0) {
+          setPlans(cloudPlans);
+          try {
+            localStorage.setItem('zad_platform_plans', JSON.stringify(cloudPlans));
+          } catch (_e) {}
+        }
+        if (cloudLinks) {
+          setContactLinks(cloudLinks);
+          try {
+            localStorage.setItem('zad_platform_contact_links', JSON.stringify(cloudLinks));
+          } catch (_e) {}
+        }
+        if (onConfigChanged && (cloudPlans || cloudLinks)) {
+          onConfigChanged(nextPlans, nextLinks);
+        }
+      } catch (_e) {}
+    }
+    setIsLoading(false);
   };
 
   const showFeedback = (text: string, type: 'success' | 'error' = 'success') => {
@@ -154,28 +192,39 @@ export const ZadtooPlansAndLinksManager: React.FC<ZadtooPlansAndLinksManagerProp
   const handleSaveContactLinks = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setIsSavingLinks(true);
+    let savedServer = false;
+    let savedLinks = contactLinks;
     try {
       const res = await fetch('/api/platform-config/contact-links', {
         method: 'POST',
         headers: getAuthHeaders(),
         body: JSON.stringify(contactLinks)
       });
-      const data = await res.json();
-      if (res.ok && data.ok) {
-        setContactLinks(data.contactLinks);
-        try {
-          localStorage.setItem('zad_platform_contact_links', JSON.stringify(data.contactLinks));
-        } catch (_e) {}
-        showFeedback('تم حفظ وتحديث روابط التواصل والإحالة بنجاح ✅');
-        if (onConfigChanged) onConfigChanged(plans, data.contactLinks);
-      } else {
-        showFeedback(data.error || 'تعذر حفظ الروابط', 'error');
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (data.ok) {
+          savedServer = true;
+          savedLinks = data.contactLinks || contactLinks;
+        }
       }
-    } catch (err: any) {
-      showFeedback('تعذر الاتصال بالخادم لحفظ الروابط: ' + (err?.message || ''), 'error');
-    } finally {
-      setIsSavingLinks(false);
+    } catch (_err) {}
+
+    const savedCloud = canWriteFirestoreAsAdmin()
+      ? await saveCloudContactLinks(savedLinks).catch(() => false)
+      : false;
+
+    if (savedServer || savedCloud) {
+      setContactLinks(savedLinks);
+      try {
+        localStorage.setItem('zad_platform_contact_links', JSON.stringify(savedLinks));
+      } catch (_e) {}
+      showFeedback('تم حفظ وتحديث روابط التواصل والدعم والإحالة بنجاح ✅');
+      if (onConfigChanged) onConfigChanged(plans, savedLinks);
+    } else {
+      showFeedback('تعذر حفظ الروابط — سجل دخول المشرف عبر Google على fx.zadtoo.com أولاً', 'error');
     }
+    setIsSavingLinks(false);
   };
 
   // Open Add Plan Modal
@@ -252,6 +301,8 @@ export const ZadtooPlansAndLinksManager: React.FC<ZadtooPlansAndLinksManagerProp
       }
     }
 
+    let savedServer = false;
+    let finalPlans = optimisticPlans;
     try {
       let res: Response;
       if (editingPlanModal.isNew) {
@@ -267,107 +318,151 @@ export const ZadtooPlansAndLinksManager: React.FC<ZadtooPlansAndLinksManagerProp
           body: JSON.stringify(payload)
         });
       }
-
-      const data = await res.json();
-      if (res.ok && data.ok) {
-        const finalPlans = Array.isArray(data.plans) ? data.plans : optimisticPlans;
-        setPlans(finalPlans);
-        try {
-          localStorage.setItem('zad_platform_plans', JSON.stringify(finalPlans));
-        } catch (_e) {}
-        setEditingPlanModal(null);
-        showFeedback(
-          editingPlanModal.isNew
-            ? `تم إضافة الباقة "${payload.name}" وحفظها بنجاح ✅`
-            : `تم تحديث بيانات الباقة "${payload.name}" وحفظها بنجاح ✅`
-        );
-        if (onConfigChanged) onConfigChanged(finalPlans, contactLinks);
-      } else {
-        showFeedback(data.error || 'تعذر حفظ الباقة', 'error');
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (data.ok) {
+          savedServer = true;
+          if (Array.isArray(data.plans)) finalPlans = data.plans;
+        }
       }
-    } catch (err: any) {
-      showFeedback('تعذر الاتصال بالخادم لحفظ الباقة: ' + (err?.message || ''), 'error');
-    } finally {
-      setIsSavingPlan(false);
+    } catch (_err) {}
+
+    const savedCloud = canWriteFirestoreAsAdmin()
+      ? await saveCloudPlans(finalPlans).catch(() => false)
+      : false;
+
+    if (savedServer || savedCloud) {
+      setPlans(finalPlans);
+      try {
+        localStorage.setItem('zad_platform_plans', JSON.stringify(finalPlans));
+      } catch (_e) {}
+      setEditingPlanModal(null);
+      showFeedback(
+        editingPlanModal.isNew
+          ? `تم إضافة الباقة "${payload.name}" وحفظها بنجاح ✅`
+          : `تم تحديث بيانات الباقة "${payload.name}" وحفظها بنجاح ✅`
+      );
+      if (onConfigChanged) onConfigChanged(finalPlans, contactLinks);
+    } else {
+      showFeedback('تعذر حفظ الباقة — تأكد من تسجيل الدخول بحساب المشرف عبر Google', 'error');
     }
+    setIsSavingPlan(false);
   };
 
   // Toggle Plan Enabled / Disabled inline
   const handleTogglePlanEnabled = async (plan: SubscriptionPlan) => {
     const updated = { ...plan, enabled: !plan.enabled };
+    const optimisticPlans = plans.map(p => (p.id === plan.id ? updated : p));
+    let savedServer = false;
+    let finalPlans = optimisticPlans;
     try {
       const res = await fetch(`/api/platform-config/plans/${plan.id}`, {
         method: 'PUT',
         headers: getAuthHeaders(),
         body: JSON.stringify(updated)
       });
-      const data = await res.json();
-      if (res.ok && data.ok && Array.isArray(data.plans)) {
-        setPlans(data.plans);
-        try {
-          localStorage.setItem('zad_platform_plans', JSON.stringify(data.plans));
-        } catch (_e) {}
-        if (onConfigChanged) onConfigChanged(data.plans, contactLinks);
-        showFeedback(
-          updated.enabled
-            ? `تم تفعيل الباقة (${plan.name}) ✅`
-            : `تم تعطيل الباقة (${plan.name}) مؤقتاً`
-        );
-      } else {
-        showFeedback(data.error || 'تعذر تحديث حالة الباقة', 'error');
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (data.ok && Array.isArray(data.plans)) {
+          savedServer = true;
+          finalPlans = data.plans;
+        }
       }
-    } catch (_e) {
-      showFeedback('تعذر الاتصال بالخادم', 'error');
+    } catch (_e) {}
+
+    const savedCloud = canWriteFirestoreAsAdmin()
+      ? await saveCloudPlans(finalPlans).catch(() => false)
+      : false;
+
+    if (savedServer || savedCloud) {
+      setPlans(finalPlans);
+      try {
+        localStorage.setItem('zad_platform_plans', JSON.stringify(finalPlans));
+      } catch (_e) {}
+      if (onConfigChanged) onConfigChanged(finalPlans, contactLinks);
+      showFeedback(
+        updated.enabled
+          ? `تم تفعيل الباقة (${plan.name}) ✅`
+          : `تم تعطيل الباقة (${plan.name}) مؤقتاً`
+      );
+    } else {
+      showFeedback('تعذر تحديث حالة الباقة', 'error');
     }
   };
 
   // Confirm Delete Plan
   const handleConfirmDelete = async () => {
     if (!planToDelete) return;
+    const optimisticPlans = plans.filter(p => p.id !== planToDelete.id);
+    let savedServer = false;
+    let finalPlans = optimisticPlans;
     try {
       const res = await fetch(`/api/platform-config/plans/${planToDelete.id}`, {
         method: 'DELETE',
         headers: getAuthHeaders(false)
       });
-      const data = await res.json();
-      if (res.ok && data.ok && Array.isArray(data.plans)) {
-        setPlans(data.plans);
-        try {
-          localStorage.setItem('zad_platform_plans', JSON.stringify(data.plans));
-        } catch (_e) {}
-        if (onConfigChanged) onConfigChanged(data.plans, contactLinks);
-        showFeedback(`تم حذف الباقة (${planToDelete.name}) بنجاح 🗑️`);
-      } else {
-        showFeedback(data.error || 'تعذر حذف الباقة', 'error');
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (data.ok && Array.isArray(data.plans)) {
+          savedServer = true;
+          finalPlans = data.plans;
+        }
       }
-    } catch (err: any) {
-      showFeedback('تعذر الاتصال بالخادم: ' + (err?.message || ''), 'error');
-    } finally {
-      setPlanToDelete(null);
+    } catch (_err) {}
+
+    const savedCloud = canWriteFirestoreAsAdmin()
+      ? await saveCloudPlans(finalPlans).catch(() => false)
+      : false;
+
+    if (savedServer || savedCloud) {
+      setPlans(finalPlans);
+      try {
+        localStorage.setItem('zad_platform_plans', JSON.stringify(finalPlans));
+      } catch (_e) {}
+      if (onConfigChanged) onConfigChanged(finalPlans, contactLinks);
+      showFeedback(`تم حذف الباقة (${planToDelete.name}) بنجاح 🗑️`);
+    } else {
+      showFeedback('تعذر حذف الباقة', 'error');
     }
+    setPlanToDelete(null);
   };
 
   // Reset to default plans
   const handleResetPlans = async () => {
     if (!window.confirm('هل أنت متأكد من استعادة الباقات الأصلية الافتراضية للنظام؟')) return;
+    let savedServer = false;
+    let finalPlans = INITIAL_SUBSCRIPTION_PLANS;
     try {
       const res = await fetch('/api/platform-config/reset-plans', {
         method: 'POST',
         headers: getAuthHeaders(false)
       });
-      const data = await res.json();
-      if (res.ok && data.ok && Array.isArray(data.plans)) {
-        setPlans(data.plans);
-        try {
-          localStorage.setItem('zad_platform_plans', JSON.stringify(data.plans));
-        } catch (_e) {}
-        showFeedback('تمت استعادة الباقات الافتراضية وحفظها بنجاح 🔄');
-        if (onConfigChanged) onConfigChanged(data.plans, contactLinks);
-      } else {
-        showFeedback(data.error || 'تعذر استعادة الباقات', 'error');
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (data.ok && Array.isArray(data.plans)) {
+          savedServer = true;
+          finalPlans = data.plans;
+        }
       }
-    } catch (err: any) {
-      showFeedback('خطأ: ' + (err?.message || ''), 'error');
+    } catch (_err) {}
+
+    const savedCloud = canWriteFirestoreAsAdmin()
+      ? await saveCloudPlans(finalPlans).catch(() => false)
+      : false;
+
+    if (savedServer || savedCloud) {
+      setPlans(finalPlans);
+      try {
+        localStorage.setItem('zad_platform_plans', JSON.stringify(finalPlans));
+      } catch (_e) {}
+      showFeedback('تمت استعادة الباقات الافتراضية وحفظها بنجاح 🔄');
+      if (onConfigChanged) onConfigChanged(finalPlans, contactLinks);
+    } else {
+      showFeedback('تعذر استعادة الباقات', 'error');
     }
   };
 

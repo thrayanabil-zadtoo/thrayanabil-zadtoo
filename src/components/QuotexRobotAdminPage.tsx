@@ -30,6 +30,14 @@ import {
   Zap
 } from 'lucide-react';
 import type { VipSubscriber, SignalItem, LivePairSnapshot } from '../App';
+import { buildFloatingQuotexRobotScript } from '../utils/robotScriptTemplate';
+import {
+  fetchRobotFeedFromFirestore,
+  saveSubscriberToFirestore,
+  saveCloudRobotSettings,
+  canWriteFirestoreAsAdmin,
+  FIRESTORE_REST_BASE
+} from '../firebase';
 
 export type RobotStrategyEngineMode = 'PUBLIC_CLASSIC' | 'VIP_WITH_MPB';
 
@@ -413,7 +421,7 @@ export default function QuotexRobotAdminPage({
 
   const lastAlertedSignalIdRef = useRef<string | null>(null);
 
-  // Fetch Live API Feed for the selected API Key
+  // Fetch Live API Feed for the selected API Key (Node server first, Firestore Cloud Feed fallback on fx.zadtoo.com)
   const fetchLiveRobotApiFeed = async (keyToTest?: string, silent = false) => {
     const activeKey = keyToTest ?? selectedTestApiKey;
     if (!silent) setIsTestingApi(true);
@@ -421,15 +429,20 @@ export default function QuotexRobotAdminPage({
       const res = await fetch(`/api/quotex-robot/feed?apiKey=${encodeURIComponent(activeKey)}`, {
         headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
       });
-      const data = await res.json();
-      setApiFeedResponse(data);
-    } catch (_e) {
-      if (!silent) {
-        setApiFeedResponse({ ok: false, error: 'تعذر الاتصال بنقطة API' });
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        setApiFeedResponse(data);
+        return;
       }
+    } catch (_e) {
+      // Fall back to Firestore Cloud Feed below
     } finally {
       if (!silent) setIsTestingApi(false);
     }
+
+    const fsFeed = await fetchRobotFeedFromFirestore(activeKey);
+    setApiFeedResponse(fsFeed);
   };
 
   useEffect(() => {
@@ -438,7 +451,7 @@ export default function QuotexRobotAdminPage({
       fetchLiveRobotApiFeed(selectedTestApiKey, true);
     }, 3000);
     return () => clearInterval(pollTimer);
-  }, [selectedTestApiKey, safeSignals.length, adminToken]);
+  }, [selectedTestApiKey, safeSignals.length, adminToken, isAdmin]);
 
   useEffect(() => {
     const activeSig = latestSignal?.status === 'PENDING' ? latestSignal : apiFeedResponse?.activeSignal;
@@ -511,6 +524,12 @@ export default function QuotexRobotAdminPage({
     }, 2800);
   };
 
+  const generateMemberApiKeyStr = () => {
+    const seg = () => Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, 'X').slice(2, 6).padEnd(4, 'X');
+    const num = Math.floor(1000 + Math.random() * 9000);
+    return `QX-ZAD-${seg()}-${seg()}-${num}`;
+  };
+
   const handleSaveRobotSettings = async (nextSettings?: Partial<QuotexRobotSettings>) => {
     const updated: QuotexRobotSettings = {
       ...robotSettings,
@@ -519,59 +538,115 @@ export default function QuotexRobotAdminPage({
     };
     setRobotSettings(updated);
     setIsSavingSettings(true);
+    let savedOk = false;
     try {
-      const res = await fetch('/api/robot-settings', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify(updated)
-      });
-      const data = await res.json();
-      if (res.ok && data.ok && data.robotSettings) {
-        setRobotSettings(data.robotSettings);
-        setSettingsSavedBadge(true);
-        setTimeout(() => setSettingsSavedBadge(false), 2500);
+      if (adminToken) {
+        const res = await fetch('/api/robot-settings', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify(updated)
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data.ok && data.robotSettings) {
+            setRobotSettings(data.robotSettings);
+            savedOk = true;
+          }
+        }
       }
-    } catch (_e) {
-      // Ignore
-    } finally {
-      setIsSavingSettings(false);
-    }
-  };
+    } catch (_e) {}
 
-  const handleCreateMemberKey = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newKeyMemberName.trim()) return;
-    setIsCreatingKey(true);
-    try {
-      const res = await fetch('/api/quotex-robot/create-key', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({
-          name: newKeyMemberName.trim(),
-          brokerAccountId: newKeyQuotexId.trim() || 'QX-TRADER',
-          expiryDate: newKeyExpiryDate,
-          tradeStake: newKeyStake,
-          defaultMode: newKeyMode
-        })
-      });
-      const data = await res.json();
-      if (res.ok && data.ok && data.subscriber) {
-        setSubscribers(prev => [data.subscriber, ...prev]);
-        setSelectedTestApiKey(data.subscriber.robotApiKey || 'QX-ADMIN-MASTER-TEST');
-        setNewKeyMemberName('');
-        setNewKeyQuotexId('');
-      }
-    } catch (_e) {
-      // Ignore
-    } finally {
-      setIsCreatingKey(false);
+    if (canWriteFirestoreAsAdmin()) {
+      const cloudOk = await saveCloudRobotSettings(updated).catch(() => false);
+      if (cloudOk) savedOk = true;
     }
+
+    if (savedOk) {
+      setSettingsSavedBadge(true);
+      setTimeout(() => setSettingsSavedBadge(false), 2500);
+    }
+    setIsSavingSettings(false);
   };
 
   const [memberUpdateToast, setMemberUpdateToast] = useState<{
     type: 'success' | 'error';
     message: string;
   } | null>(null);
+
+  const handleCreateMemberKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newKeyMemberName.trim()) return;
+    setIsCreatingKey(true);
+    let createdSub: VipSubscriber | null = null;
+    try {
+      if (adminToken) {
+        const res = await fetch('/api/quotex-robot/create-key', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({
+            name: newKeyMemberName.trim(),
+            brokerAccountId: newKeyQuotexId.trim() || 'QX-TRADER',
+            expiryDate: newKeyExpiryDate,
+            tradeStake: newKeyStake,
+            defaultMode: newKeyMode
+          })
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data.ok && data.subscriber) {
+            createdSub = data.subscriber;
+          }
+        }
+      }
+    } catch (_e) {}
+
+    if (!createdSub && canWriteFirestoreAsAdmin()) {
+      const newKey = generateMemberApiKeyStr();
+      createdSub = {
+        id: `sub_${Date.now()}`,
+        name: newKeyMemberName.trim(),
+        email: '',
+        phone: '',
+        broker: 'Quotex (كوتيكس)',
+        brokerAccountId: newKeyQuotexId.trim() || 'QX-TRADER',
+        subscriptionType: 'paid_plan',
+        planDuration: '1_month',
+        status: 'ACTIVE',
+        expiryDate: newKeyExpiryDate,
+        robotExpiryDate: newKeyExpiryDate,
+        robotEnabled: true,
+        robotApiKey: newKey,
+        robotDefaultMode: newKeyMode,
+        robotTradeStake: newKeyStake,
+        createdAt: new Date().toISOString()
+      };
+    }
+
+    if (createdSub) {
+      if (canWriteFirestoreAsAdmin()) {
+        await saveSubscriberToFirestore(createdSub).catch(() => false);
+      }
+      setSubscribers(prev => [createdSub!, ...prev.filter(s => s.id !== createdSub!.id)]);
+      const activeKey = createdSub.robotApiKey || 'QX-ADMIN-MASTER-TEST';
+      setSelectedTestApiKey(activeKey);
+      if (createdSub.robotApiKey) setScriptApiKey(createdSub.robotApiKey);
+      setNewKeyMemberName('');
+      setNewKeyQuotexId('');
+      setMemberUpdateToast({
+        type: 'success',
+        message: `✅ تم إنشاء مفتاح العضو (${createdSub.name}) ومزامنته مع السحابة: ${activeKey}`
+      });
+      setTimeout(() => setMemberUpdateToast(null), 5000);
+    } else {
+      setMemberUpdateToast({
+        type: 'error',
+        message: '❌ تعذر إنشاء المفتاح — تأكد من تسجيل الدخول بحساب المشرف عبر Google'
+      });
+    }
+    setIsCreatingKey(false);
+  };
 
   const handleUpdateSubscriberRobot = async (
     subId: string,
@@ -584,30 +659,55 @@ export default function QuotexRobotAdminPage({
       regenerateRobotApiKey?: boolean;
     }
   ) => {
+    let updatedSub: VipSubscriber | null = null;
     try {
-      const res = await fetch(`/api/subscribers/${subId}`, {
-        method: 'PATCH',
-        headers: getAuthHeaders(),
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      if (res.ok && data.ok && data.subscriber) {
-        setSubscribers(prev => prev.map(s => (s.id === subId ? data.subscriber : s)));
-        setMemberUpdateToast({
-          type: 'success',
-          message: `✅ تم حفظ تحديثات (${data.subscriber.name}) وتاريخ الصلاحية (${data.subscriber.robotExpiryDate || data.subscriber.expiryDate || '-'}) في قاعدة البيانات.`
+      if (adminToken) {
+        const res = await fetch(`/api/subscribers/${subId}`, {
+          method: 'PATCH',
+          headers: getAuthHeaders(),
+          body: JSON.stringify(payload)
         });
-        setTimeout(() => setMemberUpdateToast(null), 4000);
-      } else {
-        setMemberUpdateToast({
-          type: 'error',
-          message: `❌ ${data?.error || 'تعذر حفظ التحديثات — تأكد من تسجيل الدخول كمشرف'}`
-        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data.ok && data.subscriber) {
+            updatedSub = data.subscriber;
+          }
+        }
       }
-    } catch (_e) {
+    } catch (_e) {}
+
+    if (!updatedSub && canWriteFirestoreAsAdmin()) {
+      const existing = safeSubscribers.find(s => s.id === subId);
+      if (existing) {
+        updatedSub = {
+          ...existing,
+          ...(payload.status !== undefined ? { status: payload.status } : {}),
+          ...(payload.robotEnabled !== undefined ? { robotEnabled: payload.robotEnabled } : {}),
+          ...(payload.robotExpiryDate !== undefined
+            ? { robotExpiryDate: payload.robotExpiryDate, expiryDate: payload.robotExpiryDate }
+            : {}),
+          ...(payload.robotDefaultMode !== undefined ? { robotDefaultMode: payload.robotDefaultMode } : {}),
+          ...(payload.robotTradeStake !== undefined ? { robotTradeStake: payload.robotTradeStake } : {}),
+          ...(payload.regenerateRobotApiKey ? { robotApiKey: generateMemberApiKeyStr() } : {})
+        };
+      }
+    }
+
+    if (updatedSub) {
+      if (canWriteFirestoreAsAdmin()) {
+        await saveSubscriberToFirestore(updatedSub).catch(() => false);
+      }
+      setSubscribers(prev => prev.map(s => (s.id === subId ? updatedSub! : s)));
+      setMemberUpdateToast({
+        type: 'success',
+        message: `✅ تم حفظ تحديثات (${updatedSub.name}) وتاريخ الصلاحية (${updatedSub.robotExpiryDate || updatedSub.expiryDate || '-'}) في السحابة بنجاح.`
+      });
+      setTimeout(() => setMemberUpdateToast(null), 4000);
+    } else {
       setMemberUpdateToast({
         type: 'error',
-        message: '❌ خطأ في الاتصال بالخادم أثناء حفظ بيانات العضو.'
+        message: '❌ تعذر حفظ التحديثات — تأكد من تسجيل الدخول كمشرف عبر Google'
       });
     }
   };
@@ -631,10 +731,15 @@ export default function QuotexRobotAdminPage({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // Current App Origin (rewrite ais-dev-* preview host to public ais-pre-* Cloud Run host for external scripts)
-  const toPublicOrigin = (url: string) =>
-    String(url || '').trim().replace(/\/+$/, '').replace(/^(https?:\/\/)ais-dev-/i, '$1ais-pre-');
-  const appOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+  // Current App Origin — default directly to https://fx.zadtoo.com (no Publish / Share needed)
+  const toPublicOrigin = (url: string) => {
+    const cleaned = String(url || '').trim().replace(/\/+$/, '');
+    if (!cleaned || /(?:zadtoo\.com|\.web\.app|\.firebaseapp\.com)(?:$|[:/])/i.test(cleaned)) {
+      return 'https://fx.zadtoo.com';
+    }
+    return cleaned.replace(/^(https?:\/\/)ais-dev-/i, '$1ais-pre-');
+  };
+  const appOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://fx.zadtoo.com';
   const publicRobotOrigin = toPublicOrigin(appOrigin);
 
   // Admin-Only Floating Quotex Robot v5.0 Tampermonkey Script Generator State
@@ -663,80 +768,132 @@ export default function QuotexRobotAdminPage({
   }, [activeMemberKeys, scriptApiKey]);
 
   const fetchAdminFloatingScript = async (overrideKey?: string, overrideOrigin?: string) => {
-    if (!isAdmin || !adminToken) return;
+    if (!isAdmin) return;
     setIsLoadingScript(true);
     setScriptError(null);
-    try {
-      const targetKey = (overrideKey ?? scriptApiKey).trim();
-      const targetOrigin = toPublicOrigin(overrideOrigin ?? scriptServerOrigin ?? publicRobotOrigin);
-      const params = new URLSearchParams();
-      if (targetKey) params.set('apiKey', targetKey);
-      if (targetOrigin) params.set('serverOrigin', targetOrigin);
+    const targetKey = (overrideKey ?? scriptApiKey).trim() || (activeMemberKeys[0]?.robotApiKey || '');
+    const targetOrigin = toPublicOrigin(overrideOrigin ?? scriptServerOrigin ?? publicRobotOrigin);
 
-      const res = await fetch(`/api/quotex-robot/admin-script?${params.toString()}`, {
-        headers: getAuthHeaders(false)
-      });
-      const data = await res.json();
-      if (res.ok && data?.ok && data.script) {
-        setGeneratedScript(data.script);
-        setScriptMeta({
-          version: data.version,
-          serverOrigin: data.serverOrigin,
-          embeddedApiKey: data.embeddedApiKey
+    try {
+      if (adminToken) {
+        const params = new URLSearchParams();
+        if (targetKey) params.set('apiKey', targetKey);
+        if (targetOrigin) params.set('serverOrigin', targetOrigin);
+
+        const res = await fetch(`/api/quotex-robot/admin-script?${params.toString()}`, {
+          headers: getAuthHeaders(false)
         });
-        if (!targetKey && data.embeddedApiKey) {
-          setScriptApiKey(data.embeddedApiKey);
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data?.ok && data.script) {
+            setGeneratedScript(data.script);
+            setScriptMeta({
+              version: data.version,
+              serverOrigin: data.serverOrigin,
+              embeddedApiKey: data.embeddedApiKey
+            });
+            if (!targetKey && data.embeddedApiKey) {
+              setScriptApiKey(data.embeddedApiKey);
+            }
+            setIsLoadingScript(false);
+            return;
+          }
         }
-      } else {
-        setScriptError(data?.error || 'تعذر توليد كود الروبوت من الخادم');
       }
-    } catch (err: any) {
-      setScriptError(err?.message || 'تعذر الاتصال بالخادم لتوليد الكود');
-    } finally {
-      setIsLoadingScript(false);
+    } catch (_err) {
+      // Fall back to direct client-side v5.0 template builder (works on fx.zadtoo.com!)
     }
+
+    const clientScript = buildFloatingQuotexRobotScript({
+      serverOrigin: targetOrigin,
+      apiKey: targetKey,
+      defaultStake: robotSettings.defaultStakeUsd || 5,
+      defaultMode: robotSettings.defaultMode || 'MANUAL',
+      soundDefault: robotSettings.soundAlertsEnabled !== false,
+      autoPairDefault: robotSettings.autoSelectPair !== false,
+      autoM1Default: robotSettings.autoSetExpiryM1 !== false,
+      strategyDefault: robotSettings.strategyEngineMode || 'VIP_WITH_MPB'
+    });
+    setGeneratedScript(clientScript);
+    setScriptMeta({
+      version: 'v5.0.2 (fx.zadtoo.com + Cloud)',
+      serverOrigin: targetOrigin,
+      embeddedApiKey: targetKey || 'غير مضمّن'
+    });
+    if (!overrideKey && targetKey) setScriptApiKey(targetKey);
+    setIsLoadingScript(false);
   };
 
   useEffect(() => {
-    if (isAdmin && adminToken && !generatedScript) {
+    if (isAdmin && !generatedScript) {
       fetchAdminFloatingScript();
     }
-  }, [isAdmin, adminToken]);
+  }, [isAdmin, adminToken, activeMemberKeys.length]);
 
   const handleCreateAndEmbedAdminKey = async () => {
-    if (!isAdmin || !adminToken) return;
+    if (!isAdmin) return;
     setIsQuickCreatingAdminKey(true);
     setScriptError(null);
+    const expFuture = '2099-12-25';
+    let createdSub: VipSubscriber | null = null;
     try {
-      const exp365 = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-      const res = await fetch('/api/quotex-robot/create-key', {
-        method: 'POST',
-        headers: getAuthHeaders(),
-        body: JSON.stringify({
-          name: 'حساب المشرف — الروبوت العائم',
-          brokerAccountId: `QX-ADMIN-${Math.floor(1000 + Math.random() * 9000)}`,
-          expiryDate: exp365,
-          tradeStake: robotSettings.defaultStakeUsd || 5,
-          defaultMode: robotSettings.defaultMode || 'AUTO'
-        })
-      });
-      const data = await res.json();
-      if (res.ok && data?.ok && data.subscriber) {
-        const newKey = data.subscriber.robotApiKey || '';
-        setSubscribers(prev => [data.subscriber, ...prev]);
-        if (newKey) {
-          setSelectedTestApiKey(newKey);
-          setScriptApiKey(newKey);
-          await fetchAdminFloatingScript(newKey, scriptServerOrigin);
+      if (adminToken) {
+        const res = await fetch('/api/quotex-robot/create-key', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({
+            name: 'المشرف — الروبوت العائم',
+            brokerAccountId: `QX-ADMIN-${Math.floor(1000 + Math.random() * 9000)}`,
+            expiryDate: expFuture,
+            tradeStake: robotSettings.defaultStakeUsd || 5,
+            defaultMode: robotSettings.defaultMode || 'AUTO'
+          })
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data?.ok && data.subscriber) createdSub = data.subscriber;
         }
-      } else {
-        setScriptError(data?.error || 'تعذر إنشاء مفتاح المشرف');
       }
-    } catch (err: any) {
-      setScriptError(err?.message || 'حدث خطأ أثناء إنشاء المفتاح');
-    } finally {
-      setIsQuickCreatingAdminKey(false);
+    } catch (_err) {}
+
+    if (!createdSub && canWriteFirestoreAsAdmin()) {
+      createdSub = {
+        id: `sub_${Date.now()}`,
+        name: 'المشرف — الروبوت العائم',
+        email: '',
+        phone: '',
+        broker: 'Quotex (كوتيكس)',
+        brokerAccountId: `QX-ADMIN-${Math.floor(1000 + Math.random() * 9000)}`,
+        subscriptionType: 'paid_plan',
+        planDuration: '1_year',
+        status: 'ACTIVE',
+        expiryDate: expFuture,
+        robotExpiryDate: expFuture,
+        robotEnabled: true,
+        robotApiKey: generateMemberApiKeyStr(),
+        robotDefaultMode: robotSettings.defaultMode || 'AUTO',
+        robotTradeStake: robotSettings.defaultStakeUsd || 5,
+        createdAt: new Date().toISOString()
+      };
     }
+
+    if (createdSub) {
+      if (canWriteFirestoreAsAdmin()) {
+        await saveSubscriberToFirestore(createdSub).catch(() => false);
+      }
+      const newKey = createdSub.robotApiKey || '';
+      setSubscribers(prev => [createdSub!, ...prev.filter(s => s.id !== createdSub!.id)]);
+      if (newKey) {
+        setSelectedTestApiKey(newKey);
+        setScriptApiKey(newKey);
+        await fetchAdminFloatingScript(newKey, scriptServerOrigin);
+      }
+    } else {
+      setScriptError('تعذر إنشاء مفتاح المشرف — سجل الدخول بحساب Google أولاً');
+    }
+    setIsQuickCreatingAdminKey(false);
   };
 
   const filteredSubscribers = useMemo(() => {
@@ -2191,22 +2348,25 @@ export default function QuotexRobotAdminPage({
                     type="text"
                     readOnly
                     dir="ltr"
-                    value={`${appOrigin}/api/quotex-robot/feed?apiKey=${selectedTestApiKey}`}
+                    value={
+                      selectedTestApiKey === 'QX-ADMIN-MASTER-TEST'
+                        ? `${FIRESTORE_REST_BASE}/robot_public_feed/live`
+                        : `${FIRESTORE_REST_BASE}/robot_keys/${encodeURIComponent(selectedTestApiKey)}`
+                    }
                     className="flex-1 px-2 py-1 bg-slate-900 border border-slate-800 rounded-lg text-[10px] font-mono-num text-sky-300"
                   />
-                  <a
-                    href={`${appOrigin}/api/quotex-robot/feed?apiKey=${selectedTestApiKey}`}
-                    target="_blank"
-                    rel="noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => fetchLiveRobotApiFeed(selectedTestApiKey)}
                     className="px-2.5 py-1 bg-sky-500 hover:bg-sky-400 text-slate-950 rounded-lg text-[10.5px] font-extrabold cursor-pointer shrink-0"
                   >
-                    فتح الفحص ↗
-                  </a>
+                    فحص مباشر ⚡
+                  </button>
                   <button
                     type="button"
                     onClick={() =>
                       handleCopy(
-                        `${appOrigin}/api/quotex-robot/feed?apiKey=${selectedTestApiKey}`,
+                        `${publicRobotOrigin}/api/quotex-robot/feed?apiKey=${selectedTestApiKey}`,
                         'api-url'
                       )
                     }
@@ -2236,17 +2396,17 @@ export default function QuotexRobotAdminPage({
 
             <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5 text-[11px] text-emerald-200">
               <div className="font-bold flex items-center gap-1.5 text-emerald-300">
-                <span>🚀 تحديث الروبوت العائم المستقل (الإصدار v5.0 Cloud Secure):</span>
+                <span>🟢 متصل مباشرة بـ fx.zadtoo.com والسحابة (الإصدار v5.0):</span>
               </div>
               <ul className="list-disc list-inside space-y-1 text-slate-300">
-                <li><strong className="text-white">اتصال سحابي مباشر وآمن:</strong> يتصل الروبوت مباشرة بنقطة <code className="font-mono-num text-sky-300">/api/quotex-robot/feed</code> باستخدام مفتاح العضو فقط دون تضمين أي مفاتيح قاعدة بيانات أو صلاحيات مشرف داخل الكود.</li>
-                <li><strong className="text-amber-300">زر إدخال وتعديل المفتاح (🔑 ID):</strong> يكتفي العضو بإدخال مفتاح العضو فقط داخل الروبوت العائم بينما يظل رابط الربط مضمّناً ومخفياً بالكامل.</li>
+                <li><strong className="text-white">اتصال سحابي مباشر ومجاني:</strong> يعمل الروبوت مباشرة عبر <code className="font-mono-num text-sky-300">fx.zadtoo.com</code> وسحابة Firestore الفورية دون الحاجة لاشتراك مدفوع أو تفعيل جلسة.</li>
+                <li><strong className="text-amber-300">زر إدخال وتعديل المفتاح (🔑 ID):</strong> يكتفي العضو بإدخال مفتاح العضو فقط داخل الروبوت العائم بينما يظل الربط السحابي مضمّناً تلقائياً.</li>
                 <li><strong className="text-emerald-300">مرور الصفقة + تداول آلي/يدوي + قرآن واختبار الأزرار:</strong> يعرض مراحل الإشارة والعد التنازلي أثناء الصفقة (60 ثانية) مع أزرار التثبيت اليدوي والشراء/البيع.</li>
               </ul>
             </div>
 
             {/* ADMIN-ONLY FLOATING QUOTEX ROBOT SCRIPT GENERATOR */}
-            {isAdmin && adminToken ? (
+            {isAdmin ? (
               <div className="p-4 bg-gradient-to-br from-emerald-950/50 via-slate-950 to-slate-900 border-2 border-emerald-500/50 rounded-xl space-y-3 shadow-lg">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
@@ -2318,27 +2478,22 @@ export default function QuotexRobotAdminPage({
 
                   <div>
                     <label className="block text-[10px] font-bold text-slate-300 mb-1">
-                      رابط السيرفر المتصل به الروبوت (Server URL):
+                      رابط الموقع الرسمي المتصل بالسحابة (Site Origin):
                     </label>
                     <input
                       type="text"
                       dir="ltr"
                       value={scriptServerOrigin}
                       onChange={e => setScriptServerOrigin(e.target.value)}
-                      placeholder="https://ais-pre-....run.app"
+                      placeholder="https://fx.zadtoo.com"
                       className="w-full px-2.5 py-1.5 bg-[#070A10] border border-slate-700 rounded-lg text-[10.5px] font-mono-num text-sky-300 focus:outline-none focus:border-emerald-500"
                     />
                   </div>
                 </div>
 
-                {(scriptServerOrigin.includes('fx.zadtoo.com') || scriptServerOrigin.includes('ais-dev-') || scriptServerOrigin.includes('ais-pre-')) && (
-                  <div className="p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/40 text-[10.5px] text-amber-200 leading-relaxed">
-                    ⚠️ <strong>ملاحظة هامة للربط من منصة Quotex:</strong>{' '}
-                    {scriptServerOrigin.includes('fx.zadtoo.com')
-                      ? 'تأكد أن رابط السيرفر يشير إلى رابط الخادم المنشور على Cloud Run وليس صفحة استضافة ثابتة بدون سيرفر.'
-                      : 'روابط المعاينة (ais-dev / ais-pre) محمية بجدار تسجيل دخول Google AI Studio وتمنع الاتصال الخارجي من كيوتكس. لتحقيق الربط الفعلي، انشر التطبيق عبر زر Publish / Deploy to Cloud Run ثم افتح رابط الموقع المنشور (بدون ais-dev أو ais-pre) وانسخ الكود أو حمّل الملف منه.'}
-                  </div>
-                )}
+                <div className="p-2.5 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-[10.5px] text-emerald-200 leading-relaxed">
+                  🟢 <strong>متصل مباشرة بـ fx.zadtoo.com والسحابة:</strong> يعمل السكربت تلقائياً على جميع المتصفحات عند المشتركين والمشرف دون الحاجة لـ Publish المدفوع أو تنشيط جلسة.
+                </div>
 
                 {scriptError && (
                   <div className="p-2 rounded-lg bg-rose-950/80 border border-rose-500/50 text-rose-200 text-[11px] font-bold">
@@ -2410,11 +2565,11 @@ export default function QuotexRobotAdminPage({
                 )}
 
                 <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-lg text-[10px] text-slate-300 space-y-1">
-                  <div className="font-bold text-sky-300">📌 خطوات التثبيت الصحيحة في Tampermonkey (هام جداً لتفعيل الاتصال):</div>
+                  <div className="font-bold text-sky-300">📌 خطوات التثبيت الصحيحة في Tampermonkey (الربط المباشر عبر fx.zadtoo.com):</div>
                   <ol className="list-decimal list-inside space-y-0.5 text-slate-400">
-                    <li>انشر الخادم عبر <strong>Deploy to Cloud Run</strong> (وليس استضافة الواجهة الثابتة فقط) ثم افتح لوحة المشرف من رابط Cloud Run المنشور.</li>
-                    <li>يفضّل الضغط على زر <strong>تحميل (.user.js)</strong> ثم استيراد الملف من <strong>Tampermonkey Dashboard ← Utilities ← Import from file</strong> (أو عند اللصق في سكربت جديد: اضغط <code dir="ltr">Ctrl + A</code> ثم <code dir="ltr">Delete</code> لمسح النص الافتراضي كاملاً قبل اللصق ثم <code dir="ltr">Ctrl + S</code>).</li>
-                    <li>افتح منصة <strong>Quotex</strong> — سيظهر الروبوت العائم بتصميم ZAD FX الكلاسيكي ومرتبطاً مباشرة بالسيرفر، ولإدخال أو تغيير مفتاحك اضغط زر <strong>🔑 ID</strong>.</li>
+                    <li>اختر مفتاح العضو من القائمة أعلاه (أو أنشئ مفتاحاً جديداً) ثم اضغط زر <strong>تحميل (.user.js)</strong>.</li>
+                    <li>احذف أي نسخة قديمة للروبوت في Tampermonkey، ثم استورد الملف من <strong>Dashboard ← Utilities ← Import from file</strong>.</li>
+                    <li>افتح منصة <strong>Quotex</strong> — سيعمل الروبوت العائم مباشرة ويتصل بالسحابة عبر مفتاح العضو (ويمكنك تغييره من زر <strong>🔑 ID</strong>).</li>
                   </ol>
                 </div>
               </div>

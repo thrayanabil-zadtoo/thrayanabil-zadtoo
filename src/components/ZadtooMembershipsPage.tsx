@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import type { SubscriptionPlan, PlatformContactLinks } from '../types/platformConfig';
 import { INITIAL_SUBSCRIPTION_PLANS, INITIAL_CONTACT_LINKS } from '../types/platformConfig';
+import { loadCloudPlans, loadCloudContactLinks } from '../firebase';
 
 interface ZadtooMembershipsPageProps {
   onSelectPlan: (planId: string, planName: string, price: number) => void;
@@ -78,11 +79,16 @@ export const ZadtooMembershipsPage: React.FC<ZadtooMembershipsPageProps> = ({
   useEffect(() => {
     if (propPlans && propPlans.length > 0) {
       setPlans(propPlans);
-    } else {
-      fetch('/api/platform-config')
-        .then(r => r.json())
-        .then(data => {
-          if (data.ok) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/platform-config');
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (!cancelled && data.ok) {
             if (Array.isArray(data.plans) && data.plans.length > 0) {
               setPlans(data.plans);
               try {
@@ -95,10 +101,32 @@ export const ZadtooMembershipsPage: React.FC<ZadtooMembershipsPageProps> = ({
                 localStorage.setItem('zad_platform_contact_links', JSON.stringify(data.contactLinks));
               } catch (_e) {}
             }
+            return;
           }
-        })
-        .catch(() => {});
-    }
+        }
+      } catch (_e) {}
+
+      const [cloudPlans, cloudLinks] = await Promise.all([
+        loadCloudPlans<SubscriptionPlan[]>().catch(() => null),
+        loadCloudContactLinks<PlatformContactLinks>().catch(() => null)
+      ]);
+      if (cancelled) return;
+      if (Array.isArray(cloudPlans) && cloudPlans.length > 0) {
+        setPlans(cloudPlans);
+        try {
+          localStorage.setItem('zad_platform_plans', JSON.stringify(cloudPlans));
+        } catch (_e) {}
+      }
+      if (cloudLinks) {
+        setContactLinks(cloudLinks);
+        try {
+          localStorage.setItem('zad_platform_contact_links', JSON.stringify(cloudLinks));
+        } catch (_e) {}
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [propPlans]);
 
   useEffect(() => {

@@ -1,27 +1,199 @@
 {
   "entities": {
-    "AppState": {
-      "title": "AppState",
-      "description": "Stores persistent Auto-Pilot configuration, Bot Token, formatting templates, and published global forex signals.",
+    "Subscriber": {
+      "title": "Subscriber",
+      "description": "Private VIP member record and Robot API key metadata (Admin-only PII).",
       "type": "object",
       "properties": {
-        "updatedAt": {
-          "type": "string",
-          "description": "ISO timestamp of last state save"
-        },
-        "payload": {
-          "type": "string",
-          "maxLength": 500000,
-          "description": "Serialized application state including autopilot credentials, template settings, and signals list"
-        }
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "maxLength": 160 },
+        "telegramUsername": { "type": "string", "maxLength": 128 },
+        "country": { "type": "string", "maxLength": 80 },
+        "email": { "type": "string", "maxLength": 160 },
+        "phone": { "type": "string", "maxLength": 64 },
+        "broker": { "type": "string", "maxLength": 80 },
+        "brokerAccountId": { "type": "string", "maxLength": 128 },
+        "subscriptionType": { "type": "string", "maxLength": 64 },
+        "planDuration": { "type": "string", "maxLength": 64 },
+        "paymentMethod": { "type": "string", "maxLength": 160 },
+        "amountPaid": { "type": "number" },
+        "status": { "type": "string", "enum": ["PENDING", "ACTIVE", "BANNED"] },
+        "expiryDate": { "type": "string", "maxLength": 32 },
+        "robotApiKey": { "type": "string", "maxLength": 128 },
+        "robotExpiryDate": { "type": "string", "maxLength": 32 },
+        "robotEnabled": { "type": "boolean" },
+        "robotDefaultMode": { "type": "string", "enum": ["AUTO", "MANUAL"] },
+        "robotStakeUsd": { "type": "number" },
+        "activationLink": { "type": "string", "maxLength": 512 },
+        "notes": { "type": "string", "maxLength": 2000 },
+        "createdAtIso": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "status", "updatedAt"]
+    },
+    "RobotKey": {
+      "title": "RobotKey",
+      "description": "Non-PII per-key license verification record for the Floating Quotex Robot.",
+      "type": "object",
+      "properties": {
+        "active": { "type": "boolean" },
+        "expiryDate": { "type": "string", "maxLength": 32 },
+        "defaultMode": { "type": "string", "enum": ["AUTO", "MANUAL"] },
+        "defaultStakeUsd": { "type": "number" },
+        "label": { "type": "string", "maxLength": 80 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["active", "expiryDate", "defaultMode", "defaultStakeUsd", "label", "updatedAt"]
+    },
+    "RobotPublicFeed": {
+      "title": "RobotPublicFeed",
+      "description": "Non-PII live market signal & win-rate snapshot consumed by the Floating Robot.",
+      "type": "object",
+      "properties": {
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "serverEpochMs": { "type": "number" },
+        "marketOpen": { "type": "boolean" },
+        "isTradingHours": { "type": "boolean" },
+        "isLockedOutsideHours": { "type": "boolean" },
+        "lockReason": { "type": "string", "maxLength": 300 },
+        "workingHoursText": { "type": "string", "maxLength": 120 },
+        "nextSessionText": { "type": "string", "maxLength": 160 },
+        "wins": { "type": "number" },
+        "losses": { "type": "number" },
+        "winRate": { "type": "number" },
+        "targetPair": { "type": "string", "maxLength": 32 },
+        "allowedPairs": { "type": "array" },
+        "hasActiveSignal": { "type": "boolean" },
+        "signalId": { "type": "string", "maxLength": 128 },
+        "signalAsset": { "type": "string", "maxLength": 32 },
+        "signalDirection": { "type": "string", "enum": ["CALL", "PUT", ""] },
+        "signalTimeframe": { "type": "string", "maxLength": 16 },
+        "signalEntryMinute": { "type": "string", "maxLength": 32 },
+        "signalEntryTime": { "type": "string", "maxLength": 32 },
+        "signalTargetEntryTimestamp": { "type": "number" },
+        "signalStatus": { "type": "string", "maxLength": 32 },
+        "signalLivePrice": { "type": "string", "maxLength": 64 },
+        "signalStrategyType": { "type": "string", "maxLength": 64 },
+        "signalSuccessRateText": { "type": "string", "maxLength": 32 },
+        "signalQualityScore": { "type": "number" }
+      },
+      "required": [
+        "updatedAt",
+        "serverEpochMs",
+        "marketOpen",
+        "isTradingHours",
+        "isLockedOutsideHours",
+        "lockReason",
+        "workingHoursText",
+        "nextSessionText",
+        "wins",
+        "losses",
+        "winRate",
+        "targetPair",
+        "allowedPairs",
+        "hasActiveSignal"
+      ]
+    },
+    "TradingSignal": {
+      "title": "TradingSignal",
+      "description": "Published global forex signal entry (non-PII).",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "asset": { "type": "string", "maxLength": 32 },
+        "direction": { "type": "string", "enum": ["CALL", "PUT"] },
+        "timeframe": { "type": "string", "maxLength": 16 },
+        "entryMinute": { "type": "string", "maxLength": 32 },
+        "entryTime": { "type": "string", "maxLength": 32 },
+        "status": { "type": "string", "enum": ["PENDING", "WIN", "WIN_GALE1", "LOSS"] },
+        "livePrice": { "type": "string", "maxLength": 64 },
+        "rsiValue": { "type": "number" },
+        "strategyType": { "type": "string", "maxLength": 64 },
+        "successRateText": { "type": "string", "maxLength": 32 },
+        "qualityScore": { "type": "number" },
+        "targetEntryTimestamp": { "type": "number" },
+        "createdAtIso": { "type": "string", "maxLength": 64 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "asset", "direction", "timeframe", "status", "updatedAt"]
+    },
+    "PublicConfig": {
+      "title": "PublicConfig",
+      "description": "Public platform configuration documents (plans, contact links, payment methods, robot settings).",
+      "type": "object",
+      "properties": {
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "items": { "type": "array" },
+        "quotexReferralLink": { "type": "string", "maxLength": 300 },
+        "telegramChannelUrl": { "type": "string", "maxLength": 300 },
+        "telegramChannelUsername": { "type": "string", "maxLength": 128 },
+        "telegramVipChannelUrl": { "type": "string", "maxLength": 300 },
+        "telegramSupportUrl": { "type": "string", "maxLength": 300 },
+        "whatsappSupportNumber": { "type": "string", "maxLength": 64 },
+        "supportEmail": { "type": "string", "maxLength": 160 },
+        "contactNotes": { "type": "string", "maxLength": 1000 },
+        "isPublishedToVisitors": { "type": "boolean" },
+        "robotTitle": { "type": "string", "maxLength": 160 },
+        "version": { "type": "string", "maxLength": 64 },
+        "defaultMode": { "type": "string", "enum": ["AUTO", "MANUAL"] },
+        "strategyEngineMode": { "type": "string", "enum": ["PUBLIC_CLASSIC", "VIP_WITH_MPB"] },
+        "noMartingaleStrict": { "type": "boolean" },
+        "soundAlertsEnabled": { "type": "boolean" },
+        "autoSelectPair": { "type": "boolean" },
+        "autoSetExpiryM1": { "type": "boolean" },
+        "defaultStakeUsd": { "type": "number" }
+      },
+      "required": ["updatedAt"]
+    },
+    "AdminDoc": {
+      "title": "AdminDoc",
+      "description": "Explicitly authorized admin record.",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 160 },
+        "role": { "type": "string", "enum": ["admin"] }
+      },
+      "required": ["email", "role"]
+    },
+    "LegacySystemState": {
+      "title": "LegacySystemState",
+      "description": "Read-only legacy singleton state storage.",
+      "type": "object",
+      "properties": {
+        "updatedAt": { "type": "string", "maxLength": 64 },
+        "payload": { "type": "string", "maxLength": 500000 }
       },
       "required": ["updatedAt", "payload"]
     }
   },
   "firestore": {
+    "/admins/{adminUid}": {
+      "schema": "AdminDoc",
+      "description": "Authorized admin identities."
+    },
+    "/subscribers/{subId}": {
+      "schema": "Subscriber",
+      "description": "Admin-only subscriber directory with PII and subscription metadata."
+    },
+    "/robot_keys/{keyId}": {
+      "schema": "RobotKey",
+      "description": "Non-PII key lookup documents for Floating Quotex Robot authorization."
+    },
+    "/robot_public_feed/{docId}": {
+      "schema": "RobotPublicFeed",
+      "description": "Non-PII live trading feed document (`live`) for Floating Robot."
+    },
+    "/signals/{sigId}": {
+      "schema": "TradingSignal",
+      "description": "Global trading signals feed."
+    },
+    "/public_config/{docId}": {
+      "schema": "PublicConfig",
+      "description": "Publicly readable plans, contact links, payment methods, and robot defaults."
+    },
     "/system_state/{docId}": {
-      "schema": "AppState",
-      "description": "Singleton state storage for the 24/7 background signal worker"
+      "schema": "LegacySystemState",
+      "description": "Legacy read-only public configuration fallback."
     }
   }
 }

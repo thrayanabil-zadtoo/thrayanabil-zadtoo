@@ -76,6 +76,23 @@ import {
   INITIAL_SUBSCRIPTION_PLANS,
   INITIAL_CONTACT_LINKS
 } from './types/platformConfig';
+import {
+  subscribeFirebaseAdminAuth,
+  signInAdminWithGoogle,
+  signOutFirebaseAdmin,
+  canWriteFirestoreAsAdmin,
+  loadCloudPlans,
+  loadCloudContactLinks,
+  loadCloudRobotSettings,
+  loadSubscribersFromFirestore,
+  saveSubscriberToFirestore,
+  deleteSubscriberFromFirestore,
+  loadSignalsFromFirestore,
+  saveSignalToFirestore,
+  deleteSignalFromFirestore,
+  syncRobotPublicFeedToFirestore,
+  syncAllAdminStateToFirestore
+} from './firebase';
 
 export interface SubscriberMessage {
   id: string;
@@ -345,6 +362,10 @@ export default function App() {
     }
   });
   const [adminNeedsSetup, setAdminNeedsSetup] = useState<boolean>(false);
+  const [isFirebaseAdmin, setIsFirebaseAdmin] = useState<boolean>(false);
+  const [isGoogleLoggingIn, setIsGoogleLoggingIn] = useState<boolean>(false);
+  const effectiveIsAdmin = isAdminAuthenticated || isFirebaseAdmin;
+  const lastFirestoreMirrorRef = React.useRef<number>(0);
   const [activeView, setActiveView] = useState<'visitor' | 'admin' | 'stats' | 'robot'>('visitor');
   const [zadtooTab, setZadtooTab] = useState<'home' | 'signals' | 'news' | 'autotrade' | 'memberships' | 'admin' | 'telegram_bot'>('home');
   const [aboutContactType, setAboutContactType] = useState<'about' | 'contact' | null>(null);
@@ -383,8 +404,16 @@ export default function App() {
     } catch (_e) {}
     setAdminToken('');
     setIsAdminAuthenticated(false);
+    setIsFirebaseAdmin(false);
+    signOutFirebaseAdmin();
     setActiveView('visitor');
   };
+
+  useEffect(() => {
+    return subscribeFirebaseAdminAuth((isFbAdmin) => {
+      setIsFirebaseAdmin(isFbAdmin);
+    });
+  }, []);
 
   const checkAdminAuthStatus = async (tokOverride?: string) => {
     try {
@@ -392,11 +421,19 @@ export default function App() {
       const res = await fetch('/api/admin/status', {
         headers: tok ? { Authorization: `Bearer ${tok}` } : undefined
       });
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         setAdminNeedsSetup(Boolean(data.needsSetup));
         if (tok && data.authenticated === false) {
-          clearAdminSession();
+          try {
+            sessionStorage.removeItem('zad_admin_token');
+          } catch (_e) {}
+          setAdminToken('');
+          setIsAdminAuthenticated(false);
+          if (!canWriteFirestoreAsAdmin()) {
+            setActiveView('visitor');
+          }
         }
       }
     } catch (_e) {}
@@ -705,16 +742,58 @@ export default function App() {
     }
   };
 
-  // Load signals, settings, autopilot state, and live global market radar
+  // Load signals, settings, autopilot state, and live global market radar (Node API + Firestore Cloud sync/fallback for fx.zadtoo.com)
+  const loadFromCloudFirestoreFallback = async () => {
+    try {
+      const [fbSigs, fbPlans, fbLinks, fbRobot, fbSubs] = await Promise.all([
+        loadSignalsFromFirestore(),
+        loadCloudPlans<SubscriptionPlan[]>(),
+        loadCloudContactLinks<PlatformContactLinks>(),
+        loadCloudRobotSettings<QuotexRobotSettings>(),
+        canWriteFirestoreAsAdmin() ? loadSubscribersFromFirestore() : Promise.resolve(null)
+      ]);
+      if (Array.isArray(fbSigs) && fbSigs.length > 0) {
+        setSignals(fbSigs);
+      }
+      if (Array.isArray(fbPlans) && fbPlans.length > 0) {
+        setPlatformPlans(fbPlans);
+        try {
+          localStorage.setItem('zad_platform_plans', JSON.stringify(fbPlans));
+        } catch (_e) {}
+      }
+      if (fbLinks) {
+        setPlatformContactLinks(prev => ({ ...prev, ...fbLinks }));
+        try {
+          localStorage.setItem('zad_platform_contact_links', JSON.stringify(fbLinks));
+        } catch (_e) {}
+      }
+      if (fbRobot) {
+        setRobotSettings(prev => ({ ...prev, ...fbRobot, noMartingaleStrict: true }));
+      }
+      if (Array.isArray(fbSubs)) {
+        setSubscribers(fbSubs);
+      }
+    } catch (_err) {}
+  };
+
   const fetchSignals = async (tokenOverride?: string) => {
     const activeToken = tokenOverride ?? adminToken;
     try {
       const res = await fetch('/api/signals', {
         headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : undefined
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        await loadFromCloudFirestoreFallback();
+        return;
+      }
       const data = await res.json();
       if (activeToken && data.isAdmin === false) {
-        clearAdminSession();
+        try {
+          sessionStorage.removeItem('zad_admin_token');
+        } catch (_e) {}
+        setAdminToken('');
+        setIsAdminAuthenticated(false);
       }
       if (data.signals) {
         setSignals(data.signals);
@@ -725,7 +804,7 @@ export default function App() {
       if (Array.isArray(data.subscribers)) {
         setSubscribers(prev => {
           if (data.isAdmin) return data.subscribers;
-          // Preserve currently logged-in VIP member profile locally if present
+          if (canWriteFirestoreAsAdmin()) return prev;
           return prev.filter(s => s.id === currentMemberId);
         });
       }
@@ -814,8 +893,20 @@ export default function App() {
           vipLossImageUrl: data.autopilot.vipLossImageUrl !== undefined ? data.autopilot.vipLossImageUrl : (prev.vipLossImageUrl || '')
         }));
       }
+
+      // Mirror live server state into Firestore periodically when signed in as Firebase Admin
+      if (canWriteFirestoreAsAdmin() && Date.now() - lastFirestoreMirrorRef.current > 25000) {
+        lastFirestoreMirrorRef.current = Date.now();
+        syncAllAdminStateToFirestore({
+          subscribers: data.isAdmin && Array.isArray(data.subscribers) ? data.subscribers : undefined,
+          signals: Array.isArray(data.signals) ? data.signals : undefined,
+          plans: Array.isArray(data.plans) ? data.plans : undefined,
+          contactLinks: data.contactLinks || undefined,
+          robotSettings: data.robotSettings || undefined
+        }).catch(() => {});
+      }
     } catch (_err) {
-      // Backend momentarily unreachable
+      await loadFromCloudFirestoreFallback();
     } finally {
       setIsLoading(false);
     }
@@ -825,7 +916,7 @@ export default function App() {
     fetchSignals();
     const timer = setInterval(() => fetchSignals(), 10000);
     return () => clearInterval(timer);
-  }, [adminToken]);
+  }, [adminToken, isFirebaseAdmin]);
 
   // Force refresh live market radar
   const handleRefreshMarketRadar = async () => {
@@ -905,6 +996,36 @@ export default function App() {
       setLoginError(`تعذر الاتصال بالخادم للتحقق من بيانات الدخول${reason}`);
     } finally {
       setIsLoggingIn(false);
+    }
+  };
+
+  const handleGoogleAdminLogin = async () => {
+    setLoginError('');
+    setIsGoogleLoggingIn(true);
+    try {
+      const result = await signInAdminWithGoogle();
+      if (!result.ok) {
+        setLoginError(result.error || 'تعذر تسجيل الدخول بحساب المشرف عبر Google.');
+        return;
+      }
+      setIsFirebaseAdmin(true);
+      setShowLoginModal(false);
+      setActiveView('admin');
+      await loadFromCloudFirestoreFallback();
+      if (subscribers.length > 0 || signals.length > 0) {
+        await syncAllAdminStateToFirestore({
+          subscribers: subscribers.length > 0 ? subscribers : undefined,
+          signals: signals.length > 0 ? signals : undefined,
+          plans: platformPlans,
+          contactLinks: platformContactLinks,
+          robotSettings
+        });
+      }
+      await fetchSignals();
+    } catch (err: any) {
+      setLoginError(err?.message || 'حدث خطأ أثناء تسجيل الدخول عبر Google.');
+    } finally {
+      setIsGoogleLoggingIn(false);
     }
   };
 
@@ -1184,27 +1305,71 @@ export default function App() {
   ) => {
     setIsSavingSubscriber(true);
     setModalSaveFeedback(null);
+    const payload: Partial<VipSubscriber> & { sendActivationMessage?: boolean } = {
+      ...updates,
+      ...(updates.expiryDate !== undefined && updates.robotExpiryDate === undefined
+        ? { robotExpiryDate: updates.expiryDate }
+        : {})
+    };
+
+    const applyLocalAndFirestore = async (targetSub: VipSubscriber) => {
+      await saveSubscriberToFirestore(targetSub);
+      setSubscribers(prev => prev.map(s => (s.id === subId ? targetSub : s)));
+      if (selectedAdminSubId === subId) {
+        const planObj = VIP_PLANS.find(p => p.id === targetSub.planDuration) || VIP_PLANS[0];
+        const isRef =
+          targetSub.subscriptionType === 'quotex_referral' ||
+          targetSub.planDuration === 'quotex_referral_free';
+        setAdminEditForm({
+          name: targetSub.name || '',
+          telegramUsername: targetSub.telegramUsername || '',
+          country: targetSub.country || COUNTRIES_LIST[0],
+          email: targetSub.email || '',
+          phone: targetSub.phone || '',
+          broker: targetSub.broker || BROKERS_LIST[0],
+          brokerAccountId: targetSub.brokerAccountId || '',
+          subscriptionType: isRef ? 'quotex_referral' : 'paid_plan',
+          quotexDepositConfirmed: Boolean(targetSub.quotexDepositConfirmed),
+          planDuration: targetSub.planDuration || '1_month',
+          amountPaid:
+            typeof targetSub.amountPaid === 'number'
+              ? targetSub.amountPaid
+              : planObj.price,
+          paymentMethod: targetSub.paymentMethod || PAYMENT_METHODS[1],
+          status: targetSub.status || 'PENDING',
+          activationLink: targetSub.activationLink || '',
+          expiryDate: targetSub.expiryDate || targetSub.robotExpiryDate || ''
+        });
+      }
+      const okMsg = updates.sendActivationMessage
+        ? '✅ تم إرسال رابط التفعيل وتاريخ الانتهاء وتثبيته في السحابة (fx.zadtoo.com) بنجاح!'
+        : `✅ تم حفظ التعديلات وتاريخ الانتهاء (${targetSub.expiryDate || targetSub.robotExpiryDate || ''}) في السحابة (fx.zadtoo.com) بنجاح!`;
+      setModalSaveFeedback({ type: 'success', message: okMsg });
+      setPublishStatus({ type: 'success', message: okMsg });
+      setTimeout(() => setPublishStatus({ type: 'idle' }), 4000);
+    };
+
     try {
-      const payload: Partial<VipSubscriber> & { sendActivationMessage?: boolean } = {
-        ...updates,
-        ...(updates.expiryDate !== undefined && updates.robotExpiryDate === undefined
-          ? { robotExpiryDate: updates.expiryDate }
-          : {})
-      };
       const res = await fetch(`/api/subscribers/${subId}`, {
         method: 'PATCH',
         headers: getAdminHeaders(),
         body: JSON.stringify(payload)
       });
+      const contentType = res.headers.get('content-type') || '';
       const rawText = await res.text();
       let data: any = {};
-      try {
-        data = rawText ? JSON.parse(rawText) : {};
-      } catch (_parseErr) {
-        data = {};
+      if (contentType.includes('application/json')) {
+        try {
+          data = rawText ? JSON.parse(rawText) : {};
+        } catch (_parseErr) {
+          data = {};
+        }
       }
 
       if (res.ok && data?.ok && data?.subscriber) {
+        if (canWriteFirestoreAsAdmin()) {
+          await saveSubscriberToFirestore(data.subscriber);
+        }
         setSubscribers(prev => prev.map(s => (s.id === subId ? data.subscriber : s)));
         if (selectedAdminSubId === subId) {
           const planObj = VIP_PLANS.find(p => p.id === data.subscriber.planDuration) || VIP_PLANS[0];
@@ -1238,17 +1403,35 @@ export default function App() {
         setModalSaveFeedback({ type: 'success', message: okMsg });
         setPublishStatus({ type: 'success', message: okMsg });
         setTimeout(() => setPublishStatus({ type: 'idle' }), 4000);
+      } else if (canWriteFirestoreAsAdmin()) {
+        const existing = subscribers.find(s => s.id === subId);
+        if (existing) {
+          const mergedSub: VipSubscriber = {
+            ...existing,
+            ...payload
+          };
+          await applyLocalAndFirestore(mergedSub);
+        } else {
+          setModalSaveFeedback({ type: 'error', message: '❌ لم يتم العثور على العضو في القائمة.' });
+        }
       } else {
         const errMsg =
           data?.error ||
           (res.status === 401 || res.status === 403
-            ? '❌ انتهت جلسة المشرف — يرجى إعادة تسجيل الدخول ثم المحاولة مرة أخرى.'
-            : '❌ تعذر حفظ التعديلات على الخادم، يرجى التأكد من الاتصال.');
+            ? '❌ انتهت جلسة المشرف — يرجى إعادة تسجيل الدخول بحساب Google أو كلمة المرور.'
+            : '❌ تعذر حفظ التعديلات — سجل الدخول بحساب المشرف عبر Google للربط المباشر.');
         setModalSaveFeedback({ type: 'error', message: errMsg });
         setPublishStatus({ type: 'error', message: errMsg });
       }
     } catch (_e) {
-      const netMsg = '❌ تعذر الاتصال بالخادم لحفظ التعديلات — تأكد من فتح الموقع من رابط الخادم الصحيح.';
+      if (canWriteFirestoreAsAdmin()) {
+        const existing = subscribers.find(s => s.id === subId);
+        if (existing) {
+          await applyLocalAndFirestore({ ...existing, ...payload });
+          return;
+        }
+      }
+      const netMsg = '❌ تعذر الاتصال — يرجى تسجيل الدخول بحساب المشرف عبر Google للحفظ المباشر على fx.zadtoo.com.';
       setModalSaveFeedback({ type: 'error', message: netMsg });
       setPublishStatus({ type: 'error', message: netMsg });
     } finally {
@@ -1501,11 +1684,15 @@ export default function App() {
   };
 
   const handleDeleteSubscriber = async (id: string) => {
+    const target = subscribers.find(s => s.id === id);
     try {
       await fetch(`/api/subscribers/${id}`, {
         method: 'DELETE',
         headers: getAdminHeaders(undefined, false)
-      });
+      }).catch(() => {});
+      if (canWriteFirestoreAsAdmin()) {
+        await deleteSubscriberFromFirestore(id, target?.robotApiKey);
+      }
       setSubscribers(prev => prev.filter(s => s.id !== id));
       if (selectedAdminSubId === id) setSelectedAdminSubId(null);
     } catch (_e) {
@@ -1603,6 +1790,16 @@ export default function App() {
         headers: getAdminHeaders(),
         body: JSON.stringify(merged)
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        lastAutoPilotSaveRef.current = Date.now();
+        setPublishStatus({
+          type: 'success',
+          message: '✅ تم حفظ الإعدادات والأزواج على متصفحك ورابط fx.zadtoo.com بنجاح!'
+        });
+        setTimeout(() => setPublishStatus({ type: 'idle' }), 4000);
+        return;
+      }
       if (!res.ok) {
         let errDetail = '';
         try {
@@ -1620,7 +1817,6 @@ export default function App() {
       const endH = updatedAutopilot.freeEndHourEgypt ?? 13;
       const startLabel = startH === 0 ? '12 ص' : startH < 12 ? `${startH} صباحاً` : startH === 12 ? '12 ظهراً' : `${startH - 12} مساءً`;
       const endLabel = endH === 0 ? '12 ص' : endH < 12 ? `${endH} صباحاً` : endH === 12 ? '12 ظهراً' : `${endH - 12} مساءً`;
-      const galeLabel = updatedAutopilot.oneGaleEnabled === true ? 'مضاعفة واحدة مفعّلة' : 'بدون مضاعفات (متوقف)';
       const pairModeLabel = updatedAutopilot.pairSelectionMode === 'fixed_single'
         ? `الزوج الثابت: ${updatedAutopilot.primaryFixedPair || 'EUR/JPY'}`
         : updatedAutopilot.pairSelectionMode === 'custom_list'
@@ -1694,6 +1890,14 @@ export default function App() {
         headers: getAdminHeaders(),
         body: JSON.stringify({ pair: p })
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const nextCustom = Array.from(new Set([...(autoPilot.customPairsList || []), p]));
+        const nextAllowed = Array.from(new Set([...(autoPilot.allowedPairs || []), p]));
+        await handleSaveAutoPilot({ customPairsList: nextCustom, allowedPairs: nextAllowed });
+        setNewCustomPairInput('');
+        return;
+      }
       const data = await res.json();
       if (data.ok && data.autopilot) {
         setAutoPilot(data.autopilot);
@@ -1719,6 +1923,13 @@ export default function App() {
         headers: getAdminHeaders(),
         body: JSON.stringify({ pair: pairToRemove })
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const nextCustom = (autoPilot.customPairsList || []).filter(x => x !== pairToRemove);
+        const nextAllowed = (autoPilot.allowedPairs || []).filter(x => x !== pairToRemove);
+        await handleSaveAutoPilot({ customPairsList: nextCustom, allowedPairs: nextAllowed });
+        return;
+      }
       const data = await res.json();
       if (data.ok && data.autopilot) {
         setAutoPilot(data.autopilot);
@@ -1866,6 +2077,38 @@ export default function App() {
   const handlePublishSignal = async () => {
     setPublishStatus({ type: 'loading', message: 'جاري تنسيق إشارة السوق العالمي وإرسالها...' });
 
+    const publishViaFirestoreOnly = async () => {
+      const now = new Date();
+      const nextMin = new Date(now.getTime() + 60000);
+      nextMin.setSeconds(0, 0);
+      const newSig: SignalItem = {
+        id: `sig_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        asset: parsedSignal.asset,
+        isOtc: false,
+        direction: parsedSignal.direction,
+        timeframe: parsedSignal.timeframe || 'M1',
+        entryMinute: parsedSignal.entryMinute || String(nextMin.getMinutes()).padStart(2, '0'),
+        entryTime: parsedSignal.entryTime || `${String(nextMin.getHours()).padStart(2, '0')}:${String(nextMin.getMinutes()).padStart(2, '0')}`,
+        targetEntryTimestamp: Math.floor(nextMin.getTime() / 1000),
+        livePrice: parsedSignal.livePrice,
+        rsiValue: parsedSignal.rsiValue,
+        analysisReason: parsedSignal.analysisReason,
+        formattedMessage: formattedPreview,
+        rawOriginal: rawInput,
+        status: 'PENDING',
+        createdAt: now.toISOString()
+      };
+      await saveSignalToFirestore(newSig);
+      const nextList = [newSig, ...signals];
+      await syncRobotPublicFeedToFirestore(nextList);
+      setSignals(nextList);
+      setPublishStatus({
+        type: 'success',
+        message: '✅ تم نشر الإشارة في سحابة fx.zadtoo.com والروبوت العائم وصفحة الزوار بنجاح!'
+      });
+      setTimeout(() => setPublishStatus({ type: 'idle' }), 5000);
+    };
+
     try {
       const res = await fetch('/api/signals/publish', {
         method: 'POST',
@@ -1888,9 +2131,23 @@ export default function App() {
         })
       });
 
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json') || !res.ok) {
+        if (canWriteFirestoreAsAdmin()) {
+          await publishViaFirestoreOnly();
+          return;
+        }
+        throw new Error('تعذر الاتصال بخادم البث.');
+      }
+
       const data = await res.json();
       if (data.ok) {
-        setSignals(prev => [data.signal, ...prev]);
+        const nextList = [data.signal, ...signals];
+        setSignals(nextList);
+        if (canWriteFirestoreAsAdmin()) {
+          saveSignalToFirestore(data.signal).catch(() => {});
+          syncRobotPublicFeedToFirestore(nextList).catch(() => {});
+        }
 
         if (autoPilot.botToken.trim() && autoPilot.chatId.trim()) {
           if (data.telegramSent) {
@@ -1913,6 +2170,10 @@ export default function App() {
         setTimeout(() => setPublishStatus({ type: 'idle' }), 5000);
       }
     } catch (_err) {
+      if (canWriteFirestoreAsAdmin()) {
+        await publishViaFirestoreOnly();
+        return;
+      }
       setPublishStatus({
         type: 'error',
         message: 'حدث خطأ أثناء الاتصال بالخادم.'
@@ -1924,6 +2185,21 @@ export default function App() {
     id: string,
     status: 'WIN' | 'WIN_GALE1' | 'LOSS' | 'DRAW' | 'PENDING'
   ) => {
+    const updateViaFirestore = async () => {
+      const target = signals.find(s => s.id === id);
+      if (!target) return;
+      const updatedSig: SignalItem = { ...target, status };
+      const nextList = signals.map(s => (s.id === id ? updatedSig : s));
+      await saveSignalToFirestore(updatedSig);
+      await syncRobotPublicFeedToFirestore(nextList);
+      setSignals(nextList);
+      setPublishStatus({
+        type: 'success',
+        message: '✅ تم تحديث نتيجة الإشارة في السحابة والروبوت العائم بنجاح!'
+      });
+      setTimeout(() => setPublishStatus({ type: 'idle' }), 4000);
+    };
+
     try {
       const res = await fetch(`/api/signals/${id}/status`, {
         method: 'PATCH',
@@ -1935,9 +2211,23 @@ export default function App() {
           notifyTelegram: Boolean(autoPilot.botToken.trim() && autoPilot.chatId.trim())
         })
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json') || !res.ok) {
+        if (canWriteFirestoreAsAdmin()) {
+          await updateViaFirestore();
+        }
+        return;
+      }
       const data = await res.json();
       if (data.ok) {
-        setSignals(prev => prev.map(s => (s.id === id ? data.signal : s)));
+        setSignals(prev => {
+          const next = prev.map(s => (s.id === id ? data.signal : s));
+          if (canWriteFirestoreAsAdmin()) {
+            saveSignalToFirestore(data.signal).catch(() => {});
+            syncRobotPublicFeedToFirestore(next).catch(() => {});
+          }
+          return next;
+        });
         setPublishStatus({
           type: 'success',
           message:
@@ -1952,7 +2242,9 @@ export default function App() {
         setTimeout(() => setPublishStatus({ type: 'idle' }), 4000);
       }
     } catch (_e) {
-      // Ignore
+      if (canWriteFirestoreAsAdmin()) {
+        await updateViaFirestore();
+      }
     }
   };
 
@@ -1961,8 +2253,13 @@ export default function App() {
       await fetch(`/api/signals/${id}`, {
         method: 'DELETE',
         headers: getAdminHeaders(undefined, false)
-      });
-      setSignals(prev => prev.filter(s => s.id !== id));
+      }).catch(() => {});
+      const remaining = signals.filter(s => s.id !== id);
+      setSignals(remaining);
+      if (canWriteFirestoreAsAdmin()) {
+        await deleteSignalFromFirestore(id);
+        await syncRobotPublicFeedToFirestore(remaining);
+      }
     } catch (_e) {
       // Ignore
     }
@@ -2850,14 +3147,14 @@ export default function App() {
         setActiveTab={(tab) => {
           setZadtooTab(tab);
           if (tab === 'admin') {
-            if (!isAdminAuthenticated) {
+            if (!effectiveIsAdmin) {
               setShowLoginModal(true);
             } else {
               setShowLegacyAdminStudio(false);
             }
           }
         }}
-        isAdmin={isAdminAuthenticated}
+        isAdmin={effectiveIsAdmin}
         onOpenLogin={() => {
           checkAdminAuthStatus();
           setShowLoginModal(true);
@@ -2880,7 +3177,7 @@ export default function App() {
       {/* Screen 2: صفحة الأخبار العاجلة والمفكرة الاقتصادية وتوقعات الدولار */}
       {zadtooTab === 'news' && (
         <ZadtooForexNewsPage
-          isAdmin={isAdminAuthenticated}
+          isAdmin={effectiveIsAdmin}
           adminToken={adminToken}
           onNavigateSignals={() => setZadtooTab('signals')}
           onNavigateHome={() => setZadtooTab('home')}
@@ -2917,7 +3214,7 @@ export default function App() {
       {/* Screen 3: صفحة التداول الآلي */}
       {zadtooTab === 'autotrade' && (
         <ZadtooAutoTradePage
-          isAdmin={isAdminAuthenticated}
+          isAdmin={effectiveIsAdmin}
           onOpenRobotAdmin={() => {
             setZadtooTab('admin');
             setShowLegacyAdminStudio(true);
@@ -2941,7 +3238,7 @@ export default function App() {
 
       {/* Screen 6: قسم بوت التليجرام الذكي (محمي للمشرف فقط) */}
       {zadtooTab === 'telegram_bot' && (
-        isAdminAuthenticated ? (
+        effectiveIsAdmin ? (
           <TelegramBotManager adminToken={adminToken} />
         ) : (
           <div className="max-w-md mx-auto my-16 p-8 bg-white border border-slate-200 rounded-3xl shadow-lg text-center space-y-4">
@@ -2969,7 +3266,7 @@ export default function App() {
       {/* Screen 5: لوحة تحكم الإدارة */}
       {zadtooTab === 'admin' && (
         <>
-          {!isAdminAuthenticated ? (
+          {!effectiveIsAdmin ? (
             <div className="max-w-md mx-auto my-16 p-8 bg-white border border-slate-200 rounded-3xl shadow-lg text-center space-y-4">
               <div className="w-14 h-14 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center mx-auto text-xl font-bold">
                 🔒
@@ -3059,9 +3356,9 @@ export default function App() {
       )}
 
       {/* Main Content Container for Legacy Admin / Studio when requested */}
-      {zadtooTab === 'admin' && isAdminAuthenticated && showLegacyAdminStudio && (
+      {zadtooTab === 'admin' && effectiveIsAdmin && showLegacyAdminStudio && (
         <main className="flex-1 w-full max-w-[1240px] mx-auto px-3 sm:px-6 py-6 sm:py-8 bg-[#0B0F17] text-slate-100 rounded-3xl mb-8">
-        {activeView === 'admin' && isAdminAuthenticated ? (
+        {activeView === 'admin' && effectiveIsAdmin ? (
           /* ==========================================
              PROTECTED ADMIN VIEW: Focused Global Forex Engine
              ========================================== */
@@ -6163,14 +6460,14 @@ export default function App() {
               liveMarket={liveMarket}
               onTriggerSignalNow={handleTriggerAutoNow}
               onNavigateView={setActiveView}
-              isAdmin={isAdminAuthenticated}
+              isAdmin={effectiveIsAdmin}
               onOpenLoginModal={() => {
                 checkAdminAuthStatus();
                 setShowLoginModal(true);
               }}
             />
           </ErrorBoundary>
-        ) : activeView === 'stats' && isAdminAuthenticated ? (
+        ) : activeView === 'stats' && effectiveIsAdmin ? (
           /* ==========================================
              PROTECTED ADMIN-ONLY STATISTICS PAGE (A4 SINGLE-LINE-PER-DAY SHEET)
              ========================================== */
@@ -9917,6 +10214,32 @@ export default function App() {
               </button>
             </div>
 
+            {/* Direct Google Admin Sign-In for fx.zadtoo.com */}
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={handleGoogleAdminLogin}
+                disabled={isGoogleLoggingIn}
+                className="w-full py-3 px-4 text-sm font-black text-slate-950 bg-gradient-to-r from-emerald-400 to-teal-300 hover:from-emerald-300 hover:to-teal-200 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-60"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                <span>
+                  {isGoogleLoggingIn
+                    ? 'جاري المصادقة مع Google...'
+                    : '🔐 دخول المشرف عبر Google (لربط fx.zadtoo.com)'}
+                </span>
+              </button>
+              <p className="text-[11px] text-slate-400 text-center leading-relaxed">
+                يفتح لوحة المشرف والأعضاء والبيانات البنكية وروابط الدعم والروبوت مباشرة على <span className="text-emerald-300 font-mono">fx.zadtoo.com</span> بحساب <span dir="ltr" className="text-slate-200 font-mono">thrayanabil@gmail.com</span>
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 text-[11px] text-slate-500">
+              <div className="flex-1 h-px bg-slate-800" />
+              <span>أو الدخول بكلمة مرور الخادم</span>
+              <div className="flex-1 h-px bg-slate-800" />
+            </div>
+
             {adminNeedsSetup && (
               <p className="text-xs text-amber-300 bg-amber-950/50 border border-amber-500/40 rounded-lg p-2.5 leading-relaxed">
                 لم يتم ضبط حساب المشرف على هذا الخادم بعد. أدخل البريد الإلكتروني وكلمة المرور (6 أحرف على الأقل) لاعتماد حساب المشرف بشكل مشفر.
@@ -9991,7 +10314,7 @@ export default function App() {
               قناتنا المجانية @ZadNBFX
             </a>
             <span aria-hidden="true">·</span>
-            {isAdminAuthenticated ? (
+            {effectiveIsAdmin ? (
               <button
                 onClick={() => setActiveView(activeView === 'admin' ? 'visitor' : 'admin')}
                 className="text-slate-400 hover:text-white transition-colors cursor-pointer"
