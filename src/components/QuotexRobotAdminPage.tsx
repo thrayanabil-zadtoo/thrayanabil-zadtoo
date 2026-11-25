@@ -613,36 +613,112 @@ export default function QuotexRobotAdminPage({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const [isRestoringGolden, setIsRestoringGolden] = useState<boolean>(false);
-  const [goldenRestoreMessage, setGoldenRestoreMessage] = useState<string | null>(null);
+  // Current App Origin
+  const appOrigin = typeof window !== 'undefined' ? window.location.origin : '';
 
-  const handleRestoreGoldenBaseline = async () => {
-    if (!window.confirm('🔒 هل أنت متأكد من رغبتك في استعادة وتثبيت الإعدادات المرجعية الذهبية للروبوت السحابي على الخادم؟')) {
-      return;
+  // Admin-Only Floating Quotex Robot v5.0 Tampermonkey Script Generator State
+  const [scriptServerOrigin, setScriptServerOrigin] = useState<string>(() =>
+    typeof window !== 'undefined' ? window.location.origin : ''
+  );
+  const [scriptApiKey, setScriptApiKey] = useState<string>('');
+  const [generatedScript, setGeneratedScript] = useState<string>('');
+  const [scriptMeta, setScriptMeta] = useState<{
+    version?: string;
+    serverOrigin?: string;
+    embeddedApiKey?: string;
+  } | null>(null);
+  const [isLoadingScript, setIsLoadingScript] = useState<boolean>(false);
+  const [scriptError, setScriptError] = useState<string | null>(null);
+  const [showScriptPreview, setShowScriptPreview] = useState<boolean>(false);
+  const [isQuickCreatingAdminKey, setIsQuickCreatingAdminKey] = useState<boolean>(false);
+
+  const activeMemberKeys = useMemo(
+    () => safeSubscribers.filter(s => s.status === 'ACTIVE' && s.robotEnabled !== false && s.robotApiKey),
+    [safeSubscribers]
+  );
+
+  useEffect(() => {
+    if (!scriptApiKey && activeMemberKeys.length > 0) {
+      setScriptApiKey(activeMemberKeys[0].robotApiKey || '');
     }
-    setIsRestoringGolden(true);
-    setGoldenRestoreMessage(null);
+  }, [activeMemberKeys, scriptApiKey]);
+
+  const fetchAdminFloatingScript = async (overrideKey?: string, overrideOrigin?: string) => {
+    if (!isAdmin || !adminToken) return;
+    setIsLoadingScript(true);
+    setScriptError(null);
     try {
-      const res = await fetch('/api/quotex-robot/restore-golden-baseline', {
-        method: 'POST',
+      const targetKey = (overrideKey ?? scriptApiKey).trim();
+      const targetOrigin = (overrideOrigin ?? scriptServerOrigin ?? appOrigin).trim();
+      const params = new URLSearchParams();
+      if (targetKey) params.set('apiKey', targetKey);
+      if (targetOrigin) params.set('serverOrigin', targetOrigin);
+
+      const res = await fetch(`/api/quotex-robot/admin-script?${params.toString()}`, {
         headers: getAuthHeaders(false)
       });
       const data = await res.json();
-      if (res.ok && data.ok) {
-        setGoldenRestoreMessage(data.message || '✅ تم تثبيت واستعادة الإعدادات المرجعية الذهبية بنجاح!');
+      if (res.ok && data?.ok && data.script) {
+        setGeneratedScript(data.script);
+        setScriptMeta({
+          version: data.version,
+          serverOrigin: data.serverOrigin,
+          embeddedApiKey: data.embeddedApiKey
+        });
+        if (!targetKey && data.embeddedApiKey) {
+          setScriptApiKey(data.embeddedApiKey);
+        }
       } else {
-        setGoldenRestoreMessage('❌ فشل: ' + (data.error || 'تعذر الاستعادة'));
+        setScriptError(data?.error || 'تعذر توليد كود الروبوت من الخادم');
       }
     } catch (err: any) {
-      setGoldenRestoreMessage('❌ خطأ: ' + err.message);
+      setScriptError(err?.message || 'تعذر الاتصال بالخادم لتوليد الكود');
     } finally {
-      setIsRestoringGolden(false);
-      setTimeout(() => setGoldenRestoreMessage(null), 7000);
+      setIsLoadingScript(false);
     }
   };
 
-  // Current App Origin
-  const appOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://fx.zadtoo.com';
+  useEffect(() => {
+    if (isAdmin && adminToken && !generatedScript) {
+      fetchAdminFloatingScript();
+    }
+  }, [isAdmin, adminToken]);
+
+  const handleCreateAndEmbedAdminKey = async () => {
+    if (!isAdmin || !adminToken) return;
+    setIsQuickCreatingAdminKey(true);
+    setScriptError(null);
+    try {
+      const exp365 = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const res = await fetch('/api/quotex-robot/create-key', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({
+          name: 'حساب المشرف — الروبوت العائم',
+          brokerAccountId: `QX-ADMIN-${Math.floor(1000 + Math.random() * 9000)}`,
+          expiryDate: exp365,
+          tradeStake: robotSettings.defaultStakeUsd || 5,
+          defaultMode: robotSettings.defaultMode || 'AUTO'
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data?.ok && data.subscriber) {
+        const newKey = data.subscriber.robotApiKey || '';
+        setSubscribers(prev => [data.subscriber, ...prev]);
+        if (newKey) {
+          setSelectedTestApiKey(newKey);
+          setScriptApiKey(newKey);
+          await fetchAdminFloatingScript(newKey, scriptServerOrigin);
+        }
+      } else {
+        setScriptError(data?.error || 'تعذر إنشاء مفتاح المشرف');
+      }
+    } catch (err: any) {
+      setScriptError(err?.message || 'حدث خطأ أثناء إنشاء المفتاح');
+    } finally {
+      setIsQuickCreatingAdminKey(false);
+    }
+  };
 
   const filteredSubscribers = useMemo(() => {
     const list = safeSubscribers;
@@ -2141,57 +2217,186 @@ export default function QuotexRobotAdminPage({
 
             <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5 text-[11px] text-emerald-200">
               <div className="font-bold flex items-center gap-1.5 text-emerald-300">
-                <span>🚀 تحديث الروبوت المستقل بالكامل (الإصدار v4.5 Cloud Edition):</span>
+                <span>🚀 تحديث الروبوت العائم المستقل (الإصدار v5.0 Cloud Secure):</span>
               </div>
               <ul className="list-disc list-inside space-y-1 text-slate-300">
-                <li><strong className="text-white">استقلالية كاملة 100%:</strong> يعمل الروبوت مباشرة على منصة كيوتكس (Quotex) دون الحاجة لفتح موقعك أو أي تبويب إضافي على الإطلاق.</li>
-                <li><strong className="text-amber-300">محرك سيرفر أبوسليم السحابي:</strong> يتصل مباشرة بسيرفر أبوسليم بالثانية دون أي قيود حظر أو ملفات تعريف ارتباط.</li>
-                <li><strong className="text-sky-300">زر إدخال وتعديل رقم الحساب (🔑 ID):</strong> يمكن للعضو إدخال رقم حسابه في كيوتكس أو مفتاحه مباشرة من النافذة العائمة.</li>
-                <li><strong className="text-emerald-300">نغمة صوتية عالية النقاء:</strong> تنبيه صوتي فوري مع وميض الصندوق باللون الأخضر أو الأحمر.</li>
+                <li><strong className="text-white">اتصال سحابي مباشر وآمن:</strong> يتصل الروبوت مباشرة بنقطة <code className="font-mono-num text-sky-300">/api/quotex-robot/feed</code> باستخدام مفتاح العضو فقط دون تضمين أي مفاتيح قاعدة بيانات أو صلاحيات مشرف داخل الكود.</li>
+                <li><strong className="text-amber-300">زر إدخال وتعديل المفتاح (🔑 المفتاح):</strong> يمكن تغيير مفتاح العضو أو رابط السيرفر مباشرة من داخل الصندوق العائم على منصة كيوتكس في أي وقت.</li>
+                <li><strong className="text-emerald-300">تداول آلي أو يدوي + تنبيه صوتي:</strong> يدعم الاختيار التلقائي للزوج وضبط المدة M1 والتنفيذ الفوري بدون مضاعفات.</li>
               </ul>
-              <div className="text-[10px] text-slate-400 pt-1 border-t border-emerald-500/20">
-                🔒 <strong>سياسة حماية الأكواد والملفات:</strong> تم إيقاف تصدير أو تحميل أي ملفات خارجية (`.user.js` أو `.mq4` أو ملفات نصية) لضمان حماية الخوارزميات بالكامل على الخادم.
-              </div>
             </div>
 
-            {/* GOLDEN REFERENCE BASELINE LOCK CARD */}
-            <div className="p-4 bg-gradient-to-r from-amber-950/40 via-slate-950 to-amber-950/30 border-2 border-amber-500/60 rounded-xl space-y-3 shadow-lg">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="w-7 h-7 rounded-lg bg-amber-500/20 border border-amber-400/50 flex items-center justify-center text-amber-300 font-bold text-sm">
-                    🔒
-                  </span>
+            {/* ADMIN-ONLY FLOATING QUOTEX ROBOT SCRIPT GENERATOR */}
+            {isAdmin && adminToken ? (
+              <div className="p-4 bg-gradient-to-br from-emerald-950/50 via-slate-950 to-slate-900 border-2 border-emerald-500/50 rounded-xl space-y-3 shadow-lg">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-400/50 flex items-center justify-center text-emerald-300 font-bold text-sm">
+                      <Code className="w-4 h-4" />
+                    </span>
+                    <div>
+                      <h4 className="text-xs font-extrabold text-emerald-300 flex flex-wrap items-center gap-1.5">
+                        <span>نسخ وتثبيت كود الروبوت العائم للمشرف (Tampermonkey v5.0)</span>
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 border border-emerald-500/40 text-[9px] font-bold">
+                          متاح للمشرف فقط 🔒
+                        </span>
+                      </h4>
+                      <p className="text-[10.5px] text-slate-400 mt-0.5">
+                        توليد فوري لأحدث نسخة مثبتة من الروبوت العائم متصلة بسيرفرك ومضبوطة بمفتاح عضو فعال.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => fetchAdminFloatingScript()}
+                    disabled={isLoadingScript}
+                    className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[10.5px] font-bold cursor-pointer flex items-center gap-1"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isLoadingScript ? 'animate-spin' : ''}`} />
+                    <span>تحديث الكود</span>
+                  </button>
+                </div>
+
+                {activeMemberKeys.length === 0 && (
+                  <div className="p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/40 text-[10.5px] text-amber-200 space-y-2">
+                    <div>
+                      ⚠️ <strong>تنبيه مهم:</strong> لا يوجد أي مفتاح عضو فعال حالياً في النظام، ولذلك لن يستقبل الروبوت العائم على كيوتكس الإشارات حتى تُنشئ مفتاحاً وتُضمّنه في الكود.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCreateAndEmbedAdminKey}
+                      disabled={isQuickCreatingAdminKey}
+                      className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold rounded-lg text-[11px] cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Key className="w-3.5 h-3.5" />
+                      <span>{isQuickCreatingAdminKey ? 'جاري إنشاء المفتاح...' : '🔑 إنشاء مفتاح مشرف فعال وتضمينه في الكود الآن'}</span>
+                    </button>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <div>
-                    <h4 className="text-xs font-extrabold text-amber-300 flex items-center gap-1.5">
-                      <span>المرجع السحابي المعتمد لإعدادات الروبوت</span>
-                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[9px] font-bold">
-                        محمية ومقفولة على الخادم
-                      </span>
-                    </h4>
-                    <p className="text-[10.5px] text-slate-400 mt-0.5">
-                      إعدادات الروبوت وإدارة المفاتيح محمية بالكامل ولا يمكن استخراج أو تحميل أي أكواد مصدرية عبر الموقع.
-                    </p>
+                    <label className="block text-[10px] font-bold text-slate-300 mb-1">
+                      مفتاح العضو المضمّن داخل الكود:
+                    </label>
+                    <select
+                      value={scriptApiKey}
+                      onChange={e => {
+                        const val = e.target.value;
+                        setScriptApiKey(val);
+                        fetchAdminFloatingScript(val, scriptServerOrigin);
+                      }}
+                      className="w-full px-2.5 py-1.5 bg-[#070A10] border border-slate-700 rounded-lg text-[11px] font-mono-num text-amber-300 focus:outline-none focus:border-emerald-500"
+                    >
+                      <option value="">-- بدون مفتاح افتراضي (يُدخل من الروبوت) --</option>
+                      {activeMemberKeys.map(sub => (
+                        <option key={sub.id} value={sub.robotApiKey || ''}>
+                          {sub.name} — {sub.robotApiKey}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-300 mb-1">
+                      رابط السيرفر المتصل به الروبوت (Server URL):
+                    </label>
+                    <input
+                      type="text"
+                      dir="ltr"
+                      value={scriptServerOrigin}
+                      onChange={e => setScriptServerOrigin(e.target.value)}
+                      placeholder="https://ais-pre-....run.app"
+                      className="w-full px-2.5 py-1.5 bg-[#070A10] border border-slate-700 rounded-lg text-[10.5px] font-mono-num text-sky-300 focus:outline-none focus:border-emerald-500"
+                    />
                   </div>
                 </div>
-              </div>
 
-              {goldenRestoreMessage && (
-                <div className="p-2.5 rounded-lg bg-emerald-950/90 border border-emerald-500/50 text-emerald-200 text-xs font-bold flex items-center gap-2 animate-fade-in">
-                  <span>{goldenRestoreMessage}</span>
+                {scriptServerOrigin.includes('fx.zadtoo.com') && (
+                  <div className="p-2 rounded-lg bg-rose-500/15 border border-rose-500/40 text-[10px] text-rose-200 leading-relaxed">
+                    ⚠️ تنبيه: تأكد أن رابط السيرفر يشير إلى رابط الخادم المنشور (<code dir="ltr" className="font-mono-num">ais-pre-...run.app</code>) وليس صفحة استضافة ثابتة بدون سيرفر، حتى تصل الإشارات للروبوت فوراً.
+                  </div>
+                )}
+
+                {scriptError && (
+                  <div className="p-2 rounded-lg bg-rose-950/80 border border-rose-500/50 text-rose-200 text-[11px] font-bold">
+                    ❌ {scriptError}
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    disabled={!generatedScript || isLoadingScript}
+                    onClick={() => handleCopy(generatedScript, 'admin-robot-script')}
+                    className="flex-1 min-w-[200px] py-2 px-3 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow"
+                  >
+                    {copiedId === 'admin-robot-script' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    <span>
+                      {copiedId === 'admin-robot-script'
+                        ? '✅ تم نسخ كود الروبوت العائم v5.0!'
+                        : '📋 نسخ كود الروبوت العائم (Tampermonkey v5.0)'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowScriptPreview(prev => !prev)}
+                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-lg text-xs cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>{showScriptPreview ? 'إخفاء الكود' : 'معاينة الكود'}</span>
+                  </button>
                 </div>
-              )}
 
-              <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-amber-500/20">
-                <button
-                  type="button"
-                  onClick={handleRestoreGoldenBaseline}
-                  disabled={isRestoringGolden}
-                  className="px-3 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs transition-all cursor-pointer flex items-center gap-1.5 shadow"
-                >
-                  <span>{isRestoringGolden ? '⏳ جاري الاستعادة...' : '🔄 استعادة وتثبيت الإعدادات المرجعية بنقرة واحدة'}</span>
-                </button>
+                {scriptMeta && (
+                  <div className="flex flex-wrap items-center gap-3 text-[10px] text-slate-400">
+                    <span>الإصدار: <strong className="text-emerald-300">{scriptMeta.version}</strong></span>
+                    <span>السيرفر: <code dir="ltr" className="text-sky-300 font-mono-num">{scriptMeta.serverOrigin}</code></span>
+                    <span>المفتاح المضمّن: <code dir="ltr" className="text-amber-300 font-mono-num">{scriptMeta.embeddedApiKey || 'غير مضمّن'}</code></span>
+                  </div>
+                )}
+
+                {showScriptPreview && generatedScript && (
+                  <pre
+                    dir="ltr"
+                    className="p-3 bg-[#05080E] border border-slate-800 rounded-xl text-[10px] font-mono-num text-emerald-200 max-h-60 overflow-auto leading-relaxed select-all"
+                  >
+                    {generatedScript}
+                  </pre>
+                )}
+
+                <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-lg text-[10px] text-slate-300 space-y-1">
+                  <div className="font-bold text-sky-300">📌 خطوات التثبيت السريعة في Tampermonkey:</div>
+                  <ol className="list-decimal list-inside space-y-0.5 text-slate-400">
+                    <li>اضغط <strong>نسخ كود الروبوت العائم</strong> أعلاه (يُفضل إنشاء مفتاح عضو وتضمينه أولاً).</li>
+                    <li>افتح إضافة <strong>Tampermonkey</strong> في المتصفح واختر <strong>Create a new script</strong> ثم امسح المحتوى القديم والصق الكود واحفظه (<code dir="ltr">Ctrl + S</code>).</li>
+                    <li>افتح منصة <strong>Quotex</strong> — سيظهر الصندوق العائم فوراً، وإذا ظهر في المرة الأولى أنك بحاجة لتعديل الرابط أو المفتاح اضغط زر <strong>🔑 المفتاح</strong>.</li>
+                  </ol>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="p-4 bg-slate-950/90 border border-slate-800 rounded-xl flex items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <div className="text-xs font-extrabold text-amber-300 flex items-center gap-1.5">
+                    <Lock className="w-4 h-4" />
+                    <span>كود الروبوت العائم متاح للمشرف المصادق عليه فقط</span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-400">
+                    سجل دخولك كمشرف لعرض ونسخ كود Tampermonkey المحدث والمربوط بسيرفرك.
+                  </p>
+                </div>
+                {onOpenLoginModal && (
+                  <button
+                    type="button"
+                    onClick={onOpenLoginModal}
+                    className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold rounded-lg text-xs cursor-pointer shrink-0"
+                  >
+                    تسجيل دخول المشرف
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

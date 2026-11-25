@@ -1889,9 +1889,37 @@ function applyParsedState(parsed: Partial<PersistedState>) {
     persistedAdminAuth = parsed.adminAuth;
   }
   if (parsed.telegramBotConfig) {
+    const incomingCfg = parsed.telegramBotConfig;
     telegramBotConfigStore = {
       ...defaultTelegramBotConfig,
-      ...parsed.telegramBotConfig
+      ...incomingCfg,
+      botToken: (incomingCfg.botToken || '').trim() || (process.env.TELEGRAM_ONBOARDING_BOT_TOKEN || '').trim(),
+      egyptPayment: {
+        ...defaultTelegramBotConfig.egyptPayment,
+        ...(incomingCfg.egyptPayment || {})
+      },
+      palestinePayment: {
+        ...defaultTelegramBotConfig.palestinePayment,
+        ...(incomingCfg.palestinePayment || {})
+      },
+      internationalPayment: {
+        ibanEgp: {
+          ...defaultTelegramBotConfig.internationalPayment.ibanEgp,
+          ...(incomingCfg.internationalPayment?.ibanEgp || {})
+        },
+        ibanUsd: {
+          ...defaultTelegramBotConfig.internationalPayment.ibanUsd,
+          ...(incomingCfg.internationalPayment?.ibanUsd || {})
+        }
+      },
+      usdtPayment: {
+        ...defaultTelegramBotConfig.usdtPayment,
+        ...(incomingCfg.usdtPayment || {})
+      },
+      robotGuide: {
+        ...defaultTelegramBotConfig.robotGuide,
+        ...(incomingCfg.robotGuide || {})
+      }
     };
   }
   if (parsed.telegramBotUsers && Array.isArray(parsed.telegramBotUsers) && parsed.telegramBotUsers.length > 0) {
@@ -4586,6 +4614,100 @@ function escapeTgHtml(s: string): string {
     .replace(/>/g, '&gt;');
 }
 
+function normalizeHttpUrl(raw: string | undefined, fallback: string): string {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return fallback;
+  if (/^(javascript|data|vbscript):/i.test(trimmed)) return fallback;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (/^[a-z0-9.-]+\.[a-z]{2,}(\/.*)?$/i.test(trimmed)) return `https://${trimmed}`;
+  return fallback;
+}
+
+function normalizeTelegramUrl(raw: string | undefined, fallback = 'https://t.me/thrayanabil'): string {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return fallback;
+  if (/^(javascript|data|vbscript):/i.test(trimmed)) return fallback;
+
+  // Handle full t.me / telegram.me URLs cleanly
+  const tgUrlMatch = trimmed.match(/^(?:https?:\/\/)?(?:www\.)?(?:t\.me|telegram\.me)\/(.+)$/i);
+  if (tgUrlMatch && tgUrlMatch[1]) {
+    const cleanPath = tgUrlMatch[1].replace(/^@+/, '').trim();
+    return cleanPath ? `https://t.me/${cleanPath}` : fallback;
+  }
+
+  // Handle any other explicit http/https URL (e.g., wa.me, external helpdesk)
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+
+  // Plain @username or username
+  const handle = trimmed.replace(/^@+/, '').replace(/\s+/g, '');
+  return handle ? `https://t.me/${handle}` : fallback;
+}
+
+function getEffectiveBotPayments(cfg: TelegramBotConfig) {
+  const findMethod = (id: string, keyword?: string) =>
+    paymentMethodsStore.find(
+      m =>
+        m.isActive !== false &&
+        (m.id === id || (keyword ? (m.name || '').toLowerCase().includes(keyword) : false))
+    );
+
+  const instapayMethod = findMethod('instapay', 'instapay');
+  const walletMethod = findMethod('vodafone_cash', 'فودافون');
+  const bankMethod = findMethod('bank_transfer', 'بنك');
+  const usdtMethod = findMethod('usdt_trc20', 'usdt');
+
+  const eg = cfg.egyptPayment || defaultTelegramBotConfig.egyptPayment;
+  const pal = cfg.palestinePayment || defaultTelegramBotConfig.palestinePayment;
+  const ibanEgp = cfg.internationalPayment?.ibanEgp || defaultTelegramBotConfig.internationalPayment.ibanEgp;
+  const ibanUsd = cfg.internationalPayment?.ibanUsd || defaultTelegramBotConfig.internationalPayment.ibanUsd;
+  const usdt = cfg.usdtPayment || defaultTelegramBotConfig.usdtPayment;
+
+  return {
+    egypt: {
+      instapayAccount: (eg.instapayAccount || instapayMethod?.accountNumber || '').trim(),
+      instapayName: (eg.instapayName || instapayMethod?.accountHolderName || '').trim(),
+      vodafoneCash: (eg.vodafoneCash || walletMethod?.accountNumber || '').trim(),
+      etisalatCash: (eg.etisalatCash || '').trim(),
+      orangeCash: (eg.orangeCash || '').trim(),
+      wePay: (eg.wePay || '').trim()
+    },
+    palestine: {
+      country: (pal.country || 'فلسطين 🇵🇸').trim(),
+      bankName: (pal.bankName || 'بنك فلسطين (Bank of Palestine)').trim(),
+      beneficiaryName: (pal.beneficiaryName || '').trim(),
+      currency: (pal.currency || 'دولار أمريكي ($) / شيكل (ILS)').trim(),
+      accountNumber: (pal.accountNumber || '').trim(),
+      iban: (pal.iban || '').trim(),
+      branch: (pal.branch || 'الفرع الرئيسي').trim()
+    },
+    ibanEgp: {
+      country: (ibanEgp.country || 'جمهورية مصر العربية 🇪🇬').trim(),
+      bankName: (ibanEgp.bankName || bankMethod?.networkOrBank || 'البنك الأهلي المصري').trim(),
+      beneficiaryName: (ibanEgp.beneficiaryName || (ibanEgp as any).accountName || bankMethod?.accountHolderName || '').trim(),
+      currency: (ibanEgp.currency || 'الجنيه المصري (EGP)').trim(),
+      accountNumber: (ibanEgp.accountNumber || '').trim(),
+      iban: (ibanEgp.iban || bankMethod?.accountNumber || '').trim(),
+      swiftCode: (ibanEgp.swiftCode || 'NBEGEGCX').trim()
+    },
+    ibanUsd: {
+      country: (ibanUsd.country || 'دولي 🌍').trim(),
+      bankName: (ibanUsd.bankName || bankMethod?.networkOrBank || 'National Bank of Egypt (NBE)').trim(),
+      beneficiaryName: (ibanUsd.beneficiaryName || (ibanUsd as any).accountName || bankMethod?.accountHolderName || '').trim(),
+      currency: (ibanUsd.currency || 'الدولار الأمريكي (USD)').trim(),
+      accountNumber: (ibanUsd.accountNumber || '').trim(),
+      iban: (ibanUsd.iban || bankMethod?.accountNumber || '').trim(),
+      swiftCode: (ibanUsd.swiftCode || 'NBEGEGCX').trim()
+    },
+    usdt: {
+      network: (usdt.network || 'USDT (TRC20)').trim(),
+      address: (usdt.address || usdtMethod?.accountNumber || defaultTelegramBotConfig.usdtPayment.address).trim(),
+      qrImageUrl: (usdt.qrImageUrl || '/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg').trim()
+    }
+  };
+}
+
 function isEgyptCountryText(country: string): boolean {
   if (!country) return false;
   const c = country.toLowerCase().trim();
@@ -4728,11 +4850,19 @@ async function sendTelegramBotMainMenu(
 ) {
   const cfg = telegramBotConfigStore;
   const isAr = user.language !== 'en';
-  const cleanAdmin = (cfg.adminTelegramUsername || '@thrayanabil').replace(/^@/, '');
-  const contactUrl = `https://t.me/${cleanAdmin}`;
-  const webUrl = cfg.officialWebsiteUrl || 'https://fx.zadtoo.com';
-  const refUrl = cfg.quotexReferralUrl || 'https://broker-qx.pro/sign-up/?lid=893976';
-  const channelUrl = cfg.freeChannelLink || 'https://t.me/ZadNBFX';
+  const contactUrl = normalizeTelegramUrl(
+    cfg.adminTelegramUsername || contactLinksStore.telegramSupportUrl,
+    'https://t.me/thrayanabil'
+  );
+  const webUrl = normalizeHttpUrl(cfg.officialWebsiteUrl, 'https://fx.zadtoo.com');
+  const refUrl = normalizeHttpUrl(
+    cfg.quotexReferralUrl || contactLinksStore.quotexReferralLink,
+    'https://broker-qx.pro/sign-up/?lid=893976'
+  );
+  const channelUrl = normalizeTelegramUrl(
+    cfg.freeChannelLink || contactLinksStore.telegramChannelUrl,
+    'https://t.me/ZadNBFX'
+  );
 
   const text = isAr
     ? (headerNotice ? `${headerNotice}\n\n` : '') +
@@ -4827,9 +4957,11 @@ const processedTelegramCallbackKeys = new Set<string>();
 async function processInteractiveTelegramBotUpdate(update: any, token: string) {
   if (!telegramBotConfigStore.isEnabled) return;
   const cfg = telegramBotConfigStore;
-  const cleanAdmin = (cfg.adminTelegramUsername || '@thrayanabil').replace(/^@/, '');
-  const contactUrl = `https://t.me/${cleanAdmin}`;
-  const webUrl = cfg.officialWebsiteUrl || 'https://fx.zadtoo.com';
+  const contactUrl = normalizeTelegramUrl(
+    cfg.adminTelegramUsername || contactLinksStore.telegramSupportUrl,
+    'https://t.me/thrayanabil'
+  );
+  const webUrl = normalizeHttpUrl(cfg.officialWebsiteUrl, 'https://fx.zadtoo.com');
 
   // 1. Handle Callback Queries (Inline Button Clicks)
   if (update.callback_query) {
@@ -5154,21 +5286,25 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
       user.countryLocked = true;
       user.step = 'COMPLETED';
       saveState();
-      const pal = cfg.palestinePayment || defaultTelegramBotConfig.palestinePayment;
-      const text =
-        `🇵🇸 <b>طرق الدفع والتحويل المتاحة داخل دولة فلسطين (${escapeTgHtml(user.country)}):</b>\n\n` +
-        `تم توجيهك لحساب الإيداع والتحويل الخاص في <b>بنك فلسطين (Bank of Palestine)</b>:\n\n` +
-        `🌍 <b>الدولة:</b> ${escapeTgHtml(pal.country || 'فلسطين 🇵🇸')}\n` +
-        `🏛 <b>اسم البنك:</b> ${escapeTgHtml(pal.bankName)}\n` +
-        `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(pal.beneficiaryName)}\n` +
-        `💰 <b>العملة:</b> ${escapeTgHtml(pal.currency)}\n` +
-        `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(pal.accountNumber)}</code>\n` +
-        `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(pal.iban)}</code>\n` +
-        `🏢 <b>الفرع:</b> ${escapeTgHtml(pal.branch)}\n\n` +
-        `📌 <i>ملاحظة: بعد إتمام الإيداع أو التحويل البنكي عبر تطبيق بنك فلسطين، يرجى إرسال صورة إشعار التحويل للمشرف للتفعيل الفوري.</i>`;
+      const pal = getEffectiveBotPayments(cfg).palestine;
+      const hasPalDetails = Boolean(pal.accountNumber || pal.iban);
+      const text = hasPalDetails
+        ? `🇵🇸 <b>طرق الدفع والتحويل المتاحة داخل دولة فلسطين (${escapeTgHtml(user.country)}):</b>\n\n` +
+          `تم توجيهك لحساب الإيداع والتحويل الخاص في <b>بنك فلسطين (Bank of Palestine)</b>:\n\n` +
+          `🌍 <b>الدولة:</b> ${escapeTgHtml(pal.country)}\n` +
+          `🏛 <b>اسم البنك:</b> ${escapeTgHtml(pal.bankName)}\n` +
+          (pal.beneficiaryName ? `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(pal.beneficiaryName)}\n` : '') +
+          `💰 <b>العملة:</b> ${escapeTgHtml(pal.currency)}\n` +
+          (pal.accountNumber ? `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(pal.accountNumber)}</code>\n` : '') +
+          (pal.iban ? `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(pal.iban)}</code>\n` : '') +
+          `🏢 <b>الفرع:</b> ${escapeTgHtml(pal.branch)}\n\n` +
+          `📌 <i>ملاحظة: بعد إتمام الإيداع أو التحويل البنكي عبر تطبيق بنك فلسطين، يرجى إرسال صورة إشعار التحويل للمشرف للتفعيل الفوري.</i>`
+        : `🇵🇸 <b>طرق الدفع المتاحة داخل دولة فلسطين (${escapeTgHtml(user.country)}):</b>\n\n` +
+          `🏛 <b>بنك فلسطين (Bank of Palestine)</b>\n` +
+          `📌 يرجى التواصل مباشرة مع الدعم الفني عبر الزر أدناه لتزويدك برقم الحساب / الآيبان المعتمد فوراً، أو استخدام الدفع عبر USDT (TRC20).`;
 
       const buttons = [
-        [{ text: '📩 إرسال إشعار التحويل للمشرف', url: contactUrl }],
+        [{ text: '📩 التواصل وإرسال إشعار التحويل للمشرف', url: contactUrl }],
         [
           { text: '💎 دفع بالدولار الرقمي USDT (TRC20)', callback_data: 'onb_pay_usdt' }
         ],
@@ -5489,15 +5625,17 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
 
     // Branch: InstaPay Details
     if (data === 'onb_pay_instapay') {
-      const eg = cfg.egyptPayment;
-      const text =
-        `⚡ <b>بيانات الدفع عبر تطبيق إنستا باي (InstaPay):</b>\n\n` +
-        `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(eg.instapayName)}\n` +
-        `🆔 <b>عنوان الدفع اللحظي (IPA):</b> <code>${escapeTgHtml(eg.instapayAccount)}</code>\n\n` +
-        `📌 <b>تنبيه هام:</b> بعد إتمام التحويل، يرجى التقاط صورة إيصال التحويل وإرسالها للمشرف مع اسمك لتفعيل اشتراكك وإضافتك لقناة VIP فوراً.`;
+      const eg = getEffectiveBotPayments(cfg).egypt;
+      const text = eg.instapayAccount
+        ? `⚡ <b>بيانات الدفع عبر تطبيق إنستا باي (InstaPay):</b>\n\n` +
+          (eg.instapayName ? `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(eg.instapayName)}\n` : '') +
+          `🆔 <b>عنوان الدفع اللحظي (IPA):</b> <code>${escapeTgHtml(eg.instapayAccount)}</code>\n\n` +
+          `📌 <b>تنبيه هام:</b> بعد إتمام التحويل، يرجى التقاط صورة إيصال التحويل وإرسالها للمشرف مع اسمك لتفعيل اشتراكك وإضافتك لقناة VIP فوراً.`
+        : `⚡ <b>الدفع عبر تطبيق إنستا باي (InstaPay):</b>\n\n` +
+          `📌 يرجى مراسلة المشرف مباشرة عبر الزر أدناه لتزويدك بعنوان الدفع اللحظي (InstaPay) المعتمد وتأكيد التفعيل فوراً.`;
 
       const buttons = [
-        [{ text: '📩 إرسال إيصال التحويل للمشرف', url: contactUrl }],
+        [{ text: '📩 التواصل وإرسال إيصال التحويل للمشرف', url: contactUrl }],
         [
           { text: '🔙 طرق الدفع في مصر', callback_data: 'onb_sub_paid' },
           { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
@@ -5510,17 +5648,22 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
 
     // Branch: Mobile Wallets Details
     if (data === 'onb_pay_wallets') {
-      const eg = cfg.egyptPayment;
-      const text =
-        `📱 <b>بيانات الدفع عبر المحافظ الإلكترونية المصرية (كاش):</b>\n\n` +
-        `🔴 <b>فودافون كاش:</b> <code>${escapeTgHtml(eg.vodafoneCash)}</code>\n` +
-        `🟢 <b>اتصالات كاش:</b> <code>${escapeTgHtml(eg.etisalatCash)}</code>\n` +
-        `🟠 <b>أورنج كاش:</b> <code>${escapeTgHtml(eg.orangeCash)}</code>\n` +
-        `🟣 <b>وي باي (WE):</b> <code>${escapeTgHtml(eg.wePay)}</code>\n\n` +
-        `📌 <b>تنبيه هام:</b> بعد إتمام التحويل من محفظتك، يرجى إرسال لقطة شاشة لرسالة التحويل إلى المشرف لتفعيل اشتراكك وروبوت التداول فوراً.`;
+      const eg = getEffectiveBotPayments(cfg).egypt;
+      const walletLines: string[] = [];
+      if (eg.vodafoneCash) walletLines.push(`🔴 <b>فودافون كاش:</b> <code>${escapeTgHtml(eg.vodafoneCash)}</code>`);
+      if (eg.etisalatCash) walletLines.push(`🟢 <b>اتصالات كاش:</b> <code>${escapeTgHtml(eg.etisalatCash)}</code>`);
+      if (eg.orangeCash) walletLines.push(`🟠 <b>أورنج كاش:</b> <code>${escapeTgHtml(eg.orangeCash)}</code>`);
+      if (eg.wePay) walletLines.push(`🟣 <b>وي باي (WE):</b> <code>${escapeTgHtml(eg.wePay)}</code>`);
+
+      const text = walletLines.length > 0
+        ? `📱 <b>بيانات الدفع عبر المحافظ الإلكترونية المصرية (كاش):</b>\n\n` +
+          walletLines.join('\n') +
+          `\n\n📌 <b>تنبيه هام:</b> بعد إتمام التحويل من محفظتك، يرجى إرسال لقطة شاشة لرسالة التحويل إلى المشرف لتفعيل اشتراكك وروبوت التداول فوراً.`
+        : `📱 <b>الدفع عبر المحافظ الإلكترونية المصرية (كاش):</b>\n\n` +
+          `📌 يرجى التواصل مباشرة مع المشرف عبر الزر أدناه للحصول على رقم المحفظة النشط حالياً وإتمام التفعيل فوراً.`;
 
       const buttons = [
-        [{ text: '📩 إرسال لقطة الشاشة للمشرف', url: contactUrl }],
+        [{ text: '📩 التواصل وإرسال لقطة الشاشة للمشرف', url: contactUrl }],
         [
           { text: '🔙 طرق الدفع في مصر', callback_data: 'onb_sub_paid' },
           { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
@@ -5533,14 +5676,14 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
 
     // Branch: USDT (TRC20) Payment Details (All Countries)
     if (data === 'onb_pay_usdt') {
-      const usdt = cfg.usdtPayment || defaultTelegramBotConfig.usdtPayment;
+      const usdt = getEffectiveBotPayments(cfg).usdt;
       const isAr = user.language !== 'en';
       const text = isAr
         ? `💎 <b>طريقة الدفع بالعملات الرقمية USDT (TRC20):</b>\n\n` +
           `متاحة لجميع المشتركين وكافة الدول كخيار دفع فوري ومباشر 🌍\n\n` +
           `🌐 <b>الشبكة المعتمدة:</b> <b>${escapeTgHtml(usdt.network || 'USDT (TRC20)')}</b>\n` +
           `📬 <b>عنوان المحفظة (Wallet Address):</b>\n` +
-          `<code>${escapeTgHtml(usdt.address || 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo')}</code>\n` +
+          `<code>${escapeTgHtml(usdt.address)}</code>\n` +
           `<i>(اضغط على العنوان أعلاه لنسخه بلمسة واحدة)</i>\n\n` +
           `⚠️ <b>تنبيه أمان هام جداً:</b>\n` +
           `• تأكد من التحويل حصراً عبر شبكة <b>TRC20 (TRON)</b> لتجنب فقدان الرصيد.\n` +
@@ -5549,7 +5692,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
           `Available worldwide for all members 🌍\n\n` +
           `🌐 <b>Network:</b> <b>${escapeTgHtml(usdt.network || 'USDT (TRC20)')}</b>\n` +
           `📬 <b>Wallet Address:</b>\n` +
-          `<code>${escapeTgHtml(usdt.address || 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo')}</code>\n` +
+          `<code>${escapeTgHtml(usdt.address)}</code>\n` +
           `<i>(Tap address above to copy)</i>\n\n` +
           `⚠️ <b>Important Note:</b>\n` +
           `• Transfer strictly via <b>TRC20 (TRON)</b> network.\n` +
@@ -5589,7 +5732,6 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
     // Branch: IBAN EGP Details (Rest of World Only)
     if (data === 'onb_pay_iban_egp') {
       if (isEgyptCountryText(user.country)) {
-        // STRICT GUARD: Egypt users must never see IBAN details
         const text =
           `🇪🇬 <b>تنبيه خاص بالمشتركين داخل مصر:</b>\n\n` +
           `طرق الدفع المعتمدة لمصر هي <b>إنستا باي (InstaPay)</b> و<b>المحافظ الإلكترونية</b> فقط.\n` +
@@ -5605,38 +5747,44 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
         return;
       }
 
-      const ibanEgp = cfg.internationalPayment?.ibanEgp || defaultTelegramBotConfig.internationalPayment.ibanEgp;
+      const ibanEgp = getEffectiveBotPayments(cfg).ibanEgp;
       const isAr = user.language !== 'en';
+      const hasEgpBank = Boolean(ibanEgp.accountNumber || ibanEgp.iban);
       const text = isAr
-        ? `🏦 <b>تفاصيل الحساب البنكي والآيبان (بالجنيه المصري EGP):</b>\n\n` +
-          `🌍 <b>الدولة:</b> ${escapeTgHtml(ibanEgp.country || 'دولي 🌍')}\n` +
-          `🏛 <b>اسم البنك:</b> ${escapeTgHtml(ibanEgp.bankName)}\n` +
-          `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(ibanEgp.beneficiaryName || (ibanEgp as any).accountName || 'ثريا نبيل / ZAD FX')}\n` +
-          `💰 <b>العملة:</b> ${escapeTgHtml(ibanEgp.currency || 'الجنيه المصري EGP')}\n` +
-          `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(ibanEgp.accountNumber)}</code>\n` +
-          `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(ibanEgp.iban)}</code>\n` +
-          `⚡ <b>سويفت كود (SWIFT/BIC):</b> <code>${escapeTgHtml(ibanEgp.swiftCode || 'NBEGEGCX')}</code>\n\n` +
-          `📌 <i>بعد إتمام الحوالة البنكية، يرجى إرسال صورة إشعار التحويل للمشرف لتفعيل اشتراكك وروبوت التداول فوراً.</i>`
-        : `🏦 <b>Bank Account & IBAN Details (in Egyptian Pounds EGP):</b>\n\n` +
-          `🌍 <b>Country:</b> ${escapeTgHtml(ibanEgp.country || 'International 🌍')}\n` +
-          `🏛 <b>Bank Name:</b> ${escapeTgHtml(ibanEgp.bankName)}\n` +
-          `👤 <b>Beneficiary Name:</b> ${escapeTgHtml(ibanEgp.beneficiaryName || (ibanEgp as any).accountName || 'Thraya Nabil / ZAD FX')}\n` +
-          `💰 <b>Currency:</b> ${escapeTgHtml(ibanEgp.currency || 'EGP (Egyptian Pounds)')}\n` +
-          `🔢 <b>Account Number:</b> <code>${escapeTgHtml(ibanEgp.accountNumber)}</code>\n` +
-          `🌐 <b>IBAN Code:</b> <code>${escapeTgHtml(ibanEgp.iban)}</code>\n` +
-          `⚡ <b>SWIFT / BIC Code:</b> <code>${escapeTgHtml(ibanEgp.swiftCode || 'NBEGEGCX')}</code>\n\n` +
-          `📌 <i>After wire transfer, please send receipt to admin for instant activation.</i>`;
+        ? (hasEgpBank
+            ? `🏦 <b>تفاصيل الحساب البنكي والآيبان (بالجنيه المصري EGP):</b>\n\n` +
+              `🌍 <b>الدولة:</b> ${escapeTgHtml(ibanEgp.country)}\n` +
+              `🏛 <b>اسم البنك:</b> ${escapeTgHtml(ibanEgp.bankName)}\n` +
+              (ibanEgp.beneficiaryName ? `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(ibanEgp.beneficiaryName)}\n` : '') +
+              `💰 <b>العملة:</b> ${escapeTgHtml(ibanEgp.currency)}\n` +
+              (ibanEgp.accountNumber ? `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(ibanEgp.accountNumber)}</code>\n` : '') +
+              (ibanEgp.iban ? `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(ibanEgp.iban)}</code>\n` : '') +
+              (ibanEgp.swiftCode ? `⚡ <b>سويفت كود (SWIFT/BIC):</b> <code>${escapeTgHtml(ibanEgp.swiftCode)}</code>\n\n` : '\n') +
+              `📌 <i>بعد إتمام الحوالة البنكية، يرجى إرسال صورة إشعار التحويل للمشرف لتفعيل اشتراكك وروبوت التداول فوراً.</i>`
+            : `🏦 <b>التحويل البنكي (بالجنيه المصري EGP):</b>\n\n` +
+              `📌 يرجى التواصل مع المشرف عبر الزر أدناه للحصول على بيانات الآيبان المعتمدة وتأكيد التحويل فوراً.`)
+        : (hasEgpBank
+            ? `🏦 <b>Bank Account & IBAN Details (in Egyptian Pounds EGP):</b>\n\n` +
+              `🌍 <b>Country:</b> ${escapeTgHtml(ibanEgp.country)}\n` +
+              `🏛 <b>Bank Name:</b> ${escapeTgHtml(ibanEgp.bankName)}\n` +
+              (ibanEgp.beneficiaryName ? `👤 <b>Beneficiary Name:</b> ${escapeTgHtml(ibanEgp.beneficiaryName)}\n` : '') +
+              `💰 <b>Currency:</b> ${escapeTgHtml(ibanEgp.currency)}\n` +
+              (ibanEgp.accountNumber ? `🔢 <b>Account Number:</b> <code>${escapeTgHtml(ibanEgp.accountNumber)}</code>\n` : '') +
+              (ibanEgp.iban ? `🌐 <b>IBAN Code:</b> <code>${escapeTgHtml(ibanEgp.iban)}</code>\n` : '') +
+              (ibanEgp.swiftCode ? `⚡ <b>SWIFT / BIC Code:</b> <code>${escapeTgHtml(ibanEgp.swiftCode)}</code>\n\n` : '\n') +
+              `📌 <i>After wire transfer, please send receipt to admin for instant activation.</i>`
+            : `🏦 <b>Bank Transfer (EGP):</b>\n\n📌 Please contact admin below to receive the current IBAN details.`);
 
       const buttons = isAr
         ? [
-            [{ text: '📩 إرسال إشعار التحويل للمشرف', url: contactUrl }],
+            [{ text: '📩 التواصل وإرسال إشعار التحويل للمشرف', url: contactUrl }],
             [
               { text: '🔙 اختيار عملة أخرى (دولار)', callback_data: 'onb_sub_paid' },
               { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
             ]
           ]
         : [
-            [{ text: '📩 Send Receipt to Admin', url: contactUrl }],
+            [{ text: '📩 Contact & Send Receipt to Admin', url: contactUrl }],
             [
               { text: '🔙 Switch Currency (USD)', callback_data: 'onb_sub_paid' },
               { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
@@ -5650,7 +5798,6 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
     // Branch: IBAN USD Details (Rest of World Only)
     if (data === 'onb_pay_iban_usd') {
       if (isEgyptCountryText(user.country)) {
-        // STRICT GUARD: Egypt users must never see IBAN details
         const text =
           `🇪🇬 <b>تنبيه خاص بالمشتركين داخل مصر:</b>\n\n` +
           `طرق الدفع المعتمدة لمصر هي <b>إنستا باي (InstaPay)</b> و<b>المحافظ الإلكترونية</b> فقط.\n` +
@@ -5666,38 +5813,44 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
         return;
       }
 
-      const ibanUsd = cfg.internationalPayment?.ibanUsd || defaultTelegramBotConfig.internationalPayment.ibanUsd;
+      const ibanUsd = getEffectiveBotPayments(cfg).ibanUsd;
       const isAr = user.language !== 'en';
+      const hasUsdBank = Boolean(ibanUsd.accountNumber || ibanUsd.iban);
       const text = isAr
-        ? `💵 <b>تفاصيل الحساب البنكي والآيبان (بالدولار الأمريكي USD):</b>\n\n` +
-          `🌍 <b>الدولة:</b> ${escapeTgHtml(ibanUsd.country || 'دولي 🌍')}\n` +
-          `🏛 <b>اسم البنك:</b> ${escapeTgHtml(ibanUsd.bankName)}\n` +
-          `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(ibanUsd.beneficiaryName || (ibanUsd as any).accountName || 'ثريا نبيل / ZAD FX')}\n` +
-          `💰 <b>العملة:</b> ${escapeTgHtml(ibanUsd.currency || 'الدولار الأمريكي USD ($)')}\n` +
-          `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(ibanUsd.accountNumber)}</code>\n` +
-          `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(ibanUsd.iban)}</code>\n` +
-          `⚡ <b>سويفت كود (SWIFT/BIC):</b> <code>${escapeTgHtml(ibanUsd.swiftCode || 'NBEGEGCX')}</code>\n\n` +
-          `📌 <i>بعد إتمام الحوالة البنكية، يرجى إرسال صورة إشعار التحويل للمشرف للتفعيل المباشر.</i>`
-        : `💵 <b>Bank Account & IBAN Details (in US Dollars USD):</b>\n\n` +
-          `🌍 <b>Country:</b> ${escapeTgHtml(ibanUsd.country || 'International 🌍')}\n` +
-          `🏛 <b>Bank Name:</b> ${escapeTgHtml(ibanUsd.bankName)}\n` +
-          `👤 <b>Beneficiary Name:</b> ${escapeTgHtml(ibanUsd.beneficiaryName || (ibanUsd as any).accountName || 'Thraya Nabil / ZAD FX')}\n` +
-          `💰 <b>Currency:</b> ${escapeTgHtml(ibanUsd.currency || 'USD ($)')}\n` +
-          `🔢 <b>Account Number:</b> <code>${escapeTgHtml(ibanUsd.accountNumber)}</code>\n` +
-          `🌐 <b>IBAN Code:</b> <code>${escapeTgHtml(ibanUsd.iban)}</code>\n` +
-          `⚡ <b>SWIFT / BIC Code:</b> <code>${escapeTgHtml(ibanUsd.swiftCode || 'NBEGEGCX')}</code>\n\n` +
-          `📌 <i>After wire transfer, please send receipt to admin for instant activation.</i>`;
+        ? (hasUsdBank
+            ? `💵 <b>تفاصيل الحساب البنكي والآيبان (بالدولار الأمريكي USD):</b>\n\n` +
+              `🌍 <b>الدولة:</b> ${escapeTgHtml(ibanUsd.country)}\n` +
+              `🏛 <b>اسم البنك:</b> ${escapeTgHtml(ibanUsd.bankName)}\n` +
+              (ibanUsd.beneficiaryName ? `👤 <b>اسم المستفيد:</b> ${escapeTgHtml(ibanUsd.beneficiaryName)}\n` : '') +
+              `💰 <b>العملة:</b> ${escapeTgHtml(ibanUsd.currency)}\n` +
+              (ibanUsd.accountNumber ? `🔢 <b>رقم الحساب:</b> <code>${escapeTgHtml(ibanUsd.accountNumber)}</code>\n` : '') +
+              (ibanUsd.iban ? `🌐 <b>رقم الآيبان (IBAN):</b> <code>${escapeTgHtml(ibanUsd.iban)}</code>\n` : '') +
+              (ibanUsd.swiftCode ? `⚡ <b>سويفت كود (SWIFT/BIC):</b> <code>${escapeTgHtml(ibanUsd.swiftCode)}</code>\n\n` : '\n') +
+              `📌 <i>بعد إتمام الحوالة البنكية، يرجى إرسال صورة إشعار التحويل للمشرف للتفعيل المباشر.</i>`
+            : `💵 <b>التحويل البنكي الدولي (بالدولار الأمريكي USD):</b>\n\n` +
+              `📌 يرجى التواصل مع المشرف عبر الزر أدناه للحصول على بيانات الآيبان الدولارية المعتمدة وتأكيد التحويل فوراً.`)
+        : (hasUsdBank
+            ? `💵 <b>Bank Account & IBAN Details (in US Dollars USD):</b>\n\n` +
+              `🌍 <b>Country:</b> ${escapeTgHtml(ibanUsd.country)}\n` +
+              `🏛 <b>Bank Name:</b> ${escapeTgHtml(ibanUsd.bankName)}\n` +
+              (ibanUsd.beneficiaryName ? `👤 <b>Beneficiary Name:</b> ${escapeTgHtml(ibanUsd.beneficiaryName)}\n` : '') +
+              `💰 <b>Currency:</b> ${escapeTgHtml(ibanUsd.currency)}\n` +
+              (ibanUsd.accountNumber ? `🔢 <b>Account Number:</b> <code>${escapeTgHtml(ibanUsd.accountNumber)}</code>\n` : '') +
+              (ibanUsd.iban ? `🌐 <b>IBAN Code:</b> <code>${escapeTgHtml(ibanUsd.iban)}</code>\n` : '') +
+              (ibanUsd.swiftCode ? `⚡ <b>SWIFT / BIC Code:</b> <code>${escapeTgHtml(ibanUsd.swiftCode)}</code>\n\n` : '\n') +
+              `📌 <i>After wire transfer, please send receipt to admin for instant activation.</i>`
+            : `💵 <b>International Wire Transfer (USD):</b>\n\n📌 Please contact admin below to receive the current USD IBAN details.`);
 
       const buttons = isAr
         ? [
-            [{ text: '📩 إرسال إشعار التحويل للمشرف', url: contactUrl }],
+            [{ text: '📩 التواصل وإرسال إشعار التحويل للمشرف', url: contactUrl }],
             [
               { text: '🔙 اختيار عملة أخرى (جنيه)', callback_data: 'onb_sub_paid' },
               { text: '🏠 القائمة الرئيسية', callback_data: 'onb_menu_main' }
             ]
           ]
         : [
-            [{ text: '📩 Send Receipt to Admin', url: contactUrl }],
+            [{ text: '📩 Contact & Send Receipt to Admin', url: contactUrl }],
             [
               { text: '🔙 Switch Currency (EGP)', callback_data: 'onb_sub_paid' },
               { text: '🏠 Main Menu', callback_data: 'onb_menu_main' }
@@ -5711,8 +5864,8 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
     // Branch: Robot Guide & Explanations
     if (data === 'onb_menu_robot') {
       const isAr = user.language !== 'en';
-      const webUrl = cfg.officialWebsiteUrl || 'https://fx.zadtoo.com';
-      const videoUrl = cfg.robotGuide.videoUrl || 'https://youtube.com';
+      const safeWebUrl = normalizeHttpUrl(cfg.officialWebsiteUrl, 'https://fx.zadtoo.com');
+      const videoUrl = normalizeHttpUrl(cfg.robotGuide?.videoUrl, 'https://youtube.com');
 
       const text = isAr
         ? `🤖 <b>روبوت التداول الآلي الذكي ZAD FX:</b>\n\n` +
@@ -5742,7 +5895,7 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
         ? [
             [
               { text: '🎬 مشاهدة فيديو شرح التشغيل', url: videoUrl },
-              { text: '🌐 صفحة الروبوت بالموقع', url: `${webUrl}/#autotrade` }
+              { text: '🌐 صفحة الروبوت بالموقع', url: `${safeWebUrl}/#autotrade` }
             ],
             [
               { text: '💬 استفسار من المشرف', url: contactUrl },
@@ -9951,7 +10104,7 @@ async function startServer() {
     // Latest active/recent signal for the robot to alert & auto-execute on Quotex
     // Strictly filtered to the user's selected strategy mode, operating hours, and market open!
     const isGlobalMarketOpen = isGlobalForexMarketOpen();
-    const latestSig = (isGlobalMarketOpen && isRobotActive && !warmup.isWarmup)
+    const latestSig = isGlobalMarketOpen
       ? getLiveRobotActiveSignal(effectiveMode)
       : null;
     let activeSignalPayload = null;
@@ -10072,13 +10225,470 @@ async function startServer() {
     });
   });
 
-  // Downloadable Userscript & Golden Reference endpoints disabled (zero source/executable downloads)
+  // Public downloadable userscript endpoints remain disabled; Admin-only endpoint requires requireAdmin below
   app.get(['/api/quotex-robot/zad-broker-robot.user.js', '/zad-broker-robot.user.js'], (_req, res) => {
-    res.status(404).json({ ok: false, error: 'Downloadable script endpoints are disabled.' });
+    res.status(404).json({ ok: false, error: 'Public downloadable script endpoints are disabled. Admin must use /api/quotex-robot/admin-script.' });
   });
 
   app.get(['/api/quotex-robot/golden-reference.user.js', '/zad-broker-robot.golden.user.js'], (_req, res) => {
-    res.status(404).json({ ok: false, error: 'Downloadable script endpoints are disabled.' });
+    res.status(404).json({ ok: false, error: 'Downloadable baseline files are disabled.' });
+  });
+
+  // Admin-only Floating Quotex Robot Tampermonkey Script Generator (strictly requires valid admin session)
+  app.get('/api/quotex-robot/admin-script', requireAdmin, async (req, res) => {
+    if (!isCloudStateLoaded) {
+      await loadStateFromCloudAndDisk();
+    }
+    const rawOrigin = String(req.query.serverOrigin || '').trim();
+    const proto = (req.headers['x-forwarded-proto'] as string)?.split(',')[0]?.trim() || req.protocol || 'https';
+    const host = req.get('host') || 'localhost:3000';
+    const detectedOrigin = `${proto}://${host}`;
+    const safeOrigin = /^https?:\/\/[a-z0-9.-]+(?::\d+)?$/i.test(rawOrigin.replace(/\/+$/, ''))
+      ? rawOrigin.replace(/\/+$/, '')
+      : detectedOrigin;
+
+    const requestedApiKey = String(req.query.apiKey || '').trim();
+    const firstActiveMember = subscribersStore.find(
+      s => s.status === 'ACTIVE' && s.robotEnabled !== false && s.robotApiKey
+    );
+    const defaultMemberKey = requestedApiKey || firstActiveMember?.robotApiKey || '';
+    const escapedOrigin = safeOrigin.replace(/['"\\]/g, '');
+    const escapedApiKey = defaultMemberKey.replace(/['"\\]/g, '');
+    const defaultStake = Math.max(1, Number(robotSettings.defaultStakeUsd) || 5);
+    const defaultMode = robotSettings.defaultMode === 'AUTO' ? 'AUTO' : 'MANUAL';
+    const soundDefault = robotSettings.soundAlertsEnabled !== false;
+    const autoPairDefault = robotSettings.autoSelectPair !== false;
+    const autoM1Default = robotSettings.autoSetExpiryM1 !== false;
+    const strategyDefault = robotSettings.strategyEngineMode === 'PUBLIC_CLASSIC' ? 'PUBLIC_CLASSIC' : 'VIP_WITH_MPB';
+
+    const userscript = `// ==UserScript==
+// @name         ZAD FX Floating Quotex Robot v5.0 (Cloud Secure)
+// @namespace    https://fx.zadtoo.com
+// @version      5.0.0
+// @description  روبوت التداول العائم المتصل بسيرفر ZAD FX السحابي عبر مفتاح العضو (API Key) — بدون مضاعفات
+// @author       ZAD FX
+// @match        *://qxbroker.com/*
+// @match        *://*.qxbroker.com/*
+// @match        *://quotex.io/*
+// @match        *://*.quotex.io/*
+// @match        *://quotex.com/*
+// @match        *://*.quotex.com/*
+// @match        *://broker-qx.pro/*
+// @match        *://*.broker-qx.pro/*
+// @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @connect      *
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+  'use strict';
+  if (window.__ZAD_FX_ROBOT_LOADED__) return;
+  window.__ZAD_FX_ROBOT_LOADED__ = true;
+
+  const DEFAULT_SERVER_URL = '${escapedOrigin}';
+  const DEFAULT_MEMBER_KEY = '${escapedApiKey}';
+  const DEFAULT_MODE = '${defaultMode}';
+  const DEFAULT_STAKE = ${defaultStake};
+  const DEFAULT_SOUND = ${soundDefault};
+  const AUTO_SELECT_PAIR = ${autoPairDefault};
+  const AUTO_SET_EXPIRY_M1 = ${autoM1Default};
+  const STRATEGY_MODE = '${strategyDefault}';
+
+  function readStore(key, fallback) {
+    try {
+      if (typeof GM_getValue === 'function') {
+        const v = GM_getValue(key, undefined);
+        if (v !== undefined && v !== null && v !== '') return v;
+      }
+    } catch (_) {}
+    try {
+      const v = localStorage.getItem('zad_robot_' + key);
+      if (v !== null && v !== '') return JSON.parse(v);
+    } catch (_) {}
+    return fallback;
+  }
+
+  function writeStore(key, val) {
+    try {
+      if (typeof GM_setValue === 'function') GM_setValue(key, val);
+    } catch (_) {}
+    try {
+      localStorage.setItem('zad_robot_' + key, JSON.stringify(val));
+    } catch (_) {}
+  }
+
+  let serverUrl = String(readStore('serverUrl', DEFAULT_SERVER_URL) || DEFAULT_SERVER_URL).replace(/\\/+$/, '');
+  let apiKey = String(readStore('apiKey', DEFAULT_MEMBER_KEY) || '').trim();
+  let tradeMode = readStore('tradeMode', DEFAULT_MODE) === 'AUTO' ? 'AUTO' : 'MANUAL';
+  let stakeUsd = Math.max(1, Number(readStore('stakeUsd', DEFAULT_STAKE)) || DEFAULT_STAKE);
+  let soundOn = readStore('soundOn', DEFAULT_SOUND) !== false;
+  let minimized = Boolean(readStore('minimized', false));
+  let hidden = false;
+  let winsCount = 0;
+  let lossesCount = 0;
+
+  let serverOffsetMs = 0;
+  let lastFeed = null;
+  let lastAlertedId = null;
+  const executedSignals = new Set();
+  const reportedOutcomes = new Set();
+  let showKeyPanel = !apiKey;
+
+  function playTone(type) {
+    if (!soundOn) return;
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = type === 'open' ? 'triangle' : 'sine';
+      osc.frequency.setValueAtTime(type === 'open' ? 880 : type === 'win' ? 1040 : type === 'loss' ? 320 : 660, ctx.currentTime);
+      gain.gain.setValueAtTime(0.14, ctx.currentTime);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + (type === 'open' ? 0.3 : 0.2));
+    } catch (_) {}
+  }
+
+  function requestJson(url, method, body) {
+    return new Promise((resolve, reject) => {
+      if (typeof GM_xmlhttpRequest === 'function') {
+        GM_xmlhttpRequest({
+          method: method || 'GET',
+          url,
+          headers: body ? { 'Content-Type': 'application/json' } : {},
+          data: body ? JSON.stringify(body) : undefined,
+          timeout: 8000,
+          onload: (resp) => {
+            try {
+              resolve({ ok: resp.status >= 200 && resp.status < 300, status: resp.status, data: JSON.parse(resp.responseText || '{}') });
+            } catch (e) {
+              reject(e);
+            }
+          },
+          onerror: (err) => reject(err),
+          ontimeout: () => reject(new Error('timeout'))
+        });
+      } else {
+        fetch(url, {
+          method: method || 'GET',
+          headers: body ? { 'Content-Type': 'application/json' } : undefined,
+          body: body ? JSON.stringify(body) : undefined
+        })
+          .then(async (r) => ({ ok: r.ok, status: r.status, data: await r.json().catch(() => ({})) }))
+          .then(resolve)
+          .catch(reject);
+      }
+    });
+  }
+
+  function clickPairOnQuotex(assetName) {
+    if (!AUTO_SELECT_PAIR || !assetName) return;
+    const cleanPair = assetName.replace(/\\s*\\(OTC\\)/gi, '').trim().toUpperCase();
+    const compactPair = cleanPair.replace('/', '');
+    const tabs = Array.from(document.querySelectorAll('.asset-select__button, .tab, .pairs-list__item, [class*="asset"], [class*="pair"]'));
+    for (const el of tabs) {
+      const txt = (el.textContent || '').toUpperCase();
+      if (!txt || txt.includes('OTC')) continue;
+      if (txt.includes(cleanPair) || txt.includes(compactPair)) {
+        if (!el.classList.contains('active') && !el.getAttribute('aria-selected')) {
+          el.click();
+        }
+        return;
+      }
+    }
+  }
+
+  function ensureM1ExpiryOnQuotex() {
+    if (!AUTO_SET_EXPIRY_M1) return;
+    const timeCandidates = Array.from(document.querySelectorAll('[class*="expiration"], [class*="time-select"], .input-control__dropdown button'));
+    for (const el of timeCandidates) {
+      const txt = (el.textContent || '').trim();
+      if (/^(00:01:00|01:00|1m|1\\s*min)$/i.test(txt)) {
+        el.click();
+        break;
+      }
+    }
+  }
+
+  function clickTradeButton(direction) {
+    const isCall = direction === 'CALL';
+    const selectors = isCall
+      ? ['.call-btn', '.deal-button--up', '[data-test="deal-up"]', 'button[class*="call"]', 'button[class*="up"]']
+      : ['.put-btn', '.deal-button--down', '[data-test="deal-down"]', 'button[class*="put"]', 'button[class*="down"]'];
+
+    for (const sel of selectors) {
+      const btn = document.querySelector(sel);
+      if (btn && typeof btn.click === 'function') {
+        btn.click();
+        return true;
+      }
+    }
+    const allBtns = Array.from(document.querySelectorAll('button'));
+    const labelRe = isCall ? /^(up|call|higher|شراء|صعود)/i : /^(down|put|lower|بيع|هبوط)/i;
+    for (const b of allBtns) {
+      if (b.closest('#zad-fx-floating-hud')) continue;
+      const t = (b.textContent || '').trim();
+      if (labelRe.test(t)) {
+        b.click();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Build Floating HUD Container
+  const root = document.createElement('div');
+  root.id = 'zad-fx-floating-hud';
+  root.dir = 'rtl';
+  root.style.cssText = 'position:fixed;bottom:24px;left:24px;z-index:2147483647;width:270px;background:rgba(11,15,23,0.96);backdrop-filter:blur(10px);color:#f8fafc;border:1.5px solid rgba(16,185,129,0.85);border-radius:14px;box-shadow:0 20px 50px rgba(0,0,0,0.85),0 0 24px rgba(16,185,129,0.28);font-family:system-ui,-apple-system,Segoe UI,sans-serif;font-size:12px;user-select:none;overflow:hidden;';
+  document.body.appendChild(root);
+
+  const restorePill = document.createElement('button');
+  restorePill.textContent = '🤖 إظهار روبوت ZAD FX';
+  restorePill.style.cssText = 'display:none;position:fixed;bottom:24px;left:24px;z-index:2147483647;padding:9px 16px;background:#0b0f17;color:#34d399;border:2px solid #10b981;border-radius:999px;font-weight:800;font-size:12px;cursor:pointer;box-shadow:0 10px 30px rgba(0,0,0,0.7);';
+  restorePill.onclick = () => {
+    hidden = false;
+    restorePill.style.display = 'none';
+    root.style.display = 'block';
+  };
+  document.body.appendChild(restorePill);
+
+  // Draggable position
+  let dragPos = { x: 0, y: 0 };
+  function attachDrag(headerEl) {
+    headerEl.onmousedown = (e) => {
+      if (e.target.tagName === 'BUTTON') return;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const initX = dragPos.x;
+      const initY = dragPos.y;
+      const onMove = (ev) => {
+        dragPos = { x: initX + (ev.clientX - startX), y: initY + (ev.clientY - startY) };
+        root.style.transform = \`translate(\${dragPos.x}px, \${dragPos.y}px)\`;
+      };
+      const onUp = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', onUp);
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    };
+  }
+
+  function esc(str) {
+    return String(str || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function renderHud() {
+    const feed = lastFeed;
+    const isAuth = Boolean(feed && feed.ok && feed.authorized);
+    const sig = isAuth ? feed.activeSignal : null;
+    const nowServerSec = Math.floor((Date.now() + serverOffsetMs) / 1000);
+    const secsToEntry = sig && sig.targetEntryTimestamp ? (sig.targetEntryTimestamp - nowServerSec) : (sig?.secondsUntilEntry ?? 0);
+
+    let signalHtml = '';
+    if (!apiKey) {
+      signalHtml = '<div style="padding:10px;background:#1e1b4b;border:1px solid #6366f1;border-radius:10px;text-align:center;color:#c7d2fe;font-size:11px;">🔑 أدخل مفتاح العضو (API Key) أدناه للاتصال بالسيرفر</div>';
+    } else if (!feed) {
+      signalHtml = '<div style="padding:10px;background:#0f172a;border:1px solid #334155;border-radius:10px;text-align:center;color:#94a3b8;font-size:11px;">📡 جاري الاتصال بسيرفر ZAD FX...</div>';
+    } else if (!isAuth) {
+      signalHtml = \`<div style="padding:10px;background:#450a0a;border:1px solid #ef4444;border-radius:10px;text-align:center;color:#fecaca;font-size:11px;">❌ \${esc(feed.error || 'مفتاح العضو غير مصرح له')}</div>\`;
+    } else if (!feed.marketOpen) {
+      signalHtml = '<div style="padding:10px;background:#0f172a;border:1px solid #ef4444;border-radius:10px;text-align:center;color:#fca5a5;font-size:11px;">⏸️ السوق العالمي مغلق (عطلة أسبوعية)</div>';
+    } else if (sig && sig.status === 'PENDING') {
+      const isCall = sig.direction === 'CALL';
+      const executed = executedSignals.has(sig.id);
+      signalHtml = \`
+        <div style="padding:10px;background:\${isCall ? 'rgba(6,78,59,0.55)' : 'rgba(127,29,29,0.55)'};border:1.5px solid \${isCall ? '#10b981' : '#ef4444'};border-radius:10px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+            <strong style="font-size:14px;color:#fff;font-family:monospace;">\${esc(sig.asset)}</strong>
+            <span style="padding:2px 8px;border-radius:6px;font-weight:900;background:\${isCall ? '#10b981' : '#ef4444'};color:#020617;font-size:11px;">\${isCall ? 'صعود CALL 🟢' : 'هبوط PUT 🔴'}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#cbd5e1;">
+            <span>الدخول: <b style="color:#fbbf24;">\${esc(sig.entryTime)}</b></span>
+            <span>\${executed ? '✅ تم التنفيذ' : (secsToEntry > 0 ? \`⏳ بعد \${secsToEntry}ث\` : '⚡ جارية الآن')}</span>
+          </div>
+        </div>\`;
+    } else if (sig && (sig.status === 'WIN' || sig.status === 'LOSS')) {
+      const isWin = sig.status === 'WIN';
+      signalHtml = \`
+        <div style="padding:10px;background:\${isWin ? '#064e3b' : '#7f1d1d'};border:1.5px solid \${isWin ? '#34d399' : '#f87171'};border-radius:10px;text-align:center;">
+          <div style="font-size:13px;font-weight:900;color:#fff;">\${isWin ? '✅ ربح مباشر (WIN)' : '❌ خسارة (LOSS)'}</div>
+          <div style="font-size:11px;color:#e2e8f0;margin-top:2px;">\${esc(sig.asset)} — \${esc(sig.entryTime)}</div>
+        </div>\`;
+    } else if (feed.isLockedOutsideHours || feed.isWarmup) {
+      signalHtml = \`<div style="padding:10px;background:#09121d;border:1px solid #f59e0b;border-radius:10px;text-align:center;color:#fde68a;font-size:11px;">⏸️ \${esc(feed.tradingHoursMessage || feed.lockReason || 'خارج ساعات العمل')}</div>\`;
+    } else {
+      const candleLeft = 60 - new Date(Date.now() + serverOffsetMs).getSeconds();
+      signalHtml = \`
+        <div style="padding:10px;background:#09121d;border:1px solid rgba(245,158,11,0.45);border-radius:10px;text-align:center;">
+          <div style="color:#fbbf24;font-weight:800;font-size:11px;">📡 متصل بالسيرفر — وضع المراقبة</div>
+          <div style="color:#94a3b8;font-size:10px;margin-top:3px;">اكتمال الشمعة الحالية: <b style="color:#38bdf8;">\${candleLeft}ث</b></div>
+        </div>\`;
+    }
+
+    const total = winsCount + lossesCount;
+    const rate = total > 0 ? Math.round((winsCount / total) * 100) : 100;
+
+    root.innerHTML = \`
+      <div id="zad-hud-hdr" style="padding:8px 10px;background:linear-gradient(90deg,#022c22,#0f172a);border-bottom:1px solid #1e293b;display:flex;justify-content:space-between;align-items:center;cursor:move;">
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="width:8px;height:8px;border-radius:999px;background:\${isAuth ? '#10b981' : '#f59e0b'};display:inline-block;"></span>
+          <strong style="font-size:12px;color:#fff;">روبوت ZAD FX v5.0</strong>
+        </div>
+        <div style="display:flex;gap:4px;">
+          <button id="zad-btn-key" style="padding:2px 6px;border-radius:5px;border:1px solid #334155;background:#1e293b;color:#fbbf24;font-size:10px;cursor:pointer;">🔑 المفتاح</button>
+          <button id="zad-btn-min" style="padding:2px 6px;border-radius:5px;border:1px solid #334155;background:#1e293b;color:#cbd5e1;font-size:10px;cursor:pointer;">\${minimized ? '+' : '−'}</button>
+          <button id="zad-btn-close" style="padding:2px 6px;border-radius:5px;border:none;background:transparent;color:#94a3b8;font-size:12px;cursor:pointer;">✕</button>
+        </div>
+      </div>
+      \${minimized ? \`
+        <div style="padding:7px 10px;display:flex;justify-content:space-between;font-size:11px;">
+          <span>\${tradeMode === 'AUTO' ? '🤖 آلي' : '🖐️ يدوي'}</span>
+          <span style="color:#34d399;font-family:monospace;">✅ \${winsCount} | ❌ \${lossesCount} (\${rate}%)</span>
+        </div>\` : \`
+        <div style="padding:10px;display:flex;flex-direction:column;gap:8px;">
+          \${showKeyPanel ? \`
+            <div style="padding:8px;background:#0f172a;border:1px solid #334155;border-radius:9px;display:flex;flex-direction:column;gap:6px;">
+              <label style="font-size:10px;color:#94a3b8;">مفتاح العضو (API Key) أو Quotex ID:</label>
+              <input id="zad-inp-key" dir="ltr" value="\${esc(apiKey)}" placeholder="QX-ZAD-XXXX-XXXX-XXXX" style="width:100%;box-sizing:border-box;padding:5px 7px;background:#020617;border:1px solid #475569;border-radius:6px;color:#fbbf24;font-family:monospace;font-size:11px;" />
+              <label style="font-size:10px;color:#94a3b8;">رابط السيرفر:</label>
+              <input id="zad-inp-url" dir="ltr" value="\${esc(serverUrl)}" placeholder="https://..." style="width:100%;box-sizing:border-box;padding:5px 7px;background:#020617;border:1px solid #475569;border-radius:6px;color:#38bdf8;font-family:monospace;font-size:10px;" />
+              <button id="zad-btn-savekey" style="padding:6px;background:#10b981;color:#020617;font-weight:800;border:none;border-radius:6px;cursor:pointer;font-size:11px;">💾 حفظ والاتصال</button>
+            </div>\` : ''}
+          <div style="padding:6px 8px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;display:flex;justify-content:space-between;font-size:10.5px;">
+            <span style="color:#cbd5e1;">\${esc(feed?.member?.name || 'بانتظار الربط')}</span>
+            <span style="color:#34d399;font-weight:700;">\${isAuth ? \`نشط (\${feed.member?.daysLeft ?? 30} يوم)\` : 'غير متصل'}</span>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#0f172a;padding:3px;border-radius:8px;">
+            <button id="zad-mode-auto" style="padding:5px;border-radius:6px;border:none;font-weight:800;font-size:11px;cursor:pointer;background:\${tradeMode === 'AUTO' ? '#34d399' : 'transparent'};color:\${tradeMode === 'AUTO' ? '#020617' : '#94a3b8'};">🤖 تداول آلي</button>
+            <button id="zad-mode-manual" style="padding:5px;border-radius:6px;border:none;font-weight:800;font-size:11px;cursor:pointer;background:\${tradeMode === 'MANUAL' ? '#fbbf24' : 'transparent'};color:\${tradeMode === 'MANUAL' ? '#020617' : '#94a3b8'};">🖐️ يدوي</button>
+          </div>
+          \${signalHtml}
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;text-align:center;font-size:10px;">
+            <div style="padding:5px;background:rgba(16,185,129,0.12);border:1px solid rgba(16,185,129,0.5);border-radius:7px;">✅ ربح<br><b style="font-size:13px;color:#fff;">\${winsCount}</b></div>
+            <div style="padding:5px;background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.5);border-radius:7px;">❌ خسارة<br><b style="font-size:13px;color:#fff;">\${lossesCount}</b></div>
+            <div style="padding:5px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.5);border-radius:7px;">🎯 النسبة<br><b style="font-size:13px;color:#fbbf24;">\${rate}%</b></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding-top:5px;border-top:1px solid #1e293b;font-size:10px;">
+            <div style="display:flex;gap:3px;">
+              \${[1, 5, 10, 20].map(a => \`<button class="zad-stake-btn" data-amt="\${a}" style="padding:2px 6px;border-radius:5px;border:none;font-weight:700;cursor:pointer;background:\${stakeUsd === a ? '#34d399' : '#1e293b'};color:\${stakeUsd === a ? '#020617' : '#cbd5e1'};">$\${a}</button>\`).join('')}
+            </div>
+            <button id="zad-btn-sound" style="padding:3px 7px;border-radius:5px;border:none;cursor:pointer;background:#1e293b;color:\${soundOn ? '#38bdf8' : '#64748b'};font-weight:700;">\${soundOn ? '🔔 صوت' : '🔕 صامت'}</button>
+          </div>
+        </div>\`}
+    \`;
+
+    const hdr = root.querySelector('#zad-hud-hdr');
+    if (hdr) attachDrag(hdr);
+    const bKey = root.querySelector('#zad-btn-key');
+    if (bKey) bKey.onclick = () => { showKeyPanel = !showKeyPanel; renderHud(); };
+    const bMin = root.querySelector('#zad-btn-min');
+    if (bMin) bMin.onclick = () => { minimized = !minimized; writeStore('minimized', minimized); renderHud(); };
+    const bClose = root.querySelector('#zad-btn-close');
+    if (bClose) bClose.onclick = () => { hidden = true; root.style.display = 'none'; restorePill.style.display = 'block'; };
+    const bSaveKey = root.querySelector('#zad-btn-savekey');
+    if (bSaveKey) {
+      bSaveKey.onclick = () => {
+        const kInp = root.querySelector('#zad-inp-key');
+        const uInp = root.querySelector('#zad-inp-url');
+        apiKey = String(kInp?.value || '').trim();
+        serverUrl = String(uInp?.value || DEFAULT_SERVER_URL).trim().replace(/\\/+$/, '') || DEFAULT_SERVER_URL;
+        writeStore('apiKey', apiKey);
+        writeStore('serverUrl', serverUrl);
+        showKeyPanel = false;
+        lastFeed = null;
+        renderHud();
+        pollFeed();
+      };
+    }
+    const bAuto = root.querySelector('#zad-mode-auto');
+    if (bAuto) bAuto.onclick = () => { tradeMode = 'AUTO'; writeStore('tradeMode', 'AUTO'); renderHud(); };
+    const bManual = root.querySelector('#zad-mode-manual');
+    if (bManual) bManual.onclick = () => { tradeMode = 'MANUAL'; writeStore('tradeMode', 'MANUAL'); renderHud(); };
+    const bSound = root.querySelector('#zad-btn-sound');
+    if (bSound) bSound.onclick = () => { soundOn = !soundOn; writeStore('soundOn', soundOn); renderHud(); };
+    root.querySelectorAll('.zad-stake-btn').forEach(btn => {
+      btn.onclick = () => { stakeUsd = Number(btn.getAttribute('data-amt')) || 5; writeStore('stakeUsd', stakeUsd); renderHud(); };
+    });
+  }
+
+  async function pollFeed() {
+    if (!apiKey) {
+      renderHud();
+      return;
+    }
+    try {
+      const feedUrl = \`\${serverUrl}/api/quotex-robot/feed?apiKey=\${encodeURIComponent(apiKey)}&strategyMode=\${encodeURIComponent(STRATEGY_MODE)}\`;
+      const resp = await requestJson(feedUrl, 'GET');
+      const data = resp?.data || {};
+      lastFeed = data;
+      if (typeof data.serverEpochMs === 'number') {
+        serverOffsetMs = data.serverEpochMs - Date.now();
+      }
+
+      if (data.ok && data.authorized && data.activeSignal) {
+        const sig = data.activeSignal;
+        if (sig.status === 'PENDING') {
+          if (lastAlertedId !== sig.id) {
+            lastAlertedId = sig.id;
+            playTone('signal');
+            clickPairOnQuotex(sig.asset);
+            ensureM1ExpiryOnQuotex();
+          }
+          const nowSec = Math.floor((Date.now() + serverOffsetMs) / 1000);
+          const diffSec = sig.targetEntryTimestamp ? (sig.targetEntryTimestamp - nowSec) : (sig.secondsUntilEntry ?? 0);
+          if (tradeMode === 'AUTO' && !executedSignals.has(sig.id) && diffSec <= 0 && diffSec >= -4) {
+            executedSignals.add(sig.id);
+            clickPairOnQuotex(sig.asset);
+            ensureM1ExpiryOnQuotex();
+            setTimeout(() => {
+              const clicked = clickTradeButton(sig.direction);
+              if (clicked) playTone('open');
+            }, 120);
+          }
+        } else if ((sig.status === 'WIN' || sig.status === 'LOSS') && !reportedOutcomes.has(sig.id)) {
+          reportedOutcomes.add(sig.id);
+          if (sig.status === 'WIN') {
+            winsCount += 1;
+            playTone('win');
+          } else {
+            lossesCount += 1;
+            playTone('loss');
+          }
+          if (executedSignals.has(sig.id)) {
+            requestJson(\`\${serverUrl}/api/quotex-robot/report-trade\`, 'POST', { apiKey, outcome: sig.status }).catch(() => {});
+          }
+        }
+      }
+    } catch (_) {
+      // Keep last state on transient hiccup
+    }
+    if (!hidden) renderHud();
+  }
+
+  renderHud();
+  pollFeed();
+  setInterval(pollFeed, 1200);
+  setInterval(() => {
+    if (!hidden && !showKeyPanel) renderHud();
+  }, 1000);
+})();
+`;
+
+    res.json({
+      ok: true,
+      version: 'v5.0 Cloud Secure',
+      filename: 'zad-fx-floating-robot.user.js',
+      serverOrigin: safeOrigin,
+      embeddedApiKey: defaultMemberKey,
+      script: userscript
+    });
   });
 
   app.post('/api/quotex-robot/restore-golden-baseline', requireAdmin, async (_req, res) => {
@@ -11914,9 +12524,16 @@ async function startServer() {
           : contactLinksStore.contactNotes
     };
 
-    // Keep autoPilot.quotexReferralLink in sync
+    // Keep autoPilot and Onboarding Telegram Bot in sync
     if (contactLinksStore.quotexReferralLink) {
       autoPilot.quotexReferralLink = contactLinksStore.quotexReferralLink;
+      telegramBotConfigStore.quotexReferralUrl = contactLinksStore.quotexReferralLink;
+    }
+    if (contactLinksStore.telegramSupportUrl) {
+      telegramBotConfigStore.adminTelegramUsername = contactLinksStore.telegramSupportUrl;
+    }
+    if (contactLinksStore.telegramChannelUrl) {
+      telegramBotConfigStore.freeChannelLink = contactLinksStore.telegramChannelUrl;
     }
 
     await saveState();
@@ -12241,11 +12858,62 @@ async function startServer() {
           ? rawTok
           : telegramBotConfigStore.botToken || '';
 
+      const tokenChanged = resolvedTok !== (telegramBotConfigStore.botToken || '');
+
       telegramBotConfigStore = {
         ...telegramBotConfigStore,
         ...incoming,
-        botToken: resolvedTok
+        botToken: resolvedTok,
+        egyptPayment: {
+          ...(telegramBotConfigStore.egyptPayment || defaultTelegramBotConfig.egyptPayment),
+          ...(incoming.egyptPayment || {})
+        },
+        palestinePayment: {
+          ...(telegramBotConfigStore.palestinePayment || defaultTelegramBotConfig.palestinePayment),
+          ...(incoming.palestinePayment || {})
+        },
+        internationalPayment: {
+          ibanEgp: {
+            ...(telegramBotConfigStore.internationalPayment?.ibanEgp || defaultTelegramBotConfig.internationalPayment.ibanEgp),
+            ...(incoming.internationalPayment?.ibanEgp || {})
+          },
+          ibanUsd: {
+            ...(telegramBotConfigStore.internationalPayment?.ibanUsd || defaultTelegramBotConfig.internationalPayment.ibanUsd),
+            ...(incoming.internationalPayment?.ibanUsd || {})
+          }
+        },
+        usdtPayment: {
+          ...(telegramBotConfigStore.usdtPayment || defaultTelegramBotConfig.usdtPayment),
+          ...(incoming.usdtPayment || {})
+        },
+        robotGuide: {
+          ...(telegramBotConfigStore.robotGuide || defaultTelegramBotConfig.robotGuide),
+          ...(incoming.robotGuide || {})
+        }
       };
+
+      if (tokenChanged) {
+        lastOnboardingBotUpdateId = 0;
+      }
+
+      // Sync support link, channel link, and Quotex referral link back to contactLinksStore & autoPilot
+      if (telegramBotConfigStore.adminTelegramUsername) {
+        contactLinksStore.telegramSupportUrl = normalizeTelegramUrl(
+          telegramBotConfigStore.adminTelegramUsername,
+          contactLinksStore.telegramSupportUrl
+        );
+      }
+      if (telegramBotConfigStore.freeChannelLink) {
+        contactLinksStore.telegramChannelUrl = normalizeTelegramUrl(
+          telegramBotConfigStore.freeChannelLink,
+          contactLinksStore.telegramChannelUrl
+        );
+      }
+      if (telegramBotConfigStore.quotexReferralUrl) {
+        contactLinksStore.quotexReferralLink = telegramBotConfigStore.quotexReferralUrl;
+        autoPilot.quotexReferralLink = telegramBotConfigStore.quotexReferralUrl;
+      }
+
       await saveState();
       res.json({ ok: true, config: redactBotConfigForAdmin(telegramBotConfigStore) });
     } catch (err: any) {
@@ -12389,11 +13057,10 @@ async function startServer() {
       const checkToken = (
         (incoming && incoming !== 'CONFIGURED' ? incoming : '') ||
         telegramBotConfigStore.botToken ||
-        autoPilot.botToken ||
-        DEFAULT_FREE_BOT_TOKEN
+        ''
       ).trim();
       if (!checkToken) {
-        return res.status(400).json({ ok: false, error: 'Bot token is not configured' });
+        return res.status(400).json({ ok: false, error: 'لم يتم إدخال توكن البوت التفاعلي بعد — يرجى لصق توكن BotFather وحفظه.' });
       }
       const tgRes = await fetch(`https://api.telegram.org/bot${checkToken}/getMe`);
       const data = await tgRes.json();

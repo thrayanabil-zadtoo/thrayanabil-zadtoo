@@ -27,9 +27,11 @@ import {
   Building,
   Smartphone,
   Eye,
+  EyeOff,
   ArrowRight,
   Flame,
   FileText,
+  Key,
   Lock,
   Unlock,
   Coins
@@ -118,70 +120,106 @@ export interface TelegramBotConfig {
   };
 }
 
-const DEFAULT_CONFIG: TelegramBotConfig = {
+const EMPTY_CONFIG: TelegramBotConfig = {
   isEnabled: true,
   botToken: '',
   botUsername: '@Zadfx_bot',
-  adminTelegramUsername: '@thrayanabil',
-  freeChannelLink: 'https://t.me/ZadNBFX',
-  officialWebsiteUrl: 'https://fx.zadtoo.com',
-  quotexReferralUrl: 'https://broker-qx.pro/sign-up/?lid=893976',
+  adminTelegramUsername: '',
+  freeChannelLink: '',
+  officialWebsiteUrl: '',
+  quotexReferralUrl: '',
   egyptPayment: {
-    instapayAccount: 'thraya@instapay',
-    instapayName: 'ثريا نبيل',
-    vodafoneCash: '01012345678',
-    etisalatCash: '01112345678',
-    orangeCash: '01212345678',
-    wePay: '01512345678'
+    instapayAccount: '',
+    instapayName: '',
+    vodafoneCash: '',
+    etisalatCash: '',
+    orangeCash: '',
+    wePay: ''
   },
   palestinePayment: {
     country: 'فلسطين 🇵🇸',
     bankName: 'بنك فلسطين (Bank of Palestine)',
-    beneficiaryName: 'ثريا نبيل / ZAD FX',
+    beneficiaryName: '',
     currency: 'دولار أمريكي ($) / شيكل (ILS)',
-    accountNumber: '1987654',
-    iban: 'PS92PALS00000000001987654',
-    branch: 'الفرع الرئيسي',
-    notes: 'الإيداع النقدي المباشر أو التحويل البنكي الفوري عبر تطبيق بنك فلسطين'
+    accountNumber: '',
+    iban: '',
+    branch: '',
+    notes: ''
   },
   internationalPayment: {
     ibanEgp: {
       country: 'جمهورية مصر العربية 🇪🇬',
-      bankName: 'البنك الأهلي المصري (National Bank of Egypt)',
-      beneficiaryName: 'ثريا نبيل / ZAD FX',
+      bankName: '',
+      beneficiaryName: '',
       currency: 'الجنيه المصري (EGP)',
-      accountNumber: '10023456789012',
-      iban: 'EG380003000010023456789012',
-      swiftCode: 'NBEGEGCX',
-      notes: 'التحويل متاح من كافة البنوك الدولية لحساب الجنيه المصري'
+      accountNumber: '',
+      iban: '',
+      swiftCode: '',
+      notes: ''
     },
     ibanUsd: {
       country: 'دولي (International 🌍)',
-      bankName: 'البنك الأهلي المصري (National Bank of Egypt - NBE)',
-      beneficiaryName: 'Thraya Nabil / ZAD FX',
+      bankName: '',
+      beneficiaryName: '',
       currency: 'الدولار الأمريكي ($ - USD)',
-      accountNumber: '20098765432109',
-      iban: 'EG720003000020098765432109',
-      swiftCode: 'NBEGEGCX',
-      notes: 'Wire Transfer / Swift Transfer in USD accepted worldwide'
+      accountNumber: '',
+      iban: '',
+      swiftCode: '',
+      notes: ''
     }
   },
   usdtPayment: {
     network: 'USDT (TRC20)',
-    address: 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo',
+    address: '',
     qrImageUrl: '/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg',
-    notesAr: 'تحويل فوري مباشر بالدولار الرقمي USDT عبر شبكة ترون (TRC20) متاح لجميع المشتركين والدول',
-    notesEn: 'Direct USDT crypto payment via TRON network (TRC20) accepted worldwide'
+    notesAr: '',
+    notesEn: ''
   },
   robotGuide: {
     titleAr: 'روبوت ZAD FX للتداول الآلي الذكي على كيوتكس',
     titleEn: 'ZAD FX Quotex Automated Trading Robot',
-    videoUrl: 'https://youtube.com',
+    videoUrl: '',
     imageUrl: '/assets/aistudio/1_c5a8975d.PNG',
-    descriptionAr: 'روبوت مباشر يتصل بمنصة كيوتكس، يحلل 6 أزواج بالتوازي باستراتيجية المؤشرات الأربعة، ويفتح الصفقات بدقة 5 ثوانٍ قبل الشمعة بدون أي مضاعفات خاسرة.',
-    descriptionEn: 'Automated robot for Quotex platform, scanning 6 pairs simultaneously with 4 technical indicators and 5-second pre-candle execution.'
+    descriptionAr: '',
+    descriptionEn: ''
   }
 };
+
+const DEFAULT_CONFIG = EMPTY_CONFIG;
+
+function mergeBotConfig(serverCfg: any): TelegramBotConfig {
+  const s = serverCfg || {};
+  return {
+    ...EMPTY_CONFIG,
+    ...s,
+    egyptPayment: {
+      ...EMPTY_CONFIG.egyptPayment,
+      ...(s.egyptPayment || {})
+    },
+    palestinePayment: {
+      ...EMPTY_CONFIG.palestinePayment,
+      ...(s.palestinePayment || {})
+    },
+    internationalPayment: {
+      ibanEgp: {
+        ...EMPTY_CONFIG.internationalPayment.ibanEgp,
+        ...(s.internationalPayment?.ibanEgp || {})
+      },
+      ibanUsd: {
+        ...EMPTY_CONFIG.internationalPayment.ibanUsd,
+        ...(s.internationalPayment?.ibanUsd || {})
+      }
+    },
+    usdtPayment: {
+      ...EMPTY_CONFIG.usdtPayment,
+      ...(s.usdtPayment || {})
+    },
+    robotGuide: {
+      ...EMPTY_CONFIG.robotGuide,
+      ...(s.robotGuide || {})
+    }
+  };
+}
 
 interface TelegramBotManagerProps {
   adminToken?: string;
@@ -190,7 +228,11 @@ interface TelegramBotManagerProps {
 export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminToken }) => {
   const [activeTab, setActiveTab] = useState<'users' | 'settings' | 'broadcast' | 'simulator'>('users');
   const [users, setUsers] = useState<TelegramBotUser[]>([]);
-  const [config, setConfig] = useState<TelegramBotConfig>(DEFAULT_CONFIG);
+  const [config, setConfig] = useState<TelegramBotConfig>(EMPTY_CONFIG);
+  const [botTokenInput, setBotTokenInput] = useState('');
+  const [showBotToken, setShowBotToken] = useState(false);
+  const [isTestingToken, setIsTestingToken] = useState(false);
+  const [tokenTestResult, setTokenTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
@@ -258,14 +300,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
       if (resConfig && resConfig.ok) {
         const dataConfig = await resConfig.json();
         if (dataConfig?.config) {
-          setConfig(prev => ({
-            ...prev,
-            ...dataConfig.config,
-            usdtPayment: {
-              ...DEFAULT_CONFIG.usdtPayment,
-              ...(dataConfig.config.usdtPayment || {})
-            }
-          }));
+          setConfig(mergeBotConfig(dataConfig.config));
         }
       }
     } catch (e) {
@@ -289,16 +324,25 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
     e.preventDefault();
     setIsLoading(true);
     try {
+      const payload: any = { ...config };
+      const trimmedToken = botTokenInput.trim();
+      if (trimmedToken && trimmedToken !== 'CONFIGURED') {
+        payload.botToken = trimmedToken;
+      } else {
+        delete payload.botToken;
+      }
+
       const res = await fetch('/api/telegram-bot/config', {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify(config)
+        body: JSON.stringify(payload)
       });
       const data = await res.json();
       if (res.ok && data?.ok) {
         if (data.config) {
-          setConfig(prev => ({ ...prev, ...data.config }));
+          setConfig(mergeBotConfig(data.config));
         }
+        setBotTokenInput('');
         showToast('✅ تم حفظ كافة إعدادات بوت التليجرام والمدفوعات بنجاح ومزامنتها لحظياً!');
       } else {
         showToast(data?.error || '❌ تعذر حفظ الإعدادات، يرجى التحقق من صلاحية المشرف', 'error');
@@ -307,6 +351,35 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
       showToast('❌ تعذر حفظ الإعدادات، يرجى التأكد من اتصال الإنترنت', 'error');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleTestBotToken = async () => {
+    setIsTestingToken(true);
+    setTokenTestResult(null);
+    try {
+      const trimmed = botTokenInput.trim();
+      const res = await fetch('/api/telegram-bot/test-token', {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(trimmed ? { token: trimmed } : {})
+      });
+      const data = await res.json();
+      if (res.ok && data?.ok && data?.bot) {
+        setTokenTestResult({
+          ok: true,
+          text: `✅ متصل بنجاح بالبوت: @${data.bot.username} (${data.bot.first_name})`
+        });
+      } else {
+        setTokenTestResult({
+          ok: false,
+          text: `❌ ${data?.error || 'تعذر التحقق من توكن البوت'}`
+        });
+      }
+    } catch (_err) {
+      setTokenTestResult({ ok: false, text: '❌ خطأ في الاتصال بالخادم لفحص التوكن' });
+    } finally {
+      setIsTestingToken(false);
     }
   };
 
@@ -989,11 +1062,108 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
               </button>
             </div>
 
+            {/* Missing Config Warning Banner */}
+            {(config.botToken !== 'CONFIGURED' ||
+              (!config.egyptPayment.instapayAccount?.trim() &&
+                !config.egyptPayment.vodafoneCash?.trim() &&
+                !config.palestinePayment?.iban?.trim() &&
+                !config.usdtPayment?.address?.trim())) && (
+              <div className="bg-amber-950/50 border border-amber-500/40 rounded-2xl p-4 text-xs text-amber-200 space-y-1.5">
+                <div className="font-extrabold flex items-center gap-2 text-amber-300">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>تنبيه: بعض بيانات البوت الأساسية أو البنكية غير مضبوطة حالياً</span>
+                </div>
+                <ul className="list-disc list-inside text-[11px] text-amber-100/90 space-y-0.5">
+                  {config.botToken !== 'CONFIGURED' && (
+                    <li>توكن البوت التفاعلي غير محفوظ — الصق توكن <strong dir="ltr">@Zadfx_bot</strong> من BotFather أدناه واضغط حفظ.</li>
+                  )}
+                  {!config.egyptPayment.instapayAccount?.trim() &&
+                    !config.egyptPayment.vodafoneCash?.trim() &&
+                    !config.palestinePayment?.iban?.trim() &&
+                    !config.usdtPayment?.address?.trim() && (
+                    <li>حقول الحسابات البنكية والمحافظ في هذا النموذج فارغة — الحقول الفارغة لن تُعرض فارغة في البوت (وسيتم الاعتماد على طرق الدفع الفعالة من مدير المدفوعات إن وُجدت أو إظهار زر الدعم الفني حتى تحفظ بياناتك هنا).</li>
+                  )}
+                </ul>
+              </div>
+            )}
+
             {/* Core Bot Setup */}
-            <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-6 shadow-md">
-              <div className="flex items-center gap-2 mb-4 pb-3 border-b border-slate-700">
-                <Bot className="w-5 h-5 text-indigo-400" />
-                <h3 className="text-base font-extrabold text-white">بيانات اتصال بوت التليجرام الأساسية</h3>
+            <div className="bg-slate-800/80 border border-slate-700 rounded-2xl p-6 shadow-md space-y-5">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-700">
+                <div className="flex items-center gap-2">
+                  <Bot className="w-5 h-5 text-indigo-400" />
+                  <h3 className="text-base font-extrabold text-white">بيانات اتصال بوت التليجرام الأساسية</h3>
+                </div>
+                <span
+                  className={`px-3 py-1 rounded-full text-[11px] font-bold border ${
+                    config.botToken === 'CONFIGURED'
+                      ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                      : 'bg-amber-500/15 text-amber-300 border-amber-500/40'
+                  }`}
+                >
+                  {config.botToken === 'CONFIGURED'
+                    ? '✅ توكن البوت محفوظ ومشفر على الخادم'
+                    : '⚠️ التوكن غير مضبوط — أدخل توكن BotFather'}
+                </span>
+              </div>
+
+              {/* Dedicated BotFather Token Input + Connection Test */}
+              <div className="bg-slate-900/80 border border-indigo-500/30 rounded-xl p-4 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="text-xs font-extrabold text-indigo-300 flex items-center gap-1.5">
+                    <Key className="w-4 h-4" />
+                    <span>توكن البوت التفاعلي (Telegram BotFather Token)</span>
+                  </label>
+                  <span className="text-[10.5px] text-slate-400">
+                    {config.botToken === 'CONFIGURED'
+                      ? 'محفوظ حالياً — اتركه فارغاً للإبقاء عليه أو الصق توكناً جديداً لاستبداله'
+                      : 'مطلوب لتشغيل البوت التفاعلي والردود التلقائية'}
+                  </span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="relative flex-1 min-w-[240px]">
+                    <input
+                      type={showBotToken ? 'text' : 'password'}
+                      dir="ltr"
+                      value={botTokenInput}
+                      onChange={e => setBotTokenInput(e.target.value)}
+                      placeholder={
+                        config.botToken === 'CONFIGURED'
+                          ? '•••••••••••••••••••••••• (محفوظ على الخادم)'
+                          : '1234567890:AAHxxxxxxxxxxxxxxxxxxxxxxxx'
+                      }
+                      className="w-full bg-slate-950 border border-slate-700 rounded-xl pl-3.5 pr-10 py-2.5 text-xs text-amber-300 focus:outline-none focus:border-indigo-500 font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowBotToken(prev => !prev)}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
+                      title={showBotToken ? 'إخفاء التوكن' : 'إظهار التوكن'}
+                    >
+                      {showBotToken ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleTestBotToken}
+                    disabled={isTestingToken}
+                    className="px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-extrabold text-xs cursor-pointer flex items-center gap-1.5 shrink-0"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isTestingToken ? 'animate-spin' : ''}`} />
+                    <span>{isTestingToken ? 'جاري الفحص...' : '🔍 فحص اتصال البوت الآن'}</span>
+                  </button>
+                </div>
+                {tokenTestResult && (
+                  <div
+                    className={`text-xs font-bold px-3 py-2 rounded-lg border ${
+                      tokenTestResult.ok
+                        ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
+                        : 'bg-rose-950/60 border-rose-500/40 text-rose-300'
+                    }`}
+                  >
+                    {tokenTestResult.text}
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1015,7 +1185,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                     type="text"
                     value={config.botUsername}
                     onChange={e => setConfig({ ...config, botUsername: e.target.value })}
-                    placeholder="@ZadNBFX_bot"
+                    placeholder="@Zadfx_bot"
                     className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
                 </div>
@@ -1026,9 +1196,12 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                     type="text"
                     value={config.adminTelegramUsername}
                     onChange={e => setConfig({ ...config, adminTelegramUsername: e.target.value })}
-                    placeholder="@thrayanabil"
+                    placeholder="@ZadNBFX أو https://t.me/..."
                     className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 font-mono"
                   />
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    يقبل <span dir="ltr">@username</span> أو رابط <span dir="ltr">t.me</span> كامل، ويتزامن تلقائياً مع "إدارة الباقات والروابط".
+                  </p>
                 </div>
 
                 <div>
@@ -1592,7 +1765,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                       <div className="relative">
                         <input
                           type="text"
-                          value={config.usdtPayment?.address || 'TX79afTcXc1nG8ddRdpatFWHMFDqByXyzo'}
+                          value={config.usdtPayment?.address || ''}
                           onChange={e => setConfig({
                             ...config,
                             usdtPayment: { ...(config.usdtPayment || DEFAULT_CONFIG.usdtPayment), address: e.target.value }
@@ -1608,7 +1781,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                     <label className="block text-xs font-bold text-slate-300 mb-1.5">رابط صورة باركود الدفع (QR Code Image)</label>
                     <input
                       type="text"
-                      value={config.usdtPayment?.qrImageUrl || '/assets/aistudio/IMG-20261107-WA0010_a0cea637.jpg'}
+                      value={config.usdtPayment?.qrImageUrl || ''}
                       onChange={e => setConfig({
                         ...config,
                         usdtPayment: { ...(config.usdtPayment || DEFAULT_CONFIG.usdtPayment), qrImageUrl: e.target.value }
