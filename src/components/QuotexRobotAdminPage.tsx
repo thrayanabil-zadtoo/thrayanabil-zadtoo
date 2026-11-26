@@ -577,6 +577,7 @@ export default function QuotexRobotAdminPage({
 
   const handleCreateMemberKey = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isAdmin) return;
     if (!newKeyMemberName.trim()) return;
     setIsCreatingKey(true);
     let createdSub: VipSubscriber | null = null;
@@ -660,6 +661,7 @@ export default function QuotexRobotAdminPage({
       regenerateRobotApiKey?: boolean;
     }
   ) => {
+    if (!isAdmin) return;
     let updatedSub: VipSubscriber | null = null;
     try {
       if (adminToken) {
@@ -714,6 +716,7 @@ export default function QuotexRobotAdminPage({
   };
 
   const handleApproveSubscriber = async (subId: string) => {
+    if (!isAdmin) return;
     const target = subscribers.find(s => s.id === subId);
     const expDate =
       target?.robotExpiryDate ||
@@ -722,7 +725,8 @@ export default function QuotexRobotAdminPage({
     await handleUpdateSubscriberRobot(subId, {
       status: 'ACTIVE',
       robotEnabled: true,
-      robotExpiryDate: expDate
+      robotExpiryDate: expDate,
+      ...(!target?.robotApiKey ? { regenerateRobotApiKey: true } : {})
     });
   };
 
@@ -732,18 +736,19 @@ export default function QuotexRobotAdminPage({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // Current App Origin — default directly to https://fx.zadtoo.com (no Publish / Share needed)
+  // Preserve active .run.app / local Express backend origin; map static Firebase domains to https://fx.zadtoo.com
   const toPublicOrigin = (url: string) => {
     const cleaned = String(url || '').trim().replace(/\/+$/, '');
-    if (!cleaned || /(?:zadtoo\.com|\.web\.app|\.firebaseapp\.com)(?:$|[:/])/i.test(cleaned)) {
+    if (!cleaned) return 'https://ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app';
+    if (/(?:zadtoo\.com|\.web\.app|\.firebaseapp\.com)(?:$|[:/])/i.test(cleaned)) {
       return 'https://fx.zadtoo.com';
     }
-    return cleaned.replace(/^(https?:\/\/)ais-dev-/i, '$1ais-pre-');
+    return cleaned;
   };
   const appOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://fx.zadtoo.com';
   const publicRobotOrigin = toPublicOrigin(appOrigin);
 
-  // Admin-Only Floating Quotex Robot v5.0 Tampermonkey Script Generator State
+  // Admin-Only Floating Quotex Robot v5.2 Tampermonkey Script Generator State
   const [scriptServerOrigin, setScriptServerOrigin] = useState<string>(() => publicRobotOrigin);
   const [scriptApiKey, setScriptApiKey] = useState<string>('');
   const [generatedScript, setGeneratedScript] = useState<string>('');
@@ -806,8 +811,17 @@ export default function QuotexRobotAdminPage({
       // Fall back to direct client-side v5.0 template builder (works on fx.zadtoo.com!)
     }
 
+    const fallbackOrigins = [
+      targetOrigin,
+      typeof window !== 'undefined' ? window.location.origin : '',
+      'https://ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
+      'https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
+      'https://fx.zadtoo.com'
+    ].filter((u, idx, arr) => Boolean(u) && arr.indexOf(u) === idx);
+
     const clientScript = buildFloatingQuotexRobotScript({
       serverOrigin: targetOrigin,
+      fallbackOrigins,
       apiKey: targetKey,
       defaultStake: robotSettings.defaultStakeUsd || 5,
       defaultMode: robotSettings.defaultMode || 'MANUAL',
@@ -818,7 +832,7 @@ export default function QuotexRobotAdminPage({
     });
     setGeneratedScript(clientScript);
     setScriptMeta({
-      version: 'v5.0.2 (fx.zadtoo.com + Cloud)',
+      version: 'v5.2.0 (متعدد المسارات + جسر المتصفح)',
       serverOrigin: targetOrigin,
       embeddedApiKey: targetKey || 'غير مضمّن'
     });
@@ -2360,7 +2374,7 @@ export default function QuotexRobotAdminPage({
                     </span>
                     <div>
                       <h4 className="text-xs font-extrabold text-emerald-300 flex flex-wrap items-center gap-1.5">
-                        <span>نسخ وتثبيت كود الروبوت العائم للمشرف (Tampermonkey v5.0)</span>
+                        <span>نسخ وتثبيت كود الروبوت العائم للمشرف (Tampermonkey v5.2)</span>
                         <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 border border-emerald-500/40 text-[9px] font-bold">
                           متاح للمشرف فقط 🔒
                         </span>
@@ -2456,8 +2470,8 @@ export default function QuotexRobotAdminPage({
                     {copiedId === 'admin-robot-script' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                     <span>
                       {copiedId === 'admin-robot-script'
-                        ? '✅ تم نسخ كود الروبوت العائم v5.0!'
-                        : '📋 نسخ كود الروبوت (Tampermonkey v5.0)'}
+                        ? '✅ تم نسخ كود الروبوت العائم v5.2!'
+                        : '📋 نسخ كود الروبوت (Tampermonkey v5.2)'}
                     </span>
                   </button>
 
@@ -2545,9 +2559,10 @@ export default function QuotexRobotAdminPage({
       </div>
 
       {/* =====================================================================
-          SECTION 2: MEMBER API KEYS & VALIDITY DURATION MANAGER
-          (كل عضو له مفتاح خاص به ومدة صلاحية)
+          SECTION 2: MEMBER API KEYS & VALIDITY DURATION MANAGER (ADMIN ONLY)
+          (كل عضو له مفتاح خاص به ومدة صلاحية - للمشرف فقط)
           ===================================================================== */}
+      {isAdmin && (
       <div className="p-5 sm:p-6 bg-slate-900/90 border border-slate-800 rounded-2xl space-y-5">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
           <div>
@@ -2687,7 +2702,7 @@ export default function QuotexRobotAdminPage({
                 </tr>
               ) : (
                 filteredSubscribers.map(sub => {
-                  const keyStr = sub.robotApiKey || `QX-ZAD-${sub.id.slice(-6).toUpperCase()}`;
+                  const keyStr = (sub.robotApiKey || '').trim();
                   const expStr = sub.robotExpiryDate || sub.expiryDate || '';
                   const isRobotOn = sub.robotEnabled !== false && sub.status !== 'BANNED';
 
@@ -2707,21 +2722,27 @@ export default function QuotexRobotAdminPage({
                       </td>
 
                       <td className="py-3 px-3">
-                        <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0B0F17] border border-amber-500/40 font-mono-num text-amber-300 font-bold">
-                          <span>{keyStr}</span>
-                          <button
-                            type="button"
-                            onClick={() => handleCopy(keyStr, `key-${sub.id}`)}
-                            className="text-slate-400 hover:text-white cursor-pointer"
-                            title="نسخ مفتاح العضو"
-                          >
-                            {copiedId === `key-${sub.id}` ? (
-                              <Check className="w-3.5 h-3.5 text-emerald-400" />
-                            ) : (
-                              <Copy className="w-3.5 h-3.5" />
-                            )}
-                          </button>
-                        </div>
+                        {keyStr ? (
+                          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#0B0F17] border border-amber-500/40 font-mono-num text-amber-300 font-bold">
+                            <span>{keyStr}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleCopy(keyStr, `key-${sub.id}`)}
+                              className="text-slate-400 hover:text-white cursor-pointer"
+                              title="نسخ مفتاح العضو"
+                            >
+                              {copiedId === `key-${sub.id}` ? (
+                                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              ) : (
+                                <Copy className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-slate-800/80 border border-slate-700 text-slate-400 text-[11px]">
+                            لم يتم توليد مفتاح بعد
+                          </span>
+                        )}
                       </td>
 
                       <td className="py-3 px-3">
@@ -2813,17 +2834,19 @@ export default function QuotexRobotAdminPage({
                             </button>
                           )}
 
-                          <button
-                            type="button"
-                            onClick={() => setSelectedTestApiKey(keyStr)}
-                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
-                              selectedTestApiKey === keyStr
-                                ? 'bg-amber-400 text-slate-950'
-                                : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
-                            }`}
-                          >
-                            {selectedTestApiKey === keyStr ? 'يتم اختباره ✓' : 'اختبار بالروبوت'}
-                          </button>
+                          {keyStr && (
+                            <button
+                              type="button"
+                              onClick={() => setSelectedTestApiKey(keyStr)}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                                selectedTestApiKey === keyStr
+                                  ? 'bg-amber-400 text-slate-950'
+                                  : 'bg-slate-800 hover:bg-slate-700 text-slate-200'
+                              }`}
+                            >
+                              {selectedTestApiKey === keyStr ? 'يتم اختباره ✓' : 'اختبار بالروبوت'}
+                            </button>
+                          )}
 
                           <button
                             type="button"
@@ -2833,9 +2856,9 @@ export default function QuotexRobotAdminPage({
                               })
                             }
                             className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[11px] cursor-pointer"
-                            title="توليد مفتاح جديد للعضو"
+                            title={keyStr ? 'تجديد مفتاح العضو' : 'توليد مفتاح روبوت للعضو'}
                           >
-                            تغيير المفتاح
+                            {keyStr ? 'تغيير المفتاح' : '🔑 توليد مفتاح'}
                           </button>
                         </div>
                       </td>
@@ -2847,6 +2870,7 @@ export default function QuotexRobotAdminPage({
           </table>
         </div>
       </div>
+      )}
     </div>
   );
 }

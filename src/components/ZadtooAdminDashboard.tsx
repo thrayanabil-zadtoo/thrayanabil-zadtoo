@@ -785,7 +785,7 @@ export const ZadtooAdminDashboard: React.FC<ZadtooAdminDashboardProps> = ({
               </button>
             </div>
 
-            <TelegramBotManager adminToken={adminToken} />
+            <TelegramBotManager adminToken={adminToken} isAdmin={true} />
           </div>
         ) : (
           <>

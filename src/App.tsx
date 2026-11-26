@@ -44,7 +44,8 @@ import {
   Sliders,
   BarChart2,
   Eye,
-  EyeOff
+  EyeOff,
+  Key
 } from 'lucide-react';
 import {
   parseRawQuotexSignal,
@@ -577,6 +578,10 @@ export default function App() {
     status: 'PENDING' | 'ACTIVE' | 'BANNED';
     activationLink: string;
     expiryDate: string;
+    robotApiKey: string;
+    robotEnabled: boolean;
+    robotDefaultMode: 'AUTO' | 'MANUAL';
+    robotTradeStake: number;
   }>({
     name: '',
     telegramUsername: '',
@@ -592,8 +597,71 @@ export default function App() {
     paymentMethod: PAYMENT_METHODS[1],
     status: 'PENDING',
     activationLink: '',
-    expiryDate: ''
+    expiryDate: '',
+    robotApiKey: '',
+    robotEnabled: false,
+    robotDefaultMode: 'AUTO',
+    robotTradeStake: 5
   });
+  const generateAdminKeyPreview = () => {
+    const r = () => Math.random().toString(36).substring(2, 6).toUpperCase();
+    const n = Math.floor(1000 + Math.random() * 9000);
+    return `QX-ZAD-${r()}-${r()}-${n}`;
+  };
+  const defaultNewMemberExpiry = () => {
+    const d = new Date();
+    d.setDate(d.getDate() + 30);
+    return d.toISOString().split('T')[0];
+  };
+  const [showAdminAddMemberModal, setShowAdminAddMemberModal] = useState<boolean>(false);
+  const [isCreatingAdminMember, setIsCreatingAdminMember] = useState<boolean>(false);
+  const [adminAddFeedback, setAdminAddFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
+  const [adminAddForm, setAdminAddForm] = useState<{
+    name: string;
+    telegramUsername: string;
+    country: string;
+    email: string;
+    phone: string;
+    broker: string;
+    brokerAccountId: string;
+    subscriptionType: 'paid_plan' | 'quotex_referral';
+    quotexDepositConfirmed: boolean;
+    planDuration: string;
+    amountPaid: number;
+    paymentMethod: string;
+    status: 'PENDING' | 'ACTIVE' | 'BANNED';
+    activationLink: string;
+    expiryDate: string;
+    generateRobotApiKey: boolean;
+    robotApiKey: string;
+    robotEnabled: boolean;
+    robotDefaultMode: 'AUTO' | 'MANUAL';
+    robotTradeStake: number;
+  }>(() => ({
+    name: '',
+    telegramUsername: '',
+    country: COUNTRIES_LIST[0],
+    email: '',
+    phone: '',
+    broker: BROKERS_LIST[0],
+    brokerAccountId: '',
+    subscriptionType: 'paid_plan',
+    quotexDepositConfirmed: false,
+    planDuration: '1_month',
+    amountPaid: 30,
+    paymentMethod: PAYMENT_METHODS[1],
+    status: 'ACTIVE',
+    activationLink: '',
+    expiryDate: defaultNewMemberExpiry(),
+    generateRobotApiKey: true,
+    robotApiKey: generateAdminKeyPreview(),
+    robotEnabled: true,
+    robotDefaultMode: 'AUTO',
+    robotTradeStake: 5
+  }));
   const [adminChatInput, setAdminChatInput] = useState<string>('');
   const [isSavingSubscriber, setIsSavingSubscriber] = useState<boolean>(false);
   const [modalSaveFeedback, setModalSaveFeedback] = useState<{
@@ -1184,7 +1252,11 @@ export default function App() {
       paymentMethod: sub.paymentMethod || PAYMENT_METHODS[1],
       status: sub.status || 'PENDING',
       activationLink: sub.activationLink || '',
-      expiryDate: sub.expiryDate || sub.robotExpiryDate || ''
+      expiryDate: sub.expiryDate || sub.robotExpiryDate || '',
+      robotApiKey: sub.robotApiKey || '',
+      robotEnabled: sub.robotEnabled !== undefined ? Boolean(sub.robotEnabled) : sub.status === 'ACTIVE',
+      robotDefaultMode: sub.robotDefaultMode === 'MANUAL' ? 'MANUAL' : 'AUTO',
+      robotTradeStake: typeof sub.robotTradeStake === 'number' ? sub.robotTradeStake : 5
     });
     setAdminChatInput('');
     setModalSaveFeedback(null);
@@ -1291,48 +1363,69 @@ export default function App() {
   // Admin: Save edits, status, expiry date, or send activation link to member
   const handleAdminUpdateSubscriber = async (
     subId: string,
-    updates: Partial<VipSubscriber> & { sendActivationMessage?: boolean }
+    updates: Partial<VipSubscriber> & {
+      sendActivationMessage?: boolean;
+      regenerateRobotApiKey?: boolean;
+      generateRobotApiKey?: boolean;
+    }
   ) => {
+    if (!effectiveIsAdmin) return;
     setIsSavingSubscriber(true);
     setModalSaveFeedback(null);
-    const payload: Partial<VipSubscriber> & { sendActivationMessage?: boolean } = {
+    const payload: Partial<VipSubscriber> & {
+      sendActivationMessage?: boolean;
+      regenerateRobotApiKey?: boolean;
+      generateRobotApiKey?: boolean;
+    } = {
       ...updates,
       ...(updates.expiryDate !== undefined && updates.robotExpiryDate === undefined
         ? { robotExpiryDate: updates.expiryDate }
         : {})
     };
 
+    const syncEditFormFromSub = (targetSub: VipSubscriber) => {
+      if (selectedAdminSubId !== subId) return;
+      const planObj = VIP_PLANS.find(p => p.id === targetSub.planDuration) || VIP_PLANS[0];
+      const isRef =
+        targetSub.subscriptionType === 'quotex_referral' ||
+        targetSub.planDuration === 'quotex_referral_free';
+      setAdminEditForm({
+        name: targetSub.name || '',
+        telegramUsername: targetSub.telegramUsername || '',
+        country: targetSub.country || COUNTRIES_LIST[0],
+        email: targetSub.email || '',
+        phone: targetSub.phone || '',
+        broker: targetSub.broker || BROKERS_LIST[0],
+        brokerAccountId: targetSub.brokerAccountId || '',
+        subscriptionType: isRef ? 'quotex_referral' : 'paid_plan',
+        quotexDepositConfirmed: Boolean(targetSub.quotexDepositConfirmed),
+        planDuration: targetSub.planDuration || '1_month',
+        amountPaid:
+          typeof targetSub.amountPaid === 'number'
+            ? targetSub.amountPaid
+            : planObj.price,
+        paymentMethod: targetSub.paymentMethod || PAYMENT_METHODS[1],
+        status: targetSub.status || 'PENDING',
+        activationLink: targetSub.activationLink || '',
+        expiryDate: targetSub.expiryDate || targetSub.robotExpiryDate || '',
+        robotApiKey: targetSub.robotApiKey || '',
+        robotEnabled:
+          targetSub.robotEnabled !== undefined
+            ? Boolean(targetSub.robotEnabled)
+            : targetSub.status === 'ACTIVE',
+        robotDefaultMode: targetSub.robotDefaultMode === 'MANUAL' ? 'MANUAL' : 'AUTO',
+        robotTradeStake: typeof targetSub.robotTradeStake === 'number' ? targetSub.robotTradeStake : 5
+      });
+    };
+
     const applyLocalAndFirestore = async (targetSub: VipSubscriber) => {
       await saveSubscriberToFirestore(targetSub);
       setSubscribers(prev => prev.map(s => (s.id === subId ? targetSub : s)));
-      if (selectedAdminSubId === subId) {
-        const planObj = VIP_PLANS.find(p => p.id === targetSub.planDuration) || VIP_PLANS[0];
-        const isRef =
-          targetSub.subscriptionType === 'quotex_referral' ||
-          targetSub.planDuration === 'quotex_referral_free';
-        setAdminEditForm({
-          name: targetSub.name || '',
-          telegramUsername: targetSub.telegramUsername || '',
-          country: targetSub.country || COUNTRIES_LIST[0],
-          email: targetSub.email || '',
-          phone: targetSub.phone || '',
-          broker: targetSub.broker || BROKERS_LIST[0],
-          brokerAccountId: targetSub.brokerAccountId || '',
-          subscriptionType: isRef ? 'quotex_referral' : 'paid_plan',
-          quotexDepositConfirmed: Boolean(targetSub.quotexDepositConfirmed),
-          planDuration: targetSub.planDuration || '1_month',
-          amountPaid:
-            typeof targetSub.amountPaid === 'number'
-              ? targetSub.amountPaid
-              : planObj.price,
-          paymentMethod: targetSub.paymentMethod || PAYMENT_METHODS[1],
-          status: targetSub.status || 'PENDING',
-          activationLink: targetSub.activationLink || '',
-          expiryDate: targetSub.expiryDate || targetSub.robotExpiryDate || ''
-        });
-      }
+      syncEditFormFromSub(targetSub);
       const okMsg = updates.sendActivationMessage
         ? '✅ تم إرسال رابط التفعيل وتاريخ الانتهاء وتثبيته في السحابة (fx.zadtoo.com) بنجاح!'
+        : updates.regenerateRobotApiKey || updates.generateRobotApiKey
+        ? `✅ تم توليد مفتاح الروبوت للعضو (${targetSub.robotApiKey || ''}) وحفظه بنجاح!`
         : `✅ تم حفظ التعديلات وتاريخ الانتهاء (${targetSub.expiryDate || targetSub.robotExpiryDate || ''}) في السحابة (fx.zadtoo.com) بنجاح!`;
       setModalSaveFeedback({ type: 'success', message: okMsg });
       setPublishStatus({ type: 'success', message: okMsg });
@@ -1361,34 +1454,11 @@ export default function App() {
           await saveSubscriberToFirestore(data.subscriber);
         }
         setSubscribers(prev => prev.map(s => (s.id === subId ? data.subscriber : s)));
-        if (selectedAdminSubId === subId) {
-          const planObj = VIP_PLANS.find(p => p.id === data.subscriber.planDuration) || VIP_PLANS[0];
-          const isRef =
-            data.subscriber.subscriptionType === 'quotex_referral' ||
-            data.subscriber.planDuration === 'quotex_referral_free';
-          setAdminEditForm({
-            name: data.subscriber.name || '',
-            telegramUsername: data.subscriber.telegramUsername || '',
-            country: data.subscriber.country || COUNTRIES_LIST[0],
-            email: data.subscriber.email || '',
-            phone: data.subscriber.phone || '',
-            broker: data.subscriber.broker || BROKERS_LIST[0],
-            brokerAccountId: data.subscriber.brokerAccountId || '',
-            subscriptionType: isRef ? 'quotex_referral' : 'paid_plan',
-            quotexDepositConfirmed: Boolean(data.subscriber.quotexDepositConfirmed),
-            planDuration: data.subscriber.planDuration || '1_month',
-            amountPaid:
-              typeof data.subscriber.amountPaid === 'number'
-                ? data.subscriber.amountPaid
-                : planObj.price,
-            paymentMethod: data.subscriber.paymentMethod || PAYMENT_METHODS[1],
-            status: data.subscriber.status || 'PENDING',
-            activationLink: data.subscriber.activationLink || '',
-            expiryDate: data.subscriber.expiryDate || data.subscriber.robotExpiryDate || ''
-          });
-        }
+        syncEditFormFromSub(data.subscriber);
         const okMsg = updates.sendActivationMessage
           ? '✅ تم إرسال رابط التفعيل وتاريخ الانتهاء وتثبيته في قاعدة البيانات بنجاح!'
+          : updates.regenerateRobotApiKey || updates.generateRobotApiKey
+          ? `✅ تم توليد مفتاح الروبوت للعضو (${data.subscriber.robotApiKey || ''}) وحفظه بنجاح!`
           : `✅ تم حفظ التعديلات وتاريخ الانتهاء (${data.subscriber.expiryDate || data.subscriber.robotExpiryDate || ''}) في قاعدة بيانات الخادم بنجاح!`;
         setModalSaveFeedback({ type: 'success', message: okMsg });
         setPublishStatus({ type: 'success', message: okMsg });
@@ -1396,9 +1466,14 @@ export default function App() {
       } else if (canWriteFirestoreAsAdmin()) {
         const existing = subscribers.find(s => s.id === subId);
         if (existing) {
+          const nextKey =
+            updates.regenerateRobotApiKey || updates.generateRobotApiKey
+              ? generateAdminKeyPreview()
+              : updates.robotApiKey ?? existing.robotApiKey;
           const mergedSub: VipSubscriber = {
             ...existing,
-            ...payload
+            ...payload,
+            robotApiKey: nextKey
           };
           await applyLocalAndFirestore(mergedSub);
         } else {
@@ -1409,7 +1484,7 @@ export default function App() {
           data?.error ||
           (res.status === 401 || res.status === 403
             ? '❌ انتهت جلسة المشرف — يرجى إعادة تسجيل الدخول بحساب Google أو كلمة المرور.'
-            : '❌ تعذر حفظ التعديلات — سجل الدخول بحساب المشرف عبر Google للربط المباشر.');
+            : '❌ تعذر حفظ التعديلات — سجل الدخول بحساب المشرف للربط المباشر.');
         setModalSaveFeedback({ type: 'error', message: errMsg });
         setPublishStatus({ type: 'error', message: errMsg });
       }
@@ -1417,16 +1492,127 @@ export default function App() {
       if (canWriteFirestoreAsAdmin()) {
         const existing = subscribers.find(s => s.id === subId);
         if (existing) {
-          await applyLocalAndFirestore({ ...existing, ...payload });
+          const nextKey =
+            updates.regenerateRobotApiKey || updates.generateRobotApiKey
+              ? generateAdminKeyPreview()
+              : updates.robotApiKey ?? existing.robotApiKey;
+          await applyLocalAndFirestore({ ...existing, ...payload, robotApiKey: nextKey });
           return;
         }
       }
-      const netMsg = '❌ تعذر الاتصال — يرجى تسجيل الدخول بحساب المشرف عبر Google للحفظ المباشر على fx.zadtoo.com.';
+      const netMsg = '❌ تعذر الاتصال — يرجى تسجيل الدخول بحساب المشرف للحفظ المباشر على fx.zadtoo.com.';
       setModalSaveFeedback({ type: 'error', message: netMsg });
       setPublishStatus({ type: 'error', message: netMsg });
     } finally {
       setIsSavingSubscriber(false);
     }
+  };
+
+  // Admin Only: Create new Subscriber/Member with optional Robot Key generation
+  const handleAdminCreateSubscriber = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!effectiveIsAdmin) return;
+    if (!adminAddForm.name.trim()) {
+      setAdminAddFeedback({ type: 'error', message: '⚠️ يرجى إدخال اسم العضو' });
+      return;
+    }
+    setIsCreatingAdminMember(true);
+    setAdminAddFeedback(null);
+
+    let createdSub: VipSubscriber | null = null;
+    try {
+      if (adminToken) {
+        const res = await fetch('/api/subscribers', {
+          method: 'POST',
+          headers: getAdminHeaders(),
+          body: JSON.stringify({
+            ...adminAddForm,
+            robotExpiryDate: adminAddForm.expiryDate
+          })
+        });
+        const ct = res.headers.get('content-type') || '';
+        const data = ct.includes('application/json') ? await res.json().catch(() => ({})) : {};
+        if (res.ok && data?.ok && data?.subscriber) {
+          createdSub = data.subscriber;
+        } else if (!canWriteFirestoreAsAdmin()) {
+          setAdminAddFeedback({
+            type: 'error',
+            message: data?.error || '❌ تعذر إضافة العضو — تحقق من صلاحية المشرف'
+          });
+        }
+      }
+    } catch (_err) {
+      // Fall back to Firestore admin write if available
+    }
+
+    if (!createdSub && canWriteFirestoreAsAdmin()) {
+      const subId = `sub-${Date.now()}`;
+      createdSub = {
+        id: subId,
+        name: adminAddForm.name.trim(),
+        telegramUsername: adminAddForm.telegramUsername.trim(),
+        country: adminAddForm.country,
+        email: adminAddForm.email.trim(),
+        phone: adminAddForm.phone.trim(),
+        broker: adminAddForm.broker,
+        brokerAccountId: adminAddForm.brokerAccountId.trim(),
+        subscriptionType: adminAddForm.subscriptionType,
+        quotexDepositConfirmed: adminAddForm.quotexDepositConfirmed,
+        planDuration: adminAddForm.planDuration,
+        amountPaid: adminAddForm.subscriptionType === 'quotex_referral' ? 0 : adminAddForm.amountPaid,
+        paymentMethod: adminAddForm.paymentMethod,
+        status: adminAddForm.status,
+        activationLink: adminAddForm.activationLink.trim(),
+        expiryDate: adminAddForm.expiryDate,
+        robotExpiryDate: adminAddForm.expiryDate,
+        robotApiKey: adminAddForm.generateRobotApiKey
+          ? adminAddForm.robotApiKey.trim() || generateAdminKeyPreview()
+          : '',
+        robotEnabled: adminAddForm.status === 'ACTIVE' && adminAddForm.generateRobotApiKey,
+        robotDefaultMode: adminAddForm.robotDefaultMode,
+        robotTradeStake: adminAddForm.robotTradeStake,
+        robotWins: 0,
+        robotLosses: 0,
+        messages: [],
+        createdAt: new Date().toISOString()
+      };
+    }
+
+    if (createdSub) {
+      if (canWriteFirestoreAsAdmin()) {
+        await saveSubscriberToFirestore(createdSub).catch(() => false);
+      }
+      setSubscribers(prev => [createdSub!, ...prev.filter(s => s.id !== createdSub!.id)]);
+      const successText = createdSub.robotApiKey
+        ? `✅ تم إضافة العضو "${createdSub.name}" وتوليد مفتاح الروبوت (${createdSub.robotApiKey}) بنجاح!`
+        : `✅ تم إضافة العضو "${createdSub.name}" بنجاح!`;
+      setPublishStatus({ type: 'success', message: successText });
+      setTimeout(() => setPublishStatus({ type: 'idle' }), 4500);
+      setShowAdminAddMemberModal(false);
+      setAdminAddForm({
+        name: '',
+        telegramUsername: '',
+        country: COUNTRIES_LIST[0],
+        email: '',
+        phone: '',
+        broker: BROKERS_LIST[0],
+        brokerAccountId: '',
+        subscriptionType: 'paid_plan',
+        quotexDepositConfirmed: false,
+        planDuration: '1_month',
+        amountPaid: 30,
+        paymentMethod: PAYMENT_METHODS[1],
+        status: 'ACTIVE',
+        activationLink: '',
+        expiryDate: defaultNewMemberExpiry(),
+        generateRobotApiKey: true,
+        robotApiKey: generateAdminKeyPreview(),
+        robotEnabled: true,
+        robotDefaultMode: 'AUTO',
+        robotTradeStake: 5
+      });
+    }
+    setIsCreatingAdminMember(false);
   };
 
   // Compress uploaded payment receipt image so it saves cleanly in Cloud Firestore & server state
@@ -3229,7 +3415,7 @@ export default function App() {
       {/* Screen 6: قسم بوت التليجرام الذكي (محمي للمشرف فقط) */}
       {zadtooTab === 'telegram_bot' && (
         effectiveIsAdmin ? (
-          <TelegramBotManager adminToken={adminToken} />
+          <TelegramBotManager adminToken={adminToken} isAdmin={effectiveIsAdmin} />
         ) : (
           <div className="max-w-md mx-auto my-16 p-8 bg-white border border-slate-200 rounded-3xl shadow-lg text-center space-y-4">
             <div className="w-14 h-14 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center mx-auto text-xl font-bold">
@@ -5915,9 +6101,27 @@ export default function App() {
                     05. إدارة أعضاء VIP + إحصائيات المبالغ المحصلة + تنبيهات الانتهاء والمفكرة السريعة ({subscribers.length})
                   </h2>
                   <p className="text-xs text-slate-400">
-                    متابعة إيرادات الاشتراكات، تنبيهات مواعيد انتهاء العضويات، المفكرة السريعة للمراسلات (مثل واتساب)، وتعديل وتفعيل الأعضاء
+                    متابعة إيرادات الاشتراكات، تنبيهات مواعيد انتهاء العضويات، إضافة عضو وتوليد مفتاح الروبوت (للمشرف فقط)، وتعديل وتفعيل الأعضاء
                   </p>
                 </div>
+                {effectiveIsAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAdminAddFeedback(null);
+                      setAdminAddForm(p => ({
+                        ...p,
+                        expiryDate: p.expiryDate || defaultNewMemberExpiry(),
+                        robotApiKey: generateAdminKeyPreview()
+                      }));
+                      setShowAdminAddMemberModal(true);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-500/20 transition-all cursor-pointer shrink-0"
+                  >
+                    <UserPlus className="w-4 h-4" />
+                    <span>+ إضافة عضو جديد وتوليد مفتاح</span>
+                  </button>
+                )}
               </div>
 
               {/* 1. Revenue Statistics Cards (إحصائيات المبالغ المحصلة من الخدمة) */}
@@ -6279,6 +6483,23 @@ export default function App() {
                                 <div className="font-mono-num text-xs text-slate-300 mt-0.5" dir="ltr">
                                   ID: {sub.brokerAccountId || '—'}
                                 </div>
+                                {sub.robotApiKey && (
+                                  <div className="mt-1 inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-500/30 text-[10px] font-mono-num text-emerald-300" dir="ltr">
+                                    <span>🔑 {sub.robotApiKey}</span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleCopyText(sub.robotApiKey!, `tbl-key-${sub.id}`)}
+                                      className="text-slate-400 hover:text-white cursor-pointer"
+                                      title="نسخ مفتاح الروبوت"
+                                    >
+                                      {copiedId === `tbl-key-${sub.id}` ? (
+                                        <Check className="w-3 h-3 text-emerald-400" />
+                                      ) : (
+                                        <Copy className="w-3 h-3" />
+                                      )}
+                                    </button>
+                                  </div>
+                                )}
                               </td>
                               <td className="py-3.5 px-4 whitespace-nowrap">
                                 {sub.subscriptionType === 'quotex_referral' || sub.planDuration === 'quotex_referral_free' ? (
@@ -9412,8 +9633,8 @@ export default function App() {
         </div>
       )}
 
-      {/* ADMIN MODAL: Edit Subscriber, Set Expiry Date, Send Activation Link, Ban & Chat */}
-      {selectedAdminSub && (
+      {/* ADMIN MODAL: Edit Subscriber, Set Expiry Date, Generate Robot Key, Send Activation Link, Ban & Chat */}
+      {effectiveIsAdmin && selectedAdminSub && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
           <div className="w-full max-w-3xl p-6 bg-slate-900 border border-slate-700 rounded-xl space-y-5 shadow-2xl max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -9774,6 +9995,100 @@ export default function App() {
                   />
                 </div>
 
+                {/* Admin-Only Robot API Key Generation & Settings inside Member Edit Modal */}
+                <div className="p-3 bg-emerald-950/25 border border-emerald-500/40 rounded-lg space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-300">
+                      <Key className="w-3.5 h-3.5" />
+                      <span>مفتاح تشغيل الروبوت العائم (للمشرف فقط 🔒)</span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isSavingSubscriber}
+                      onClick={() =>
+                        handleAdminUpdateSubscriber(selectedAdminSub.id, {
+                          ...adminEditForm,
+                          generateRobotApiKey: true,
+                          regenerateRobotApiKey: true,
+                          robotEnabled: true
+                        })
+                      }
+                      className="px-2.5 py-1 bg-amber-400 hover:bg-amber-300 disabled:opacity-50 text-slate-950 font-extrabold rounded text-[11px] cursor-pointer flex items-center gap-1"
+                    >
+                      <Key className="w-3 h-3" />
+                      <span>
+                        {adminEditForm.robotApiKey
+                          ? '🔄 تجديد مفتاح الروبوت وحفظه'
+                          : '🔑 توليد مفتاح للعضو الآن'}
+                      </span>
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      dir="ltr"
+                      value={adminEditForm.robotApiKey || 'لم يتم توليد مفتاح بعد'}
+                      className="flex-1 px-2.5 py-1.5 text-xs bg-slate-950 border border-slate-700 rounded text-amber-300 font-mono-num font-bold"
+                    />
+                    {adminEditForm.robotApiKey && (
+                      <button
+                        type="button"
+                        onClick={() => handleCopyText(adminEditForm.robotApiKey, 'edit-modal-key')}
+                        className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded text-[11px] font-bold cursor-pointer flex items-center gap-1"
+                      >
+                        {copiedId === 'edit-modal-key' ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                        <span>{copiedId === 'edit-modal-key' ? 'نُسخ' : 'نسخ'}</span>
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2 text-[11px]">
+                    <label className="flex items-center gap-1.5 text-slate-200 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={adminEditForm.robotEnabled}
+                        onChange={(e) =>
+                          setAdminEditForm(p => ({ ...p, robotEnabled: e.target.checked }))
+                        }
+                        className="accent-emerald-400 cursor-pointer"
+                      />
+                      <span>تفعيل الروبوت</span>
+                    </label>
+                    <select
+                      value={adminEditForm.robotDefaultMode}
+                      onChange={(e) =>
+                        setAdminEditForm(p => ({
+                          ...p,
+                          robotDefaultMode: e.target.value === 'MANUAL' ? 'MANUAL' : 'AUTO'
+                        }))
+                      }
+                      className="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-white text-[11px]"
+                    >
+                      <option value="AUTO">🤖 آلي</option>
+                      <option value="MANUAL">🖐️ يدوي</option>
+                    </select>
+                    <input
+                      type="number"
+                      min={1}
+                      value={adminEditForm.robotTradeStake}
+                      onChange={(e) =>
+                        setAdminEditForm(p => ({
+                          ...p,
+                          robotTradeStake: Math.max(1, Number(e.target.value) || 5)
+                        }))
+                      }
+                      className="px-2 py-1 bg-slate-900 border border-slate-700 rounded text-white font-mono-num text-[11px]"
+                      title="قيمة الصفقة ($)"
+                    />
+                  </div>
+                </div>
+
                 {modalSaveFeedback && (
                   <div
                     className={`p-2.5 rounded-lg border text-xs font-bold ${
@@ -9924,6 +10239,306 @@ export default function App() {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADMIN-ONLY MODAL: Add New Subscriber/Member + Generate Robot Key */}
+      {effectiveIsAdmin && showAdminAddMemberModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+          <div className="w-full max-w-2xl p-6 bg-slate-900 border border-emerald-500/40 rounded-2xl space-y-4 shadow-2xl max-h-[92vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <UserPlus className="w-5 h-5 text-emerald-400" />
+                <h3 className="text-base font-bold text-white">
+                  إضافة عضو جديد وتوليد مفتاح الروبوت (للمشرف فقط 🔒)
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAdminAddMemberModal(false)}
+                className="p-1 text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAdminCreateSubscriber} className="space-y-3.5 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] text-slate-300 mb-1 font-semibold">اسم العضو *</label>
+                  <input
+                    type="text"
+                    required
+                    value={adminAddForm.name}
+                    onChange={(e) => setAdminAddForm(p => ({ ...p, name: e.target.value }))}
+                    placeholder="مثال: أحمد علي"
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-slate-800 rounded-lg text-white"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-300 mb-1 font-semibold">الدولة</label>
+                  <select
+                    value={adminAddForm.country}
+                    onChange={(e) => setAdminAddForm(p => ({ ...p, country: e.target.value }))}
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-slate-800 rounded-lg text-white"
+                  >
+                    {COUNTRIES_LIST.map(c => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[11px] text-slate-300 mb-1">معرف التليجرام</label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    value={adminAddForm.telegramUsername}
+                    onChange={(e) => setAdminAddForm(p => ({ ...p, telegramUsername: e.target.value }))}
+                    placeholder="@username"
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-slate-800 rounded-lg text-white font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-300 mb-1">رقم الموبايل</label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    value={adminAddForm.phone}
+                    onChange={(e) => setAdminAddForm(p => ({ ...p, phone: e.target.value }))}
+                    placeholder="+2010..."
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-slate-800 rounded-lg text-white font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-300 mb-1">البريد الإلكتروني</label>
+                  <input
+                    type="email"
+                    dir="ltr"
+                    value={adminAddForm.email}
+                    onChange={(e) => setAdminAddForm(p => ({ ...p, email: e.target.value }))}
+                    placeholder="user@example.com"
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-slate-800 rounded-lg text-white font-mono-num"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] text-slate-300 mb-1">منصة التداول (البروكر)</label>
+                  <select
+                    value={adminAddForm.broker}
+                    onChange={(e) => setAdminAddForm(p => ({ ...p, broker: e.target.value }))}
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-slate-800 rounded-lg text-white"
+                  >
+                    {BROKERS_LIST.map(b => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] text-amber-300 font-semibold mb-1">
+                    رقم حساب البروكر (ID / كلمة مرور العضو)
+                  </label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    value={adminAddForm.brokerAccountId}
+                    onChange={(e) => setAdminAddForm(p => ({ ...p, brokerAccountId: e.target.value }))}
+                    placeholder="مثال: 98451230"
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-amber-500/40 rounded-lg text-white font-mono-num"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[11px] text-emerald-300 font-semibold mb-1">الباقة</label>
+                  <select
+                    value={adminAddForm.planDuration}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      const pl = VIP_PLANS.find(x => x.id === val);
+                      const d = new Date();
+                      d.setDate(d.getDate() + (pl?.days || 30));
+                      setAdminAddForm(p => ({
+                        ...p,
+                        subscriptionType: val === 'quotex_referral_free' ? 'quotex_referral' : 'paid_plan',
+                        planDuration: val,
+                        amountPaid: pl ? pl.price : p.amountPaid,
+                        expiryDate: d.toISOString().split('T')[0]
+                      }));
+                    }}
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-slate-800 rounded-lg text-white"
+                  >
+                    {VIP_PLANS.map(p => (
+                      <option key={p.id} value={p.id}>{p.label} ({p.price}$)</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] text-emerald-400 font-semibold mb-1">المبلغ المحصّل ($)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    dir="ltr"
+                    value={adminAddForm.amountPaid}
+                    onChange={(e) => setAdminAddForm(p => ({ ...p, amountPaid: Number(e.target.value) || 0 }))}
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-emerald-500/40 rounded-lg text-emerald-300 font-mono-num font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-slate-300 mb-1">حالة العضوية</label>
+                  <select
+                    value={adminAddForm.status}
+                    onChange={(e) => {
+                      const nextStatus = e.target.value as 'PENDING' | 'ACTIVE' | 'BANNED';
+                      setAdminAddForm(p => ({
+                        ...p,
+                        status: nextStatus,
+                        robotEnabled: nextStatus === 'ACTIVE' ? p.generateRobotApiKey : false
+                      }));
+                    }}
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-amber-500/40 rounded-lg text-white font-semibold"
+                  >
+                    <option value="ACTIVE">✅ مفعّل VIP</option>
+                    <option value="PENDING">⏳ قيد المراجعة</option>
+                    <option value="BANNED">🚫 محظور</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] text-emerald-400 font-semibold mb-1">تاريخ انتهاء العضوية</label>
+                  <input
+                    type="date"
+                    value={adminAddForm.expiryDate}
+                    onChange={(e) => setAdminAddForm(p => ({ ...p, expiryDate: e.target.value }))}
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-emerald-500/40 rounded-lg text-white font-mono-num"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] text-amber-300 font-semibold mb-1">رابط قناة / دعوة VIP (اختياري)</label>
+                  <input
+                    type="text"
+                    dir="ltr"
+                    value={adminAddForm.activationLink}
+                    onChange={(e) => setAdminAddForm(p => ({ ...p, activationLink: e.target.value }))}
+                    placeholder="https://t.me/+..."
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-slate-800 rounded-lg text-white font-mono-num"
+                  />
+                </div>
+              </div>
+
+              {/* Integrated Robot Key Generation (Admin Only) */}
+              <div className="p-3.5 bg-emerald-950/30 border border-emerald-500/40 rounded-xl space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="flex items-center gap-2 text-xs font-extrabold text-emerald-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={adminAddForm.generateRobotApiKey}
+                      onChange={(e) =>
+                        setAdminAddForm(p => ({
+                          ...p,
+                          generateRobotApiKey: e.target.checked,
+                          robotEnabled: e.target.checked && p.status === 'ACTIVE',
+                          robotApiKey: e.target.checked && !p.robotApiKey ? generateAdminKeyPreview() : p.robotApiKey
+                        }))
+                      }
+                      className="h-4 w-4 accent-emerald-400 rounded cursor-pointer"
+                    />
+                    <span>🔑 توليد مفتاح تشغيل للروبوت العائم لهذا العضو (صلاحية المشرف فقط)</span>
+                  </label>
+                  {adminAddForm.generateRobotApiKey && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAdminAddForm(p => ({ ...p, robotApiKey: generateAdminKeyPreview() }))
+                      }
+                      className="px-2.5 py-1 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold rounded text-[11px] cursor-pointer"
+                    >
+                      🔄 توليد مفتاح جديد
+                    </button>
+                  )}
+                </div>
+
+                {adminAddForm.generateRobotApiKey && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center">
+                    <input
+                      type="text"
+                      dir="ltr"
+                      value={adminAddForm.robotApiKey}
+                      onChange={(e) =>
+                        setAdminAddForm(p => ({ ...p, robotApiKey: e.target.value.toUpperCase() }))
+                      }
+                      className="sm:col-span-2 px-3 py-1.5 bg-[#070A10] border border-amber-500/40 rounded-lg text-amber-300 font-mono-num font-bold text-xs"
+                    />
+                    <div className="flex items-center gap-1.5">
+                      <select
+                        value={adminAddForm.robotDefaultMode}
+                        onChange={(e) =>
+                          setAdminAddForm(p => ({
+                            ...p,
+                            robotDefaultMode: e.target.value === 'MANUAL' ? 'MANUAL' : 'AUTO'
+                          }))
+                        }
+                        className="flex-1 px-2 py-1.5 bg-[#070A10] border border-slate-700 rounded-lg text-white text-[11px]"
+                      >
+                        <option value="AUTO">🤖 آلي</option>
+                        <option value="MANUAL">🖐️ يدوي</option>
+                      </select>
+                      <input
+                        type="number"
+                        min={1}
+                        value={adminAddForm.robotTradeStake}
+                        onChange={(e) =>
+                          setAdminAddForm(p => ({
+                            ...p,
+                            robotTradeStake: Math.max(1, Number(e.target.value) || 5)
+                          }))
+                        }
+                        className="w-16 px-2 py-1.5 bg-[#070A10] border border-slate-700 rounded-lg text-white font-mono-num text-[11px]"
+                        title="قيمة الصفقة ($)"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {adminAddFeedback && (
+                <div
+                  className={`p-2.5 rounded-lg border text-xs font-bold ${
+                    adminAddFeedback.type === 'success'
+                      ? 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
+                      : 'bg-rose-950/70 border-rose-500/50 text-rose-300'
+                  }`}
+                >
+                  {adminAddFeedback.message}
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowAdminAddMemberModal(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded-lg cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreatingAdminMember}
+                  className="px-5 py-2 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg cursor-pointer flex items-center gap-1.5 shadow"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>{isCreatingAdminMember ? 'جاري الإضافة...' : 'تأكيد إضافة العضو'}</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

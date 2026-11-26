@@ -1,5 +1,6 @@
 export interface RobotScriptBuildOptions {
   serverOrigin?: string;
+  fallbackOrigins?: string[];
   apiKey?: string;
   defaultStake?: number;
   defaultMode?: 'AUTO' | 'MANUAL';
@@ -10,11 +11,23 @@ export interface RobotScriptBuildOptions {
 }
 
 export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): string {
-  const safeOrigin = String(opts.serverOrigin || 'https://fx.zadtoo.com')
-    .trim()
-    .replace(/\/+$/, '')
-    .replace(/^(https?:\/\/)ais-dev-/i, '$1ais-pre-')
-    .replace(/['"\\]/g, '') || 'https://fx.zadtoo.com';
+  const cleanOrigin = (val: string) =>
+    String(val || '')
+      .trim()
+      .replace(/\/+$/, '')
+      .replace(/['"\\]/g, '');
+
+  const safeOrigin = cleanOrigin(opts.serverOrigin || '') || 'https://fx.zadtoo.com';
+  const defaultFallbacks = [
+    safeOrigin,
+    ...(Array.isArray(opts.fallbackOrigins) ? opts.fallbackOrigins : []),
+    'https://ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
+    'https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
+    'https://fx.zadtoo.com'
+  ]
+    .map(cleanOrigin)
+    .filter((u, idx, arr) => Boolean(u) && /^https?:\/\//i.test(u) && arr.indexOf(u) === idx);
+
   const escapedApiKey = String(opts.apiKey || '').trim().replace(/['"\\]/g, '');
   const defaultStake = Math.max(1, Number(opts.defaultStake) || 5);
   const defaultMode = opts.defaultMode === 'AUTO' ? 'AUTO' : 'MANUAL';
@@ -24,10 +37,10 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
   const strategyDefault = 'VIP_WITH_MPB';
 
   return `// ==UserScript==
-// @name         ZAD FX Floating Quotex Robot v5.1 (Server Verified)
+// @name         ZAD FX Floating Quotex Robot v5.2 (Server Verified)
 // @namespace    https://fx.zadtoo.com
-// @version      5.1.0
-// @description  روبوت ZAD FX العائم المتصل بسيرفر fx.zadtoo.com — التحقق من العضوية يتم داخل السيرفر فقط وبدون مضاعفات
+// @version      5.2.0
+// @description  روبوت ZAD FX العائم المتصل بالسيرفر — التحقق من العضوية يتم داخل السيرفر فقط وبدون مضاعفات
 // @author       ZAD FX
 // @match        *://qxbroker.com/*
 // @match        *://*.qxbroker.com/*
@@ -35,12 +48,26 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
 // @match        *://*.quotex.io/*
 // @match        *://quotex.com/*
 // @match        *://*.quotex.com/*
+// @match        *://quotex.trade/*
+// @match        *://*.quotex.trade/*
+// @match        *://quotex.site/*
+// @match        *://*.quotex.site/*
 // @match        *://broker-qx.pro/*
 // @match        *://*.broker-qx.pro/*
+// @match        *://broker-qx.site/*
+// @match        *://*.broker-qx.site/*
 // @match        *://market-qx.pro/*
 // @match        *://*.market-qx.pro/*
 // @match        *://market-qx.com/*
 // @match        *://*.market-qx.com/*
+// @match        *://market-qx.site/*
+// @match        *://*.market-qx.site/*
+// @match        *://qx-broker.com/*
+// @match        *://*.qx-broker.com/*
+// @match        *://quotex-broker.com/*
+// @match        *://*.quotex-broker.com/*
+// @match        *://quotex-market.com/*
+// @match        *://*.quotex-market.com/*
 // @match        *://*.zadtoo.com/*
 // @match        *://zadtoo.com/*
 // @match        *://*.run.app/*
@@ -50,9 +77,13 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
 // @grant        GM.xmlHttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_addValueChangeListener
+// @connect      fx.zadtoo.com
 // @connect      *.zadtoo.com
 // @connect      zadtoo.com
 // @connect      *.run.app
+// @connect      ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app
+// @connect      ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app
 // @connect      localhost
 // @connect      127.0.0.1
 // @run-at       document-idle
@@ -63,7 +94,8 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
   if (window.__ZAD_FX_ROBOT_LOADED__) return;
   window.__ZAD_FX_ROBOT_LOADED__ = true;
 
-  const SERVER_URL = '${safeOrigin}'.replace(/^(https?:\\/\\/)ais-dev-/i, '$1ais-pre-').replace(/\\/+$/, '');
+  const SERVER_URL = '${safeOrigin}';
+  const CANDIDATE_ORIGINS = ${JSON.stringify(defaultFallbacks)};
   const DEFAULT_MEMBER_KEY = '${escapedApiKey}';
   const DEFAULT_MODE = '${defaultMode}';
   const DEFAULT_STAKE = ${defaultStake};
@@ -71,6 +103,13 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
   const AUTO_SELECT_PAIR = ${autoPairDefault};
   const AUTO_SET_EXPIRY_M1 = ${autoM1Default};
   const STRATEGY_MODE = '${strategyDefault}';
+
+  const currentHost = String(window.location.hostname || '').toLowerCase();
+  const isWebPlatformHub =
+    currentHost.includes('zadtoo.com') ||
+    currentHost.includes('run.app') ||
+    currentHost === 'localhost' ||
+    currentHost === '127.0.0.1';
 
   function readStore(key, fallback) {
     try {
@@ -102,6 +141,7 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
   if (apiKey && apiKey !== rawStoredKey) writeStore('apiKey', apiKey);
   if (SERVER_URL) writeStore('serverUrl', SERVER_URL);
 
+  let activeServerOrigin = SERVER_URL;
   let tradeMode = readStore('tradeMode', DEFAULT_MODE) === 'AUTO' ? 'AUTO' : 'MANUAL';
   let stakeUsd = Math.max(1, Number(readStore('stakeUsd', DEFAULT_STAKE)) || DEFAULT_STAKE);
   let soundOn = readStore('soundOn', DEFAULT_SOUND) !== false;
@@ -126,6 +166,30 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
   let isQuranPlaying = false;
   let quranAudio = null;
   let testFeedback = '';
+
+  // ZAD FX Hub Bridge: when this userscript is also active inside the open ZAD FX tab,
+  // it silently polls same-origin /api/quotex-robot/feed (with browser cookies) and relays it via GM storage
+  // to the Quotex tab without cluttering the ZAD FX admin/dashboard UI.
+  if (isWebPlatformHub) {
+    const bridgeSync = async () => {
+      const k = String(readStore('apiKey', DEFAULT_MEMBER_KEY) || '').trim();
+      if (!k) return;
+      try {
+        const res = await fetch(window.location.origin + '/api/quotex-robot/feed?apiKey=' + encodeURIComponent(k), {
+          cache: 'no-store'
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) return;
+        const data = await res.json().catch(() => null);
+        if (data && typeof data.authorized === 'boolean' && typeof GM_setValue === 'function') {
+          GM_setValue('zad_robot_live_payload_v5', JSON.stringify({ origin: window.location.origin, ts: Date.now(), data }));
+        }
+      } catch (_) {}
+    };
+    bridgeSync();
+    setInterval(bridgeSync, 1500);
+    return;
+  }
 
   function playTone(type) {
     if (!soundOn) return;
@@ -199,7 +263,7 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
           url,
           headers: Object.assign({ Accept: 'application/json' }, body ? { 'Content-Type': 'application/json' } : {}),
           data: body ? JSON.stringify(body) : undefined,
-          timeout: 8000,
+          timeout: 7000,
           onload: (resp) => resolve(parseSafe(resp.status, resp.responseText)),
           onerror: () => resolve({ ok: false, status: 0, data: null, error: 'تعذر الوصول للخادم' }),
           ontimeout: () => resolve({ ok: false, status: 0, data: null, error: 'انتهت مهلة الاتصال بالسيرفر' })
@@ -210,7 +274,7 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
           url,
           headers: Object.assign({ Accept: 'application/json' }, body ? { 'Content-Type': 'application/json' } : {}),
           data: body ? JSON.stringify(body) : undefined,
-          timeout: 8000,
+          timeout: 7000,
           onload: (resp) => resolve(parseSafe(resp.status, resp.responseText)),
           onerror: () => resolve({ ok: false, status: 0, data: null, error: 'تعذر الوصول للخادم' }),
           ontimeout: () => resolve({ ok: false, status: 0, data: null, error: 'انتهت مهلة الاتصال بالسيرفر' })
@@ -218,12 +282,22 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
       } else {
         fetch(url, {
           method: method || 'GET',
+          mode: 'cors',
+          cache: 'no-store',
           headers: body ? { 'Content-Type': 'application/json' } : undefined,
           body: body ? JSON.stringify(body) : undefined
         })
           .then(async (r) => parseSafe(r.status, await r.text()))
           .then(resolve)
-          .catch(() => resolve({ ok: false, status: 0, data: null, error: 'تعذر الاتصال بالشبكة' }));
+          .catch(() =>
+            resolve({
+              ok: false,
+              status: 0,
+              isFetchCorsOrNetwork: true,
+              data: null,
+              error: 'تعذر الاتصال: تأكد من تشغيل السكربت داخل إضافة Tampermonkey'
+            })
+          );
       }
     });
   }
@@ -392,6 +466,54 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
     return String(str || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
+  function applyFeedPayload(data, originUsed) {
+    if (!data || typeof data.authorized !== 'boolean') return;
+    if (originUsed) activeServerOrigin = originUsed;
+    lastFeed = data;
+    lastConnError = data.authorized ? '' : (data.error || 'الحساب غير مصرح له بتشغيل الروبوت');
+
+    if (typeof data.serverEpochMs === 'number') {
+      serverOffsetMs = data.serverEpochMs - Date.now();
+    }
+
+    if (data.ok && data.authorized && data.activeSignal) {
+      const sig = data.activeSignal;
+      if (sig.status === 'PENDING') {
+        if (lastAlertedId !== sig.id) {
+          lastAlertedId = sig.id;
+          playTone('signal');
+          clickPairOnQuotex(sig.asset);
+          ensureM1ExpiryOnQuotex();
+        }
+        const nowSec = Math.floor((Date.now() + serverOffsetMs) / 1000);
+        const diffSec = sig.targetEntryTimestamp ? (sig.targetEntryTimestamp - nowSec) : (sig.secondsUntilEntry ?? 0);
+        if (tradeMode === 'AUTO' && !executedSignals.has(sig.id) && diffSec <= 0 && diffSec >= -4) {
+          executedSignals.add(sig.id);
+          clickPairOnQuotex(sig.asset);
+          ensureM1ExpiryOnQuotex();
+          setTimeout(() => {
+            const clicked = clickTradeButton(sig.direction);
+            if (clicked) playTone('open');
+          }, 120);
+        }
+      } else if ((sig.status === 'WIN' || sig.status === 'LOSS') && !reportedOutcomes.has(sig.id)) {
+        reportedOutcomes.add(sig.id);
+        if (sig.status === 'WIN') {
+          winsCount += 1;
+          writeStore('winsCount', winsCount);
+          playTone('win');
+        } else {
+          lossesCount += 1;
+          writeStore('lossesCount', lossesCount);
+          playTone('loss');
+        }
+        if (executedSignals.has(sig.id)) {
+          requestJson(\`\${activeServerOrigin}/api/quotex-robot/report-trade\`, 'POST', { apiKey, outcome: sig.status }).catch(() => {});
+        }
+      }
+    }
+  }
+
   function renderHud() {
     const feed = lastFeed;
     const isAuth = Boolean(feed && feed.ok && feed.authorized);
@@ -403,6 +525,7 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
 
     const callBtnDetected = Boolean(findTradeButton('CALL'));
     const putBtnDetected = Boolean(findTradeButton('PUT'));
+    const shortOriginHost = String(activeServerOrigin || 'fx.zadtoo.com').replace(/^https?:\\/\\//i, '').split('/')[0];
 
     let statusLineHtml = '';
     if (!apiKey) {
@@ -410,11 +533,11 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
     } else if (lastConnError && !isAuth) {
       statusLineHtml = \`<span style="color:#f87171;">🔴 \${esc(lastConnError)}</span>\`;
     } else if (!feed) {
-      statusLineHtml = '<span style="color:#fbbf24;">📡 جاري الاتصال بـ fx.zadtoo.com...</span>';
+      statusLineHtml = \`<span style="color:#fbbf24;">📡 جاري الاتصال بالسيرفر...</span>\`;
     } else if (!isAuth) {
       statusLineHtml = \`<span style="color:#f87171;">🔴 \${esc(feed.error || 'غير مصرح له')}</span>\`;
     } else {
-      statusLineHtml = '<span style="color:#34d399;">🟢 متصل بسيرفر fx.zadtoo.com</span>';
+      statusLineHtml = \`<span style="color:#34d399;">🟢 متصل بالسيرفر (\${esc(shortOriginHost.slice(0, 22))})</span>\`;
     }
 
     let signalHtml = '';
@@ -424,6 +547,7 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
       signalHtml = \`
         <div style="padding:9px;background:#450a0a;border:1px solid #ef4444;border-radius:10px;text-align:center;color:#fecaca;font-size:10px;line-height:1.5;">
           <div>❌ \${esc(lastConnError)}</div>
+          <div style="margin-top:4px;color:#fde68a;font-size:9px;">نصيحة: ثبّت السكربت عبر Tampermonkey وأبقِ تبويب المنصة مفتوحاً للمزامنة الفورية.</div>
         </div>\`;
     } else if (!feed) {
       signalHtml = '<div style="padding:10px;background:#09121d;border:1px solid #334155;border-radius:10px;text-align:center;color:#94a3b8;font-size:10.5px;">📡 جاري الاتصال والمزامنة مع السيرفر...</div>';
@@ -532,7 +656,7 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
         <div style="display:flex;align-items:center;gap:5px;min-width:0;">
           <span style="width:7px;height:7px;border-radius:999px;background:\${isAuth ? '#10b981' : (lastConnError ? '#ef4444' : '#f59e0b')};flex-shrink:0;box-shadow:0 0 6px \${isAuth ? '#10b981' : '#f59e0b'};"></span>
           <strong style="font-size:11px;color:#fff;white-space:nowrap;">روبوت ZAD FX</strong>
-          <span style="padding:1px 4px;border-radius:4px;background:#78350f;border:1px solid #b45309;color:#fde68a;font-size:8.5px;font-weight:800;">v5.0</span>
+          <span style="padding:1px 4px;border-radius:4px;background:#78350f;border:1px solid #b45309;color:#fde68a;font-size:8.5px;font-weight:800;">v5.2</span>
           <span style="padding:1px 4px;border-radius:4px;background:#0c4a6e;border:1px solid #0369a1;color:#7dd3fc;font-size:8.5px;font-weight:700;">Quotex</span>
         </div>
         <div style="display:flex;align-items:center;gap:3px;flex-shrink:0;">
@@ -698,65 +822,70 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
       return;
     }
 
-    let data = null;
-    const baseUrl = SERVER_URL || 'https://fx.zadtoo.com';
-    const feedUrl = \`\${baseUrl}/api/quotex-robot/feed?apiKey=\${encodeURIComponent(apiKey)}\`;
-    const resp = await requestJson(feedUrl, 'GET');
-    if (resp && resp.data && typeof resp.data.authorized === 'boolean') {
-      data = resp.data;
+    const orderedOrigins = [
+      activeServerOrigin,
+      ...CANDIDATE_ORIGINS.filter(o => o !== activeServerOrigin)
+    ].filter(Boolean);
+
+    let resolvedData = null;
+    let resolvedOrigin = activeServerOrigin;
+    let lastErrorSeen = '';
+
+    for (const origin of orderedOrigins) {
+      const feedUrl = \`\${origin}/api/quotex-robot/feed?apiKey=\${encodeURIComponent(apiKey)}\`;
+      const resp = await requestJson(feedUrl, 'GET');
+      if (resp && resp.data && typeof resp.data.authorized === 'boolean') {
+        resolvedData = resp.data;
+        resolvedOrigin = origin;
+        break;
+      }
+      if (resp && resp.error && resp.error !== 'HTML_REDIRECT') {
+        lastErrorSeen = resp.error;
+      }
     }
 
-    if (data && (data.ok || data.authorized === false)) {
-      lastFeed = data;
-      lastConnError = data.authorized ? '' : (data.error || 'الحساب غير مصرح له بتشغيل الروبوت');
-
-      if (typeof data.serverEpochMs === 'number') {
-        serverOffsetMs = data.serverEpochMs - Date.now();
-      }
-
-      if (data.ok && data.authorized && data.activeSignal) {
-        const sig = data.activeSignal;
-        if (sig.status === 'PENDING') {
-          if (lastAlertedId !== sig.id) {
-            lastAlertedId = sig.id;
-            playTone('signal');
-            clickPairOnQuotex(sig.asset);
-            ensureM1ExpiryOnQuotex();
-          }
-          const nowSec = Math.floor((Date.now() + serverOffsetMs) / 1000);
-          const diffSec = sig.targetEntryTimestamp ? (sig.targetEntryTimestamp - nowSec) : (sig.secondsUntilEntry ?? 0);
-          if (tradeMode === 'AUTO' && !executedSignals.has(sig.id) && diffSec <= 0 && diffSec >= -4) {
-            executedSignals.add(sig.id);
-            clickPairOnQuotex(sig.asset);
-            ensureM1ExpiryOnQuotex();
-            setTimeout(() => {
-              const clicked = clickTradeButton(sig.direction);
-              if (clicked) playTone('open');
-            }, 120);
-          }
-        } else if ((sig.status === 'WIN' || sig.status === 'LOSS') && !reportedOutcomes.has(sig.id)) {
-          reportedOutcomes.add(sig.id);
-          if (sig.status === 'WIN') {
-            winsCount += 1;
-            writeStore('winsCount', winsCount);
-            playTone('win');
-          } else {
-            lossesCount += 1;
-            writeStore('lossesCount', lossesCount);
-            playTone('loss');
-          }
-          if (executedSignals.has(sig.id)) {
-            requestJson(\`\${baseUrl}/api/quotex-robot/report-trade\`, 'POST', { apiKey, outcome: sig.status }).catch(() => {});
+    if (resolvedData) {
+      applyFeedPayload(resolvedData, resolvedOrigin);
+    } else {
+      // Fallback: check GM cross-tab bridge payload if open ZAD FX tab wrote it within last 12 seconds
+      let usedBridge = false;
+      try {
+        if (typeof GM_getValue === 'function') {
+          const bridgeRaw = GM_getValue('zad_robot_live_payload_v5', '');
+          if (bridgeRaw) {
+            const parsedBridge = JSON.parse(bridgeRaw);
+            if (parsedBridge && parsedBridge.data && Date.now() - (parsedBridge.ts || 0) < 12000) {
+              applyFeedPayload(parsedBridge.data, parsedBridge.origin || activeServerOrigin);
+              usedBridge = true;
+            }
           }
         }
+      } catch (_) {}
+      if (!usedBridge) {
+        lastConnError = lastErrorSeen || 'تعذر الاتصال بالسيرفر للتحقق من الصلاحية';
       }
-    } else {
-      lastConnError = (resp && resp.error) || 'تعذر الاتصال بالسيرفر للتحقق من الصلاحية';
     }
 
     const activeEl = document.activeElement;
     const isTypingKey = showKeyPanel && activeEl && activeEl.id === 'zad-inp-key';
     if (!hidden && !isTypingKey) renderHud();
+  }
+
+  if (typeof GM_addValueChangeListener === 'function') {
+    try {
+      GM_addValueChangeListener('zad_robot_live_payload_v5', (_name, _oldVal, newVal) => {
+        try {
+          if (!newVal) return;
+          const parsedBridge = JSON.parse(newVal);
+          if (parsedBridge && parsedBridge.data) {
+            applyFeedPayload(parsedBridge.data, parsedBridge.origin || activeServerOrigin);
+            const activeEl = document.activeElement;
+            const isTypingKey = showKeyPanel && activeEl && activeEl.id === 'zad-inp-key';
+            if (!hidden && !isTypingKey) renderHud();
+          }
+        } catch (_) {}
+      });
+    } catch (_) {}
   }
 
   renderHud();

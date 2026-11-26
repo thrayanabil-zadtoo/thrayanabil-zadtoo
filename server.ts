@@ -222,9 +222,14 @@ function isApprovedBrokerOrAppOrigin(origin: string | undefined): boolean {
       h === 'qxbroker.com' || h.endsWith('.qxbroker.com') ||
       h === 'quotex.io' || h.endsWith('.quotex.io') ||
       h === 'quotex.com' || h.endsWith('.quotex.com') ||
+      h === 'quotex.trade' || h.endsWith('.quotex.trade') ||
+      h === 'quotex.site' || h.endsWith('.quotex.site') ||
       h === 'broker-qx.pro' || h.endsWith('.broker-qx.pro') ||
+      h === 'broker-qx.site' || h.endsWith('.broker-qx.site') ||
       h === 'market-qx.pro' || h.endsWith('.market-qx.pro') ||
       h === 'market-qx.com' || h.endsWith('.market-qx.com') ||
+      h === 'market-qx.site' || h.endsWith('.market-qx.site') ||
+      h === 'qx-broker.com' || h.endsWith('.qx-broker.com') ||
       h === 'quotex-broker.com' || h.endsWith('.quotex-broker.com') ||
       h === 'quotex-market.com' || h.endsWith('.quotex-market.com') ||
       h === 'qxplus.com' || h.endsWith('.qxplus.com') ||
@@ -614,6 +619,8 @@ export interface TelegramBotUser {
   status: 'ACTIVE' | 'SUSPENDED' | 'BLOCKED';
   membershipType: 'NONE' | 'FREE_REFERRAL' | 'PAID_VIP';
   brokerId?: string;
+  robotApiKey?: string;
+  robotExpiryDate?: string;
   notes?: string;
   countryLocked?: boolean;
   registeredAt: string;
@@ -2007,7 +2014,7 @@ function applyParsedState(parsed: Partial<PersistedState>) {
         amountPaid: typeof sub.amountPaid === 'number' ? sub.amountPaid : 0,
         paymentMethod: sub.paymentMethod || 'محافظ إلكترونية',
         status: sub.status || 'PENDING',
-        robotApiKey: sub.robotApiKey || generateMemberRobotApiKey(sub.id),
+        robotApiKey: sub.robotApiKey || (sub.status === 'ACTIVE' ? generateMemberRobotApiKey(sub.id) : ''),
         robotExpiryDate: sub.robotExpiryDate || sub.expiryDate || '',
         robotEnabled: sub.robotEnabled !== undefined ? Boolean(sub.robotEnabled) : sub.status === 'ACTIVE',
         robotDefaultMode: sub.robotDefaultMode === 'MANUAL' ? 'MANUAL' : 'AUTO',
@@ -8951,7 +8958,7 @@ async function startServer() {
       status: 'PENDING',
       activationLink: '',
       expiryDate: '',
-      robotApiKey: generateMemberRobotApiKey(newSubId),
+      robotApiKey: '',
       robotExpiryDate: '',
       robotEnabled: false,
       robotDefaultMode: 'AUTO',
@@ -9012,6 +9019,70 @@ async function startServer() {
     res.json({ ok: true, subscriber: found });
   });
 
+  // Admin Only: Add a new Subscriber/Member with optional Robot API Key generation
+  app.post('/api/subscribers', requireAdminAuth, async (req, res) => {
+    const b = req.body || {};
+    const cleanName = String(b.name || '').trim().slice(0, 120);
+    if (!cleanName) {
+      return res.status(400).json({ ok: false, error: 'اسم العضو مطلوب' });
+    }
+
+    const cleanStatus: 'PENDING' | 'ACTIVE' | 'BANNED' =
+      b.status === 'PENDING' || b.status === 'BANNED' ? b.status : 'ACTIVE';
+    const newSubId = `sub-${Date.now()}`;
+    const defaultExp = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const cleanExpiry = String(b.expiryDate || b.robotExpiryDate || (cleanStatus === 'ACTIVE' ? defaultExp : '')).trim();
+    const cleanRobotExp = String(b.robotExpiryDate || cleanExpiry).trim();
+    const shouldGenerateKey =
+      b.generateRobotApiKey === true ||
+      (b.generateRobotApiKey !== false && Boolean(String(b.robotApiKey || '').trim()));
+
+    const rawProvidedKey = String(b.robotApiKey || '').replace(/[^A-Za-z0-9_-]/g, '').trim().toUpperCase();
+    let finalKey = '';
+    if (shouldGenerateKey) {
+      finalKey =
+        rawProvidedKey.length >= 6 &&
+        !subscribersStore.some(s => (s.robotApiKey || '').toUpperCase() === rawProvidedKey)
+          ? rawProvidedKey
+          : generateMemberRobotApiKey(newSubId);
+    }
+
+    const isRef = b.subscriptionType === 'quotex_referral' || b.planDuration === 'quotex_referral_free';
+    const newSub: VipSubscriber = {
+      id: newSubId,
+      name: cleanName,
+      telegramUsername: String(b.telegramUsername || '').trim().slice(0, 100),
+      country: String(b.country || 'مصر 🇪🇬').trim().slice(0, 80),
+      email: String(b.email || '').trim().slice(0, 150),
+      phone: String(b.phone || '').trim().slice(0, 50),
+      broker: String(b.broker || 'Quotex (كوتيكس)').trim().slice(0, 80),
+      brokerAccountId: String(b.brokerAccountId || '').trim().slice(0, 80),
+      subscriptionType: isRef ? 'quotex_referral' : 'paid_plan',
+      quotexDepositConfirmed: Boolean(b.quotexDepositConfirmed),
+      planDuration: String(b.planDuration || (isRef ? 'quotex_referral_free' : '1_month')).trim(),
+      amountPaid: isRef ? 0 : Math.max(0, Number(b.amountPaid) || 0),
+      paymentMethod: String(b.paymentMethod || 'تفعيل مباشر من المشرف').trim().slice(0, 120),
+      status: cleanStatus,
+      activationLink: String(b.activationLink || '').trim().slice(0, 300),
+      expiryDate: cleanExpiry,
+      robotApiKey: finalKey,
+      robotExpiryDate: cleanRobotExp,
+      robotEnabled: b.robotEnabled !== undefined ? Boolean(b.robotEnabled) : cleanStatus === 'ACTIVE' && Boolean(finalKey),
+      robotDefaultMode: b.robotDefaultMode === 'MANUAL' ? 'MANUAL' : 'AUTO',
+      robotTradeStake: Math.max(1, Number(b.robotTradeStake) || 5),
+      robotWins: 0,
+      robotLosses: 0,
+      messages: [],
+      createdAt: new Date().toISOString()
+    };
+
+    subscribersStore.unshift(newSub);
+    if (subscribersStore.length > 250) subscribersStore.pop();
+    await saveState();
+
+    res.json({ ok: true, subscriber: newSub });
+  });
+
   // Admin: Edit subscriber details, status (ACTIVE / PENDING / BANNED), expiryDate, activationLink, brokerAccountId, planDuration, amountPaid, paymentMethod, and Quotex Robot fields
   app.patch('/api/subscribers/:id', requireAdminAuth, async (req, res) => {
     const sub = subscribersStore.find(s => s.id === req.params.id);
@@ -9043,6 +9114,7 @@ async function startServer() {
       robotWins,
       robotLosses,
       regenerateRobotApiKey,
+      generateRobotApiKey,
       sendActivationMessage
     } = req.body;
 
@@ -9060,10 +9132,21 @@ async function startServer() {
     if (paymentMethod !== undefined) sub.paymentMethod = String(paymentMethod).trim();
     if (status !== undefined) sub.status = status;
     if (activationLink !== undefined) sub.activationLink = String(activationLink).trim();
-    if (expiryDate !== undefined) sub.expiryDate = String(expiryDate).trim();
-    if (robotApiKey !== undefined) sub.robotApiKey = String(robotApiKey).trim();
-    if (regenerateRobotApiKey) sub.robotApiKey = generateMemberRobotApiKey(sub.id);
-    if (!sub.robotApiKey) sub.robotApiKey = generateMemberRobotApiKey(sub.id);
+    if (expiryDate !== undefined) {
+      sub.expiryDate = String(expiryDate).trim();
+      if (robotExpiryDate === undefined) {
+        sub.robotExpiryDate = sub.expiryDate;
+      }
+    }
+    if (robotApiKey !== undefined) {
+      sub.robotApiKey = String(robotApiKey).replace(/[^A-Za-z0-9_-]/g, '').trim().toUpperCase();
+    }
+    if (regenerateRobotApiKey || generateRobotApiKey) {
+      sub.robotApiKey = generateMemberRobotApiKey(sub.id);
+      if (sub.robotEnabled === undefined) sub.robotEnabled = true;
+    } else if (sub.status === 'ACTIVE' && sub.robotEnabled !== false && !sub.robotApiKey) {
+      sub.robotApiKey = generateMemberRobotApiKey(sub.id);
+    }
     if (robotExpiryDate !== undefined) sub.robotExpiryDate = String(robotExpiryDate).trim();
     if (robotEnabled !== undefined) sub.robotEnabled = Boolean(robotEnabled);
     if (robotDefaultMode === 'AUTO' || robotDefaultMode === 'MANUAL') sub.robotDefaultMode = robotDefaultMode;
@@ -9076,6 +9159,7 @@ async function startServer() {
     if (sendActivationMessage && sub.activationLink) {
       sub.status = 'ACTIVE';
       if (sub.robotEnabled === undefined) sub.robotEnabled = true;
+      if (!sub.robotApiKey) sub.robotApiKey = generateMemberRobotApiKey(sub.id);
       if (!sub.robotExpiryDate && sub.expiryDate) sub.robotExpiryDate = sub.expiryDate;
       sub.messages.push({
         id: `msg-${Date.now()}`,
@@ -9373,14 +9457,26 @@ async function startServer() {
   app.get('/api/quotex-robot/admin-script', requireAdminAuth, (req, res) => {
     const host = req.get('host') || 'fx.zadtoo.com';
     const proto = host.includes('localhost') || host.includes('127.0.0.1') ? 'http' : 'https';
-    const rawOrigin = String(req.query.serverOrigin || `${proto}://${host}`).trim().replace(/\/+$/, '');
-    const serverOrigin = isApprovedBrokerOrAppOrigin(rawOrigin) ? rawOrigin : `${proto}://${host}`;
+    const envOrigin = String(process.env.APP_URL || '').trim().replace(/\/+$/, '');
+    const requestOrigin = `${proto}://${host}`.replace(/\/+$/, '');
+    const rawOrigin = String(req.query.serverOrigin || envOrigin || requestOrigin).trim().replace(/\/+$/, '');
+    const serverOrigin = isApprovedBrokerOrAppOrigin(rawOrigin) ? rawOrigin : (envOrigin || requestOrigin);
+    const fallbackOrigins = [
+      serverOrigin,
+      envOrigin,
+      requestOrigin,
+      'https://ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
+      'https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
+      'https://fx.zadtoo.com'
+    ].filter((u, idx, arr) => Boolean(u) && /^https?:\/\//i.test(u) && arr.indexOf(u) === idx);
+
     const requestedKey = String(req.query.apiKey || '').replace(/[^A-Za-z0-9_-]/g, '').trim();
     const firstActiveSub = subscribersStore.find(s => s.status === 'ACTIVE' && s.robotEnabled !== false && s.robotApiKey);
     const embeddedApiKey = requestedKey || firstActiveSub?.robotApiKey || '';
 
     const script = buildFloatingQuotexRobotScript({
       serverOrigin,
+      fallbackOrigins,
       apiKey: embeddedApiKey,
       defaultStake: robotSettings.defaultStakeUsd || 5,
       defaultMode: robotSettings.defaultMode || 'MANUAL',
@@ -9393,8 +9489,9 @@ async function startServer() {
     res.json({
       ok: true,
       script,
-      version: robotSettings.version || 'v5.0.2',
+      version: 'v5.2.0',
       serverOrigin,
+      fallbackOrigins,
       embeddedApiKey: embeddedApiKey || 'غير مضمّن'
     });
   });
@@ -11687,9 +11784,74 @@ async function startServer() {
     res.json({ ok: true, users: telegramBotUsersStore });
   });
 
+  const syncTelegramUserRobotKeyToSubscriber = (
+    user: TelegramBotUser,
+    keyExpiryDate?: string,
+    providedKey?: string
+  ): { robotApiKey: string; robotExpiryDate: string } => {
+    const defaultExp = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const cleanExp = String(keyExpiryDate || user.robotExpiryDate || defaultExp).trim() || defaultExp;
+    const cleanProvidedKey = String(providedKey || '').replace(/[^A-Za-z0-9_-]/g, '').trim().toUpperCase();
+    const existingSub = subscribersStore.find(
+      s =>
+        (user.robotApiKey && (s.robotApiKey || '').toUpperCase() === user.robotApiKey.toUpperCase()) ||
+        (user.brokerId && s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === user.brokerId.trim().toUpperCase()) ||
+        (user.email && s.email && s.email.trim().toLowerCase() === user.email.trim().toLowerCase()) ||
+        (user.username && s.telegramUsername && s.telegramUsername.trim().toLowerCase() === user.username.trim().toLowerCase())
+    );
+
+    const subId = existingSub ? existingSub.id : `sub-${Date.now()}`;
+    const finalKey = cleanProvidedKey.length >= 6 ? cleanProvidedKey : generateMemberRobotApiKey(subId);
+    const subStatus: 'ACTIVE' | 'PENDING' | 'BANNED' =
+      user.status === 'BLOCKED' ? 'BANNED' : user.status === 'SUSPENDED' ? 'PENDING' : 'ACTIVE';
+
+    if (existingSub) {
+      existingSub.robotApiKey = finalKey;
+      existingSub.robotExpiryDate = cleanExp;
+      existingSub.expiryDate = existingSub.expiryDate || cleanExp;
+      existingSub.robotEnabled = subStatus === 'ACTIVE';
+      existingSub.status = subStatus;
+      if (user.brokerId && !existingSub.brokerAccountId) existingSub.brokerAccountId = user.brokerId;
+      if (user.name) existingSub.name = user.name;
+    } else {
+      const newSub: VipSubscriber = {
+        id: subId,
+        name: user.name || 'عضو تليجرام',
+        telegramUsername: user.username || '',
+        country: user.country || 'مصر 🇪🇬',
+        email: user.email || '',
+        phone: user.telegramChatId || '',
+        broker: 'Quotex (كوتيكس)',
+        brokerAccountId: user.brokerId || '',
+        subscriptionType: user.membershipType === 'FREE_REFERRAL' ? 'quotex_referral' : 'paid_plan',
+        planDuration: user.membershipType === 'FREE_REFERRAL' ? 'quotex_referral_free' : '1_month',
+        amountPaid: user.membershipType === 'PAID_VIP' ? 30 : 0,
+        paymentMethod: 'عضو بوت تليجرام',
+        status: subStatus,
+        activationLink: '',
+        expiryDate: cleanExp,
+        robotApiKey: finalKey,
+        robotExpiryDate: cleanExp,
+        robotEnabled: subStatus === 'ACTIVE',
+        robotDefaultMode: 'AUTO',
+        robotTradeStake: 5,
+        robotWins: 0,
+        robotLosses: 0,
+        messages: [],
+        createdAt: new Date().toISOString()
+      };
+      subscribersStore.unshift(newSub);
+      if (subscribersStore.length > 250) subscribersStore.pop();
+    }
+
+    user.robotApiKey = finalKey;
+    user.robotExpiryDate = cleanExp;
+    return { robotApiKey: finalKey, robotExpiryDate: cleanExp };
+  };
+
   app.post('/api/telegram-bot/users', requireAdminAuth, async (req, res) => {
     try {
-      const b = req.body;
+      const b = req.body || {};
       const newUser: TelegramBotUser = {
         id: `tgu-${Date.now()}`,
         telegramChatId: String(b.telegramChatId || '').trim(),
@@ -11706,6 +11868,9 @@ async function startServer() {
         registeredAt: new Date().toISOString(),
         lastInteractionAt: new Date().toISOString()
       };
+      if (b.generateRobotKey || String(b.robotApiKey || '').trim().length >= 6) {
+        syncTelegramUserRobotKeyToSubscriber(newUser, b.robotKeyExpiryDate || b.robotExpiryDate, b.robotApiKey);
+      }
       telegramBotUsersStore.unshift(newUser);
       await saveState();
       res.json({ ok: true, user: newUser });
@@ -11721,11 +11886,33 @@ async function startServer() {
       if (idx === -1) {
         return res.status(404).json({ ok: false, error: 'User not found' });
       }
-      telegramBotUsersStore[idx] = {
+      const b = req.body || {};
+      const { generateRobotKey, robotKeyExpiryDate, ...restBody } = b;
+      const updatedUser: TelegramBotUser = {
         ...telegramBotUsersStore[idx],
-        ...req.body,
+        ...restBody,
         id
       };
+      if (generateRobotKey) {
+        syncTelegramUserRobotKeyToSubscriber(updatedUser, robotKeyExpiryDate || b.robotExpiryDate);
+      } else if (updatedUser.robotApiKey) {
+        const linkedSub = subscribersStore.find(
+          s => (s.robotApiKey || '').toUpperCase() === updatedUser.robotApiKey!.toUpperCase()
+        );
+        if (linkedSub) {
+          if (robotKeyExpiryDate || b.robotExpiryDate) {
+            const exp = String(robotKeyExpiryDate || b.robotExpiryDate).trim();
+            updatedUser.robotExpiryDate = exp;
+            linkedSub.robotExpiryDate = exp;
+            linkedSub.expiryDate = exp;
+          }
+          linkedSub.status = updatedUser.status === 'BLOCKED' ? 'BANNED' : updatedUser.status === 'SUSPENDED' ? 'PENDING' : 'ACTIVE';
+          linkedSub.robotEnabled = updatedUser.status === 'ACTIVE';
+          if (updatedUser.name) linkedSub.name = updatedUser.name;
+          if (updatedUser.brokerId) linkedSub.brokerAccountId = updatedUser.brokerId;
+        }
+      }
+      telegramBotUsersStore[idx] = updatedUser;
       await saveState();
       res.json({ ok: true, user: telegramBotUsersStore[idx] });
     } catch (err: any) {

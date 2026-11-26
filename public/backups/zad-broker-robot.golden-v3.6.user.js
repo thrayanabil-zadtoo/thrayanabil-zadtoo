@@ -20,6 +20,12 @@
 // @match        *://quotex-market.com/*
 // @match        *://*.quotex.com/*
 // @match        *://quotex.com/*
+// @match        *://*.quotex.trade/*
+// @match        *://quotex.trade/*
+// @match        *://*.quotex.site/*
+// @match        *://quotex.site/*
+// @match        *://*.qx-broker.com/*
+// @match        *://qx-broker.com/*
 // @match        *://*.qxplus.com/*
 // @match        *://qxplus.com/*
 // @match        *://*.qx-market.com/*
@@ -48,6 +54,9 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
 // @connect      *.run.app
+// @connect      ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app
+// @connect      ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app
+// @connect      fx.zadtoo.com
 // @connect      *.zadtoo.com
 // @connect      zadtoo.com
 // @connect      localhost
@@ -2761,38 +2770,57 @@
       return;
     }
 
-    const feedUrl = API_BASE + "/api/quotex-robot/feed?apiKey=" + encodeURIComponent(MEMBER_IDENTIFIER);
+    const candidateOrigins = [API_BASE, ...KNOWN_ORIGINS].filter((u, idx, arr) => u && arr.indexOf(u) === idx);
+    const tryOrigin = (idx) => {
+      if (idx >= candidateOrigins.length) return;
+      const base = candidateOrigins[idx];
+      const feedUrl = base + "/api/quotex-robot/feed?apiKey=" + encodeURIComponent(MEMBER_IDENTIFIER);
 
-    if (typeof fetch === "function") {
-      const reqStart = Date.now();
-      fetch(feedUrl, { mode: "cors", cache: "no-store" })
-        .then(function(r) { return r.json().catch(() => null); })
-        .then(function(data) {
-          if (data && (data.ok || data.authorized === false || data.error)) {
-            processRobotPayload(data, "server_fetch", reqStart);
-          }
-        })
-        .catch(function() {});
-    }
-
-    if (typeof GM_xmlhttpRequest === "function") {
-      const gmStart = Date.now();
-      GM_xmlhttpRequest({
-        method: "GET",
-        url: feedUrl,
-        timeout: 8000,
-        onload: function(response) {
-          try {
-            const data = JSON.parse(response.responseText);
-            if (data && (data.ok || data.authorized === false || data.error)) {
-              processRobotPayload(data, "server_gm", gmStart);
+      if (typeof GM_xmlhttpRequest === "function") {
+        const gmStart = Date.now();
+        GM_xmlhttpRequest({
+          method: "GET",
+          url: feedUrl,
+          timeout: 7000,
+          onload: function(response) {
+            const raw = String(response.responseText || "").trim();
+            if (raw && !raw.startsWith("<")) {
+              try {
+                const data = JSON.parse(raw);
+                if (data && (data.ok || data.authorized === false || data.error)) {
+                  API_BASE = base;
+                  processRobotPayload(data, "server_gm", gmStart);
+                  return;
+                }
+              } catch(e) {}
             }
-          } catch(e) {}
-        },
-        onerror: function() {},
-        ontimeout: function() {}
-      });
-    }
+            tryOrigin(idx + 1);
+          },
+          onerror: function() { tryOrigin(idx + 1); },
+          ontimeout: function() { tryOrigin(idx + 1); }
+        });
+      } else if (typeof fetch === "function") {
+        const reqStart = Date.now();
+        fetch(feedUrl, { mode: "cors", cache: "no-store" })
+          .then(function(r) { return r.text(); })
+          .then(function(raw) {
+            const trimmed = String(raw || "").trim();
+            if (!trimmed || trimmed.startsWith("<")) {
+              tryOrigin(idx + 1);
+              return;
+            }
+            const data = JSON.parse(trimmed);
+            if (data && (data.ok || data.authorized === false || data.error)) {
+              API_BASE = base;
+              processRobotPayload(data, "server_fetch", reqStart);
+            } else {
+              tryOrigin(idx + 1);
+            }
+          })
+          .catch(function() { tryOrigin(idx + 1); });
+      }
+    };
+    tryOrigin(0);
   }
 
   function scheduleNextApiPoll() {

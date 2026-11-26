@@ -49,6 +49,8 @@ export interface TelegramBotUser {
   status: 'ACTIVE' | 'SUSPENDED' | 'BLOCKED';
   membershipType: 'NONE' | 'FREE_REFERRAL' | 'PAID_VIP';
   brokerId?: string;
+  robotApiKey?: string;
+  robotExpiryDate?: string;
   notes?: string;
   countryLocked?: boolean;
   registeredAt: string;
@@ -223,9 +225,16 @@ function mergeBotConfig(serverCfg: any): TelegramBotConfig {
 
 interface TelegramBotManagerProps {
   adminToken?: string;
+  isAdmin?: boolean;
 }
 
-export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminToken }) => {
+export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminToken, isAdmin = true }) => {
+  const canAdminManageKeys = Boolean(adminToken) && isAdmin !== false;
+  const defaultKeyExpiryStr = () => {
+    const d = new Date();
+    d.setDate(d.getDate() + 30);
+    return d.toISOString().split('T')[0];
+  };
   const [activeTab, setActiveTab] = useState<'users' | 'settings' | 'broadcast' | 'simulator'>('users');
   const [users, setUsers] = useState<TelegramBotUser[]>([]);
   const [config, setConfig] = useState<TelegramBotConfig>(EMPTY_CONFIG);
@@ -235,6 +244,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
   const [tokenTestResult, setTokenTestResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
 
   // Filters & Search
   const [searchQuery, setSearchQuery] = useState('');
@@ -244,7 +254,11 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
 
   // Modals
   const [editingUser, setEditingUser] = useState<TelegramBotUser | null>(null);
+  const [editGenerateRobotKey, setEditGenerateRobotKey] = useState(false);
+  const [editRobotKeyExpiry, setEditRobotKeyExpiry] = useState(defaultKeyExpiryStr);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [addGenerateRobotKey, setAddGenerateRobotKey] = useState(true);
+  const [addRobotKeyExpiry, setAddRobotKeyExpiry] = useState(defaultKeyExpiryStr);
   const [directMsgUser, setDirectMsgUser] = useState<TelegramBotUser | null>(null);
   const [directMsgText, setDirectMsgText] = useState('');
   const [isSendingMsg, setIsSendingMsg] = useState(false);
@@ -428,18 +442,29 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
     e.preventDefault();
     if (!editingUser) return;
     const targetUser = editingUser;
+    const shouldGenKey = canAdminManageKeys && editGenerateRobotKey;
+    const keyExp = editRobotKeyExpiry;
     setEditingUser(null);
 
     try {
       const res = await fetch(`/api/telegram-bot/users/${targetUser.id}`, {
         method: 'PUT',
         headers: getAuthHeaders(),
-        body: JSON.stringify(targetUser)
+        body: JSON.stringify({
+          ...targetUser,
+          ...(shouldGenKey ? { generateRobotKey: true } : {}),
+          ...(canAdminManageKeys && keyExp ? { robotKeyExpiryDate: keyExp } : {})
+        })
       });
       const data = await res.json();
       if (res.ok && data?.ok) {
-        setUsers(prev => prev.map(u => (u.id === targetUser.id ? (data.user || targetUser) : u)));
-        showToast('✅ تم حفظ وتثبيت تعديلات ملف العضو بنجاح ومزامنتها مع البوت');
+        const savedUser = data.user || targetUser;
+        setUsers(prev => prev.map(u => (u.id === targetUser.id ? savedUser : u)));
+        showToast(
+          savedUser.robotApiKey && shouldGenKey
+            ? `✅ تم حفظ التعديلات وتوليد مفتاح الروبوت (${savedUser.robotApiKey}) بنجاح!`
+            : '✅ تم حفظ وتثبيت تعديلات ملف العضو بنجاح ومزامنتها مع البوت'
+        );
       } else {
         showToast(data?.error || '❌ تعذر حفظ تعديلات العضو', 'error');
       }
@@ -456,10 +481,14 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
       return;
     }
     try {
+      const shouldGenKey = canAdminManageKeys && addGenerateRobotKey;
       const res = await fetch('/api/telegram-bot/users', {
         method: 'POST',
         headers: getAuthHeaders(),
-        body: JSON.stringify(newMember)
+        body: JSON.stringify({
+          ...newMember,
+          ...(shouldGenKey ? { generateRobotKey: true, robotKeyExpiryDate: addRobotKeyExpiry } : {})
+        })
       });
       const data = await res.json();
       if (res.ok && data.ok && data.user) {
@@ -477,7 +506,13 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
           brokerId: '',
           notes: ''
         });
-        showToast('✅ تم إضافة العضو الجديد للملف بنجاح');
+        setAddGenerateRobotKey(true);
+        setAddRobotKeyExpiry(defaultKeyExpiryStr());
+        showToast(
+          data.user.robotApiKey
+            ? `✅ تم إضافة العضو وتوليد مفتاح الروبوت (${data.user.robotApiKey}) بنجاح`
+            : '✅ تم إضافة العضو الجديد للملف بنجاح'
+        );
       } else {
         showToast(data?.error || '❌ تعذر إضافة العضو', 'error');
       }
@@ -801,13 +836,20 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                   <option value="NONE">غير محدد</option>
                 </select>
 
-                <button
-                  onClick={() => setIsAddModalOpen(true)}
-                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black flex items-center gap-1.5 shadow-md shadow-emerald-600/30 transition-all cursor-pointer mr-auto"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>إضافة عضو يدوياً</span>
-                </button>
+                {canAdminManageKeys && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAddGenerateRobotKey(true);
+                      setAddRobotKeyExpiry(defaultKeyExpiryStr());
+                      setIsAddModalOpen(true);
+                    }}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black flex items-center gap-1.5 shadow-md shadow-emerald-600/30 transition-all cursor-pointer mr-auto"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>إضافة عضو يدوياً</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -911,14 +953,37 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                               )}
                             </td>
 
-                            {/* Broker ID */}
-                            <td className="py-3.5 px-4 font-mono font-bold text-slate-200">
-                              {user.brokerId ? (
-                                <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700">
-                                  {user.brokerId}
-                                </span>
-                              ) : (
-                                <span className="text-slate-500">-</span>
+                            {/* Broker ID + Admin-Only Robot Key */}
+                            <td className="py-3.5 px-4 font-mono font-bold text-slate-200 space-y-1">
+                              <div>
+                                {user.brokerId ? (
+                                  <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-700">
+                                    {user.brokerId}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-500">-</span>
+                                )}
+                              </div>
+                              {canAdminManageKeys && user.robotApiKey && (
+                                <div className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-950/70 border border-emerald-500/40 text-emerald-300 text-[10px]" dir="ltr">
+                                  <span>🔑 {user.robotApiKey}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      navigator.clipboard.writeText(user.robotApiKey!);
+                                      setCopiedKeyId(user.id);
+                                      setTimeout(() => setCopiedKeyId(null), 2000);
+                                    }}
+                                    className="text-slate-400 hover:text-white cursor-pointer"
+                                    title="نسخ مفتاح الروبوت"
+                                  >
+                                    {copiedKeyId === user.id ? (
+                                      <Check className="w-3 h-3 text-emerald-400" />
+                                    ) : (
+                                      <Copy className="w-3 h-3" />
+                                    )}
+                                  </button>
+                                </div>
                               )}
                             </td>
 
@@ -973,7 +1038,11 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                                 <button
                                   type="button"
                                   title="تعديل ملف العضو"
-                                  onClick={() => setEditingUser({ ...user })}
+                                  onClick={() => {
+                                    setEditGenerateRobotKey(false);
+                                    setEditRobotKeyExpiry(user.robotExpiryDate || defaultKeyExpiryStr());
+                                    setEditingUser({ ...user });
+                                  }}
                                   className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors cursor-pointer"
                                 >
                                   <Edit3 className="w-3.5 h-3.5" />
@@ -2643,6 +2712,72 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                 />
               </div>
 
+              {canAdminManageKeys && (
+                <div className="p-3.5 bg-emerald-950/30 border border-emerald-500/40 rounded-xl space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5 text-xs font-extrabold text-emerald-300">
+                      <Key className="w-4 h-4" />
+                      <span>مفتاح الروبوت العائم (للمشرف فقط 🔒)</span>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs font-bold text-amber-300 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={editGenerateRobotKey}
+                        onChange={e => setEditGenerateRobotKey(e.target.checked)}
+                        className="w-4 h-4 accent-amber-400 rounded cursor-pointer"
+                      />
+                      <span>
+                        {editingUser.robotApiKey
+                          ? 'توليد / تجديد مفتاح جديد عند الحفظ'
+                          : '🔑 توليد مفتاح للعضو عند الحفظ'}
+                      </span>
+                    </label>
+                  </div>
+
+                  {editingUser.robotApiKey && (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        readOnly
+                        dir="ltr"
+                        value={editingUser.robotApiKey}
+                        className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs font-mono text-amber-300 font-bold"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(editingUser.robotApiKey!);
+                          setCopiedKeyId(`modal-${editingUser.id}`);
+                          setTimeout(() => setCopiedKeyId(null), 2000);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold cursor-pointer flex items-center gap-1"
+                      >
+                        {copiedKeyId === `modal-${editingUser.id}` ? (
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                        ) : (
+                          <Copy className="w-3.5 h-3.5" />
+                        )}
+                        <span>{copiedKeyId === `modal-${editingUser.id}` ? 'نُسخ' : 'نسخ'}</span>
+                      </button>
+                    </div>
+                  )}
+
+                  {(editGenerateRobotKey || editingUser.robotApiKey) && (
+                    <div className="flex items-center gap-2">
+                      <label className="text-[11px] font-bold text-slate-300 whitespace-nowrap">
+                        صلاحية المفتاح حتى:
+                      </label>
+                      <input
+                        type="date"
+                        value={editRobotKeyExpiry}
+                        onChange={e => setEditRobotKeyExpiry(e.target.value)}
+                        className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs font-mono text-white"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
@@ -2790,6 +2925,34 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
                   className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-white font-mono"
                 />
               </div>
+
+              {canAdminManageKeys && (
+                <div className="p-3.5 bg-emerald-950/30 border border-emerald-500/40 rounded-xl space-y-2.5">
+                  <label className="flex items-center gap-2 text-xs font-extrabold text-emerald-300 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={addGenerateRobotKey}
+                      onChange={e => setAddGenerateRobotKey(e.target.checked)}
+                      className="w-4 h-4 accent-emerald-400 rounded cursor-pointer"
+                    />
+                    <Key className="w-4 h-4 text-amber-300" />
+                    <span>🔑 توليد مفتاح تشغيل للروبوت العائم لهذا العضو (للمشرف فقط)</span>
+                  </label>
+                  {addGenerateRobotKey && (
+                    <div className="flex items-center gap-2">
+                      <label className="text-[11px] font-bold text-slate-300 whitespace-nowrap">
+                        صلاحية المفتاح حتى:
+                      </label>
+                      <input
+                        type="date"
+                        value={addRobotKeyExpiry}
+                        onChange={e => setAddRobotKeyExpiry(e.target.value)}
+                        className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1 text-xs font-mono text-white"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="flex justify-end gap-2 pt-2">
                 <button
