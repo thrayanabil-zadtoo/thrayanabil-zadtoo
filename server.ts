@@ -1,11 +1,10 @@
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
+import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { initializeApp } from 'firebase/app';
-import { initializeFirestore, doc, getDoc, setDoc, runTransaction, setLogLevel, onSnapshot } from 'firebase/firestore';
 import {
   parseRawQuotexSignal,
   formatSignalMessage,
@@ -16,6 +15,7 @@ import {
   FormatterOptions,
   ParsedSignal
 } from './src/utils/signalParser.ts';
+import { buildFloatingQuotexRobotScript } from './src/utils/robotScriptTemplate.ts';
 import { ForexNewsItem, INITIAL_WEEKLY_FOREX_NEWS, calculateEventTimes, filterActiveForexNews } from './src/types/forexNews.ts';
 import {
   SubscriptionPlan,
@@ -30,37 +30,294 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const STATE_FILE = path.join(process.cwd(), 'autopilot-state.json');
-const FIREBASE_CONFIG_FILE = path.join(process.cwd(), 'firebase-applet-config.json');
-
-setLogLevel('silent');
+const TELEGRAM_LOCKS_FILE = path.join(process.cwd(), 'telegram-locks.json');
+const ADMIN_AUTH_FILE = path.join(process.cwd(), 'admin-auth.json');
 
 export const DEFAULT_FREE_BOT_TOKEN = '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U';
 export const DEFAULT_FREE_CHAT_ID = '@ZadNBFX';
 export const DEFAULT_VIP_BOT_TOKEN = '8814918920:AAGeXmZrTy03s9gozdDAOj3hkIijHm9yJHM';
 export const DEFAULT_VIP_CHAT_ID = '-1004323890544';
 
-let serverFirestoreDb: ReturnType<typeof initializeFirestore> | null = null;
-try {
-  if (fs.existsSync(FIREBASE_CONFIG_FILE)) {
-    const fbCfg = JSON.parse(fs.readFileSync(FIREBASE_CONFIG_FILE, 'utf-8'));
-    if (fbCfg.projectId && fbCfg.apiKey) {
-      const fbApp = initializeApp(fbCfg, 'server-worker-app');
-      serverFirestoreDb = initializeFirestore(
-        fbApp,
-        { experimentalForceLongPolling: true },
-        fbCfg.firestoreDatabaseId
-      );
-    }
-  }
-} catch (_e) {
-  // Fallback to local disk persistence if cloud init is unavailable
+interface LocalLocksStore {
+  dailyNotices: Record<string, string>;
+  vipMpbLock?: {
+    lockedUntil: number;
+    targetEntryTimestamp: number;
+    asset: string;
+    lockedAt: string;
+  };
 }
 
-const ADMIN_EMAILS = [
-  'thrayanabil2026@gmail.com',
-  'thrayanabil@gmail.com'
-];
-const ADMIN_PASS = 'Tr@7177';
+function readLocalLocksStore(): LocalLocksStore {
+  try {
+    if (fs.existsSync(TELEGRAM_LOCKS_FILE)) {
+      const raw = JSON.parse(fs.readFileSync(TELEGRAM_LOCKS_FILE, 'utf-8'));
+      if (raw && typeof raw === 'object') {
+        return {
+          dailyNotices: raw.dailyNotices && typeof raw.dailyNotices === 'object' ? raw.dailyNotices : {},
+          vipMpbLock: raw.vipMpbLock
+        };
+      }
+    }
+  } catch (_e) {}
+  return { dailyNotices: {} };
+}
+
+function writeLocalLocksStore(locks: LocalLocksStore): void {
+  try {
+    fs.writeFileSync(TELEGRAM_LOCKS_FILE, JSON.stringify(locks, null, 2), 'utf-8');
+  } catch (_e) {}
+}
+
+interface AdminAuthStore {
+  email?: string;
+  salt?: string;
+  passwordHash?: string;
+  sessionSecret?: string;
+  updatedAt?: string;
+}
+
+function readAdminAuthStore(): AdminAuthStore {
+  try {
+    if (fs.existsSync(ADMIN_AUTH_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(ADMIN_AUTH_FILE, 'utf-8'));
+      if (parsed && typeof parsed === 'object') return parsed;
+    }
+  } catch (_e) {}
+  return {};
+}
+
+function writeAdminAuthStore(data: AdminAuthStore): void {
+  try {
+    fs.writeFileSync(ADMIN_AUTH_FILE, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (_e) {}
+}
+
+const ADMIN_EMAILS: string[] = (() => {
+  const raw = (process.env.ADMIN_EMAILS || '').trim();
+  if (raw) {
+    const list = raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    if (list.length > 0) return list;
+  }
+  return ['thrayanabil2026@gmail.com', 'thrayanabil@gmail.com'];
+})();
+
+const ADMIN_SESSION_SECRET: string = (() => {
+  const fromEnv = (process.env.ADMIN_SESSION_SECRET || '').trim();
+  if (fromEnv && fromEnv.length >= 16) return fromEnv;
+  const store = readAdminAuthStore();
+  if (store.sessionSecret && store.sessionSecret.length >= 32) {
+    return store.sessionSecret;
+  }
+  const generated = crypto.randomBytes(32).toString('hex');
+  writeAdminAuthStore({ ...store, sessionSecret: generated });
+  return generated;
+})();
+
+function hashAdminPassword(password: string, salt?: string): { salt: string; hash: string } {
+  const actualSalt = salt || crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, actualSalt, 64).toString('hex');
+  return { salt: actualSalt, hash };
+}
+
+function constantTimeStrEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf-8');
+  const bufB = Buffer.from(b, 'utf-8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
+function adminNeedsFirstRunSetup(): boolean {
+  if ((process.env.ADMIN_PASS || '').trim()) return false;
+  const store = readAdminAuthStore();
+  return !(store.email && store.salt && store.passwordHash);
+}
+
+function verifyAdminCredentials(email: string, password: string): boolean {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!ADMIN_EMAILS.includes(cleanEmail)) return false;
+  const envPass = (process.env.ADMIN_PASS || '').trim();
+  if (envPass) {
+    return constantTimeStrEqual(password, envPass);
+  }
+  const store = readAdminAuthStore();
+  if (!store.salt || !store.passwordHash || !store.email) return false;
+  if (store.email.trim().toLowerCase() !== cleanEmail) return false;
+  const { hash } = hashAdminPassword(password, store.salt);
+  return constantTimeStrEqual(hash, store.passwordHash);
+}
+
+function issueAdminSessionToken(email: string): string {
+  const nowSec = Math.floor(Date.now() / 1000);
+  const payload = {
+    email: email.trim().toLowerCase(),
+    iat: nowSec,
+    exp: nowSec + 7 * 24 * 60 * 60
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64url');
+  const sig = crypto.createHmac('sha256', ADMIN_SESSION_SECRET).update(payloadB64).digest('base64url');
+  return `${payloadB64}.${sig}`;
+}
+
+function verifyAdminSessionToken(token: string): { email: string } | null {
+  try {
+    const parts = String(token || '').trim().split('.');
+    if (parts.length !== 2) return null;
+    const [payloadB64, sigB64] = parts;
+    const expectedSig = crypto.createHmac('sha256', ADMIN_SESSION_SECRET).update(payloadB64).digest('base64url');
+    if (!constantTimeStrEqual(sigB64, expectedSig)) return null;
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf-8'));
+    if (!payload || typeof payload.email !== 'string' || typeof payload.exp !== 'number') return null;
+    if (!ADMIN_EMAILS.includes(payload.email.trim().toLowerCase())) return null;
+    if (Math.floor(Date.now() / 1000) > payload.exp) return null;
+    return { email: payload.email.trim().toLowerCase() };
+  } catch (_e) {
+    return null;
+  }
+}
+
+function parseCookies(cookieHeader: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!cookieHeader) return out;
+  for (const part of cookieHeader.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx > 0) {
+      const k = part.slice(0, idx).trim();
+      const v = part.slice(idx + 1).trim();
+      try {
+        out[k] = decodeURIComponent(v);
+      } catch (_e) {
+        out[k] = v;
+      }
+    }
+  }
+  return out;
+}
+
+function isTrustedAppOrigin(origin: string | undefined): boolean {
+  if (!origin) return false;
+  try {
+    const u = new URL(origin);
+    const h = u.hostname.toLowerCase();
+    return (
+      h === 'fx.zadtoo.com' ||
+      h === 'zadtoo.com' ||
+      h.endsWith('.zadtoo.com') ||
+      h.endsWith('.run.app') ||
+      h === 'localhost' ||
+      h === '127.0.0.1'
+    );
+  } catch (_e) {
+    return false;
+  }
+}
+
+function isApprovedBrokerOrAppOrigin(origin: string | undefined): boolean {
+  if (isTrustedAppOrigin(origin)) return true;
+  if (!origin) return false;
+  try {
+    const u = new URL(origin);
+    const h = u.hostname.toLowerCase();
+    return (
+      h === 'qxbroker.com' || h.endsWith('.qxbroker.com') ||
+      h === 'quotex.io' || h.endsWith('.quotex.io') ||
+      h === 'quotex.com' || h.endsWith('.quotex.com') ||
+      h === 'broker-qx.pro' || h.endsWith('.broker-qx.pro') ||
+      h === 'market-qx.pro' || h.endsWith('.market-qx.pro') ||
+      h === 'market-qx.com' || h.endsWith('.market-qx.com') ||
+      h === 'quotex-broker.com' || h.endsWith('.quotex-broker.com') ||
+      h === 'quotex-market.com' || h.endsWith('.quotex-market.com') ||
+      h === 'qxplus.com' || h.endsWith('.qxplus.com') ||
+      h === 'qx-market.com' || h.endsWith('.qx-market.com') ||
+      h === 'pocketoption.com' || h.endsWith('.pocketoption.com') ||
+      h === 'po.market' || h.endsWith('.po.market') ||
+      h === 'po.trade' || h.endsWith('.po.trade') ||
+      h === 'olymptrade.com' || h.endsWith('.olymptrade.com') ||
+      h === 'iqoption.com' || h.endsWith('.iqoption.com') ||
+      h === 'binomo.com' || h.endsWith('.binomo.com')
+    );
+  } catch (_e) {
+    return false;
+  }
+}
+
+function getAuthenticatedAdminFromRequest(req: Request): { email: string; token: string } | null {
+  const authHeader = String(req.headers.authorization || '').trim();
+  if (authHeader.startsWith('Bearer ')) {
+    const tok = authHeader.slice(7).trim();
+    const verified = verifyAdminSessionToken(tok);
+    if (verified) return { email: verified.email, token: tok };
+  }
+  const cookies = parseCookies(req.headers.cookie);
+  const cookieTok = cookies['zad_admin_session'];
+  if (cookieTok) {
+    const isMutating = !['GET', 'HEAD', 'OPTIONS'].includes(req.method.toUpperCase());
+    if (isMutating) {
+      const origin = req.headers.origin;
+      const referer = req.headers.referer;
+      const host = String(req.headers.host || '').toLowerCase();
+      const originOk = origin
+        ? isTrustedAppOrigin(origin) || origin.toLowerCase().includes(host)
+        : referer
+        ? isTrustedAppOrigin(referer) || referer.toLowerCase().includes(host)
+        : true;
+      if (!originOk) return null;
+    }
+    const verified = verifyAdminSessionToken(cookieTok);
+    if (verified) return { email: verified.email, token: cookieTok };
+  }
+  return null;
+}
+
+function isAdminRequest(req: Request): boolean {
+  return Boolean(getAuthenticatedAdminFromRequest(req));
+}
+
+function requireAdminAuth(req: Request, res: Response, next: NextFunction) {
+  const admin = getAuthenticatedAdminFromRequest(req);
+  if (!admin) {
+    return res.status(401).json({
+      ok: false,
+      error: 'يتطلب صلاحية المشرف — يرجى تسجيل الدخول أولاً.'
+    });
+  }
+  return next();
+}
+
+function setAdminSessionCookie(req: Request, res: Response, token: string): void {
+  const host = String(req.headers.host || '').toLowerCase();
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https' || !host.includes('127.0.0.1');
+  const attrs = [
+    `zad_admin_session=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'Max-Age=604800',
+    ...(isHttps ? ['Secure', 'SameSite=None', 'Partitioned'] : ['SameSite=Lax'])
+  ];
+  res.setHeader('Set-Cookie', attrs.join('; '));
+}
+
+function clearAdminSessionCookie(req: Request, res: Response): void {
+  const host = String(req.headers.host || '').toLowerCase();
+  const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https' || !host.includes('127.0.0.1');
+  const attrs = [
+    'zad_admin_session=',
+    'Path=/',
+    'HttpOnly',
+    'Max-Age=0',
+    ...(isHttps ? ['Secure', 'SameSite=None', 'Partitioned'] : ['SameSite=Lax'])
+  ];
+  res.setHeader('Set-Cookie', attrs.join('; '));
+}
+
+function escapeHtmlSafe(text: string): string {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
 export interface SignalItem {
   id: string;
@@ -1115,8 +1372,7 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
  * Checks whether the Floating Broker Robot (Quotex Pro Bot) is active right now.
  */
 function isFloatingRobotActiveNow(): boolean {
-  const currentMode = robotSettings.strategyEngineMode || 'VIP_WITH_MPB';
-  return getRobotWorkingStatusForMode(currentMode).isActive;
+  return getRobotWorkingStatusForMode('VIP_WITH_MPB').isActive;
 }
 
 /**
@@ -1952,159 +2208,16 @@ function applyParsedState(parsed: Partial<PersistedState>) {
   }
 }
 
-let isTelegramBotFirestoreListenerActive = false;
-function initTelegramBotFirestoreSync() {
-  if (!serverFirestoreDb || isTelegramBotFirestoreListenerActive) return;
-  try {
-    const botDocRef = doc(serverFirestoreDb, 'system_state', 'telegram_bot_state');
-    onSnapshot(botDocRef, (snap) => {
-      if (!snap.exists()) return;
-      const data = snap.data();
-      if (!data?.payload) return;
-      try {
-        const parsed = JSON.parse(data.payload);
-        if (parsed?.config) {
-          telegramBotConfigStore = {
-            ...defaultTelegramBotConfig,
-            ...telegramBotConfigStore,
-            ...parsed.config,
-            usdtPayment: {
-              ...defaultTelegramBotConfig.usdtPayment,
-              ...(parsed.config.usdtPayment || {})
-            }
-          };
-        }
-        if (Array.isArray(parsed?.users) && parsed.users.length > 0) {
-          for (const u of parsed.users) {
-            const idx = telegramBotUsersStore.findIndex(ex => ex.telegramChatId === u.telegramChatId || ex.id === u.id);
-            if (idx >= 0) {
-              telegramBotUsersStore[idx] = { ...telegramBotUsersStore[idx], ...u };
-            } else {
-              telegramBotUsersStore.push(u);
-            }
-          }
-        }
-      } catch (_err) {}
-    }, (err) => {
-      console.warn('Telegram bot Firestore snapshot error:', err);
-    });
-    isTelegramBotFirestoreListenerActive = true;
-  } catch (_e) {}
-}
-
 async function loadStateFromCloudAndDisk() {
-  let diskState: Partial<PersistedState> | null = null;
-  // 1. Load local disk first for instant boot
+  // Load persistent state from local disk (`autopilot-state.json`) so tokens, bank details, and members are never lost
   try {
     if (fs.existsSync(STATE_FILE)) {
       const raw = fs.readFileSync(STATE_FILE, 'utf-8');
-      diskState = JSON.parse(raw) as Partial<PersistedState>;
+      const diskState = JSON.parse(raw) as Partial<PersistedState>;
       applyParsedState(diskState);
     }
   } catch (e) {
     console.error('Error loading local state:', e);
-  }
-
-  // 2. Load from permanent Firebase Cloud Firestore (only apply if cloud state is newer than local disk state)
-  if (serverFirestoreDb) {
-    try {
-      // First check dedicated platform_plans document in Firestore
-      try {
-        const plansDocRef = doc(serverFirestoreDb, 'system_state', 'platform_plans');
-        const plansSnap = await getDoc(plansDocRef);
-        if (plansSnap.exists()) {
-          const pData = plansSnap.data();
-          if (pData?.payload) {
-            const parsedPlans = JSON.parse(pData.payload);
-            if (Array.isArray(parsedPlans) && parsedPlans.length > 0) {
-              plansStore = parsedPlans;
-            }
-          }
-        }
-      } catch (_e) {}
-
-      // Check dedicated platform_contact_links document in Firestore
-      try {
-        const linksDocRef = doc(serverFirestoreDb, 'system_state', 'platform_contact_links');
-        const linksSnap = await getDoc(linksDocRef);
-        if (linksSnap.exists()) {
-          const lData = linksSnap.data();
-          if (lData?.payload) {
-            const parsedLinks = JSON.parse(lData.payload);
-            if (parsedLinks && typeof parsedLinks === 'object') {
-              contactLinksStore = { ...INITIAL_CONTACT_LINKS, ...contactLinksStore, ...parsedLinks };
-            }
-          }
-        }
-      } catch (_e) {}
-
-      // Load dedicated telegram_bot_state document from Firestore (for fx.zadtoo.com two-way sync)
-      try {
-        const botDocRef = doc(serverFirestoreDb, 'system_state', 'telegram_bot_state');
-        const botSnap = await getDoc(botDocRef);
-        if (botSnap.exists()) {
-          const bData = botSnap.data();
-          if (bData?.payload) {
-            const parsedBot = JSON.parse(bData.payload);
-            if (parsedBot?.config) {
-              telegramBotConfigStore = {
-                ...defaultTelegramBotConfig,
-                ...telegramBotConfigStore,
-                ...parsedBot.config,
-                usdtPayment: {
-                  ...defaultTelegramBotConfig.usdtPayment,
-                  ...(parsedBot.config.usdtPayment || {})
-                }
-              };
-            }
-            if (Array.isArray(parsedBot?.users) && parsedBot.users.length > 0) {
-              const existingChatIds = new Set(telegramBotUsersStore.map(u => u.telegramChatId));
-              for (const u of parsedBot.users) {
-                const idx = telegramBotUsersStore.findIndex(ex => ex.telegramChatId === u.telegramChatId);
-                if (idx >= 0) {
-                  telegramBotUsersStore[idx] = { ...telegramBotUsersStore[idx], ...u };
-                } else {
-                  telegramBotUsersStore.push(u);
-                }
-              }
-            }
-          }
-        }
-      } catch (_e) {}
-
-      // Start live snapshot listener so updates from fx.zadtoo.com reflect in server memory immediately
-      initTelegramBotFirestoreSync();
-
-      const docRef = doc(serverFirestoreDb, 'system_state', 'zad_main_state_v1');
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        const data = snap.data();
-        if (data && typeof data.payload === 'string') {
-          const cloudState = JSON.parse(data.payload) as Partial<PersistedState>;
-          const cloudTime = new Date(cloudState.stateUpdatedAt || data.updatedAt || 0).getTime();
-          const diskTime = new Date(diskState?.stateUpdatedAt || currentStateUpdatedAt || 0).getTime();
-          if (!diskState || cloudTime >= diskTime) {
-            applyParsedState(cloudState);
-            const preservedDiskState: Partial<PersistedState> = {
-              ...cloudState,
-              plans: plansStore, // Ensure plansStore is never overwritten by an older state missing plans
-              contactLinks: contactLinksStore,
-              autopilot: {
-                ...cloudState.autopilot,
-                botToken: autoPilot.botToken || diskState?.autopilot?.botToken || '',
-                chatId: autoPilot.chatId || diskState?.autopilot?.chatId || '@ZadNBFX',
-                vipBotToken: autoPilot.vipBotToken || diskState?.autopilot?.vipBotToken || '',
-                vipChatId: autoPilot.vipChatId || diskState?.autopilot?.vipChatId || '',
-                vipEnabled: autoPilot.vipEnabled ?? diskState?.autopilot?.vipEnabled ?? true
-              } as AutoPilotConfig
-            };
-            fs.writeFileSync(STATE_FILE, JSON.stringify(preservedDiskState, null, 2), 'utf-8');
-          }
-        }
-      }
-    } catch (_e) {
-      // Local disk state is already loaded as fallback
-    }
   }
   isCloudStateLoaded = true;
 }
@@ -2116,30 +2229,17 @@ async function loadStateFromCloudAndDisk() {
  * 1) It is PENDING and recent (created within 130s and entry is within -10s to +90s)
  * 2) Or if it just concluded within the last 20s (to display win/loss result animation before returning to WAIT)
  */
-function getLiveRobotActiveSignal(overrideMode?: RobotStrategyEngineMode): SignalItem | null {
+function getLiveRobotActiveSignal(_overrideMode?: RobotStrategyEngineMode): SignalItem | null {
   // Strict Market Guard: Never return any active signal if global Forex market is closed
   if (!isGlobalForexMarketOpen()) return null;
 
-  const mode = overrideMode || robotSettings.strategyEngineMode || 'VIP_WITH_MPB';
-  let candidate: SignalItem | null = null;
-
-  if (mode === 'PUBLIC_CLASSIC') {
-    // Mode 1: Public Classic Indicator (1 full minute countdown, not 5s instant)
-    candidate = signalsStore.find(s =>
-      s.status === 'PENDING' &&
-      !s.instantExecution5s &&
-      s.strategyType !== 'MOMENTUM_PAUSE_BREAKOUT'
-    ) || null;
-  } else {
-    // Mode 2: MPB Strategy (5s instant confirmation at :55)
-    // STRICT ISOLATION: ONLY signals belonging to MPB / Instant 5s execution, never USD/JPY.
-    candidate = signalsStore.find(s =>
-      s.status === 'PENDING' &&
-      s.asset !== 'USD/JPY' &&
-      !s.asset.includes('USDJPY') &&
-      (Boolean(s.instantExecution5s) || s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.isLiveBroadcast)
-    ) || null;
-  }
+  // Strategy locked strictly to latest unified MPB engine (VIP_WITH_MPB)
+  const candidate = signalsStore.find(s =>
+    s.status === 'PENDING' &&
+    s.asset !== 'USD/JPY' &&
+    !s.asset.includes('USDJPY') &&
+    (Boolean(s.instantExecution5s) || s.strategyType === 'MOMENTUM_PAUSE_BREAKOUT' || s.isLiveBroadcast)
+  ) || null;
 
   if (!candidate || candidate.asset === 'USD/JPY' || candidate.asset.includes('USDJPY')) return null;
 
@@ -2159,19 +2259,10 @@ function getLiveRobotActiveSignal(overrideMode?: RobotStrategyEngineMode): Signa
 
   // If signal is PENDING:
   if (candidate.status === 'PENDING') {
-    if (mode === 'VIP_WITH_MPB') {
-      // In MPB mode: Deliver the signal as soon as dispatched (within 180s of candle entry)
-      // and while the 60s candle trade is actively in progress (diffUntilEntry between 0 and -65s)
-      if (diffUntilEntry >= -65 && diffUntilEntry <= 180 && sigAgeSec <= 180) {
-        return candidate;
-      }
-      return null;
-    } else {
-      if (diffUntilEntry >= -70 && diffUntilEntry <= 90 && sigAgeSec <= 135) {
-        return candidate;
-      }
-      return null;
+    if (diffUntilEntry >= -65 && diffUntilEntry <= 180 && sigAgeSec <= 180) {
+      return candidate;
     }
+    return null;
   }
 
   // If completed (WIN / LOSS / DRAW): display for 15 seconds after candle close so user sees the outcome banner
@@ -2215,207 +2306,15 @@ async function saveState(): Promise<boolean> {
       lastDispatchedEpochMinute,
       lastOnboardingBotUpdateId
     };
-    const serialized = JSON.stringify(state);
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
-
-    // Save to permanent Firebase Cloud Firestore (with strict sanitization of tokens and PII)
-    if (serverFirestoreDb) {
-      // Create a sanitized state for cloud storage to ensure zero leak of bot tokens or private subscriber contacts
-      const sanitizedSubscribers = subscribersStore.slice(0, 200).map(s => ({
-        id: s.id,
-        name: s.name,
-        brokerAccountId: s.brokerAccountId || '',
-        robotApiKey: s.robotApiKey || '',
-        status: s.status,
-        robotExpiryDate: s.robotExpiryDate || s.expiryDate || '',
-        expiryDate: s.expiryDate || '',
-        robotEnabled: s.robotEnabled !== false,
-        defaultMode: (s as any).defaultMode || 'AUTO',
-        tradeStakeUsd: (s as any).tradeStakeUsd || 5
-      }));
-
-      const sanitizedCloudState = {
-        stateUpdatedAt: nowIso,
-        signals: signalsStore.slice(0, 80),
-        settings: appSettings,
-        autopilot: {
-          ...autoPilot,
-          botToken: '', // Strictly redacted: Bot tokens stay exclusively in local server disk
-          vipBotToken: '', // Strictly redacted: VIP tokens stay exclusively in local server disk
-          freeWinImageUrl: autoPilot.freeWinImageUrl || '',
-          freeWinGale1ImageUrl: autoPilot.freeWinGale1ImageUrl || '',
-          freeLossImageUrl: autoPilot.freeLossImageUrl || '',
-          vipWinImageUrl: autoPilot.vipWinImageUrl || '',
-          vipWinGale1ImageUrl: autoPilot.vipWinGale1ImageUrl || '',
-          vipLossImageUrl: autoPilot.vipLossImageUrl || ''
-        },
-        robotSettings,
-        liveBroadcastSession,
-        subscribers: sanitizedSubscribers,
-        quickNotes: [], // Exclude private internal admin notes
-        dailyStats: sortedDailyStats,
-        forexNews: filterActiveForexNews(forexNewsStore),
-        plans: plansStore,
-        contactLinks: contactLinksStore,
-        lastDispatchedEpochMinute
-      };
-
-      const cloudPayload = JSON.stringify(sanitizedCloudState);
-      const firestoreWrites: Promise<any>[] = [];
-
-      if (cloudPayload.length <= 495000) {
-        const docRef = doc(serverFirestoreDb, 'system_state', 'zad_main_state_v1');
-        firestoreWrites.push(setDoc(docRef, { updatedAt: nowIso, payload: cloudPayload }));
-      }
-
-      const plansDocRef = doc(serverFirestoreDb, 'system_state', 'platform_plans');
-      firestoreWrites.push(
-        setDoc(plansDocRef, { updatedAt: nowIso, payload: JSON.stringify(plansStore) }).catch(errPlans => {
-          console.warn('Could not write dedicated platform_plans doc:', errPlans);
-        })
-      );
-
-      const linksDocRef = doc(serverFirestoreDb, 'system_state', 'platform_contact_links');
-      firestoreWrites.push(
-        setDoc(linksDocRef, { updatedAt: nowIso, payload: JSON.stringify(contactLinksStore) }).catch(errLinks => {
-          console.warn('Could not write dedicated platform_contact_links doc:', errLinks);
-        })
-      );
-
-      const botDocRef = doc(serverFirestoreDb, 'system_state', 'telegram_bot_state');
-      firestoreWrites.push(
-        setDoc(botDocRef, {
-          updatedAt: nowIso,
-          payload: JSON.stringify({
-            config: telegramBotConfigStore,
-            users: telegramBotUsersStore.slice(0, 500)
-          })
-        }).catch(errBot => {
-          console.warn('Could not write dedicated telegram_bot_state doc:', errBot);
-        })
-      );
-
-      firestoreWrites.push(publishRobotLiveFeedDoc(nowIso));
-      await Promise.allSettled(firestoreWrites);
-      return true;
-    }
     return true;
   } catch (_e) {
     return true;
   }
 }
 
-async function publishRobotLiveFeedDoc(customIso?: string): Promise<void> {
-  if (!serverFirestoreDb) return;
-  try {
-    const nowIso = customIso || new Date().toISOString();
-    const workingStatus = getRobotWorkingStatusForMode('VIP_WITH_MPB');
-    const isRobotActive = workingStatus.isActive;
-    const activeSig = (isRobotActive && isGlobalForexMarketOpen())
-      ? (getLiveRobotActiveSignal('VIP_WITH_MPB') || getLiveRobotActiveSignal('PUBLIC_CLASSIC'))
-      : null;
-    const todayStr = getCurrentEgyptDateString(new Date());
-    const todayTradingSignals = signalsStore.filter(s => {
-      if (!s.createdAt) return false;
-      const d = new Date(s.createdAt);
-      if (isNaN(d.getTime())) return false;
-      return getCurrentEgyptDateString(d) === todayStr;
-    });
-    const todayDirectWins = todayTradingSignals.filter(s => s.status === 'WIN').length;
-    const todayNoGaleLosses = todayTradingSignals.filter(
-      s => s.status === 'LOSS' || s.status === 'WIN_GALE1'
-    ).length;
-    const totalFinished = todayDirectWins + todayNoGaleLosses;
-    const winRateNoGale = totalFinished > 0 ? Math.round((todayDirectWins / totalFinished) * 100) : 100;
-
-    const authorizedKeysMap: Record<string, any> = {
-      'QX-ADMIN-MASTER-TEST': {
-        name: 'حساب المشرف التجريبي (Master)',
-        brokerId: 'ADMIN-PRO',
-        authorized: true,
-        daysLeft: 999,
-        error: ''
-      }
-    };
-
-    for (const sub of subscribersStore) {
-      const exp = sub.robotExpiryDate || sub.expiryDate || '2099-12-31';
-      const isAct = (sub.status as string).toUpperCase() === 'ACTIVE' && new Date(exp).getTime() > Date.now();
-      const days = Math.max(0, Math.ceil((new Date(exp).getTime() - Date.now()) / (1000 * 60 * 60 * 24)));
-      const payload = {
-        name: sub.name,
-        brokerId: sub.brokerAccountId || '',
-        authorized: isAct,
-        daysLeft: days,
-        error: !isAct ? 'انتهى الاشتراك' : ''
-      };
-      if (sub.robotApiKey) authorizedKeysMap[sub.robotApiKey.toUpperCase()] = payload;
-      if (sub.brokerAccountId) authorizedKeysMap[sub.brokerAccountId.toUpperCase()] = payload;
-    }
-
-    const safeAllowedPairs = (autoPilot.allowedPairs || ['EUR/USD', 'EUR/JPY', 'GBP/USD', 'AUD/USD', 'USD/CAD', 'GBP/JPY'])
-      .filter(p => p !== 'USD/JPY' && !p.includes('USDJPY'));
-
-    const nowMs = Date.now();
-    const liveFeedPayload = {
-      ok: true,
-      updatedAt: nowIso,
-      serverEpochMs: nowMs,
-      serverEpochSeconds: Math.floor(nowMs / 1000),
-      marketOpen: isGlobalForexMarketOpen(),
-      isMarketOpen: isGlobalForexMarketOpen(),
-      isTradingHours: isRobotActive,
-      isLockedOutsideHours: workingStatus.isLocked,
-      lockReason: workingStatus.lockReason,
-      workingHoursText: workingStatus.workingHoursText,
-      nextSessionText: workingStatus.nextSessionText,
-      isWarmup: false,
-      warmupMinutesRemaining: 0,
-      tradingHoursMessage: workingStatus.isLocked
-        ? workingStatus.lockReason
-        : `ساعات التداول النشطة (${workingStatus.workingHoursText})`,
-      statsNoMartingale: {
-        wins: todayDirectWins,
-        losses: todayNoGaleLosses,
-        winRate: winRateNoGale
-      },
-      activeSignal: (activeSig && activeSig.asset !== 'USD/JPY' && !activeSig.asset.includes('USDJPY')) ? {
-        id: activeSig.id,
-        asset: activeSig.asset,
-        direction: activeSig.direction,
-        timeframe: activeSig.timeframe,
-        entryMinute: activeSig.entryMinute,
-        entryTime: activeSig.entryTime,
-        targetEntryTimestamp: activeSig.targetEntryTimestamp,
-        secondsUntilEntry: activeSig.targetEntryTimestamp
-          ? Math.round(activeSig.targetEntryTimestamp - nowMs / 1000)
-          : 0,
-        status: activeSig.status === 'WIN' ? 'WIN' : (activeSig.status === 'WIN_GALE1' || activeSig.status === 'LOSS') ? 'LOSS' : activeSig.status,
-        livePrice: activeSig.livePrice,
-        rsiValue: activeSig.rsiValue,
-        instantExecution5s: true,
-        strategyType: activeSig.strategyType || 'MOMENTUM_PAUSE_BREAKOUT',
-        strategyEngineMode: 'VIP_WITH_MPB',
-        strategyVariant: activeSig.strategyVariant || 'WITH_MPB',
-        successRateText: activeSig.successRateText || '94%',
-        entryPriceNumeric: activeSig.entryPriceNumeric,
-        qualityScore: activeSig.qualityScore || 92
-      } : null,
-      authorizedKeys: authorizedKeysMap,
-      targetPair: autoPilot.pairSelectionMode === 'fixed_single' ? (autoPilot.primaryFixedPair || 'EUR/JPY') : (safeAllowedPairs[0] || 'EUR/JPY'),
-      pairSelectionMode: autoPilot.pairSelectionMode || 'custom_list',
-      allowedPairs: safeAllowedPairs
-    };
-
-    const feedDocRef = doc(serverFirestoreDb, 'robot_feed', 'live');
-    await setDoc(feedDocRef, {
-      updatedAt: nowIso,
-      payload: JSON.stringify(liveFeedPayload),
-      signal: activeSig || null
-    });
-  } catch (_e) {
-    // Ignore
-  }
+async function publishRobotLiveFeedDoc(_customIso?: string): Promise<void> {
+  // Robot live feed is served directly by /api/quotex-robot/feed; server does not write unauthenticated to Firestore.
 }
 
 loadStateFromCloudAndDisk().then(async () => {
@@ -4169,23 +4068,21 @@ async function scanRealGlobalForexMarket(
         }
       }
 
-      // If VIP mode is active and fourIndicatorConfluence is triggered, promote this as active signalReady
-      if (robotSettings.strategyEngineMode !== 'PUBLIC_CLASSIC') {
-        if (fourConfluence.isSignalTriggered && fourConfluence.candidateDirection) {
-          signalReady = fourConfluence.candidateDirection;
-          trend = fourConfluence.candidateDirection === 'CALL' ? 'BULLISH' : 'BEARISH';
-          const adxBonus = adx14 >= 22 ? 4 : 0;
-          const m5AlignedBonus =
-            (signalReady === 'CALL' && htfM5Trend === 'BULLISH' && currentPrice > ema50M1) ||
-            (signalReady === 'PUT' && htfM5Trend === 'BEARISH' && currentPrice < ema50M1)
-              ? 4
-              : 0;
-          qualityScore = Math.min(100, Math.max(qualityScore, 75 + fourConfluence.supportingCount * 5 + adxBonus + m5AlignedBonus));
-          reason = fourConfluence.summary;
-        } else if (fourConfluence.institutionalFilterBlocked) {
-          signalReady = null;
-          reason = fourConfluence.institutionalFilterReason || fourConfluence.summary;
-        }
+      // Promote latest unified fourIndicatorConfluence signal when triggered
+      if (fourConfluence.isSignalTriggered && fourConfluence.candidateDirection) {
+        signalReady = fourConfluence.candidateDirection;
+        trend = fourConfluence.candidateDirection === 'CALL' ? 'BULLISH' : 'BEARISH';
+        const adxBonus = adx14 >= 22 ? 4 : 0;
+        const m5AlignedBonus =
+          (signalReady === 'CALL' && htfM5Trend === 'BULLISH' && currentPrice > ema50M1) ||
+          (signalReady === 'PUT' && htfM5Trend === 'BEARISH' && currentPrice < ema50M1)
+            ? 4
+            : 0;
+        qualityScore = Math.min(100, Math.max(qualityScore, 75 + fourConfluence.supportingCount * 5 + adxBonus + m5AlignedBonus));
+        reason = fourConfluence.summary;
+      } else if (fourConfluence.institutionalFilterBlocked) {
+        signalReady = null;
+        reason = fourConfluence.institutionalFilterReason || fourConfluence.summary;
       }
 
       snapshots.push({
@@ -6331,90 +6228,6 @@ async function acquireCrossInstanceDispatchLock(
   isCurrentlyDispatching = true;
 
   try {
-    // 1. Check Cloud Firestore latest state first (before transaction)
-    if (serverFirestoreDb) {
-      try {
-        const docRef = doc(serverFirestoreDb, 'system_state', 'zad_main_state_v1');
-        const snap = await getDoc(docRef);
-        if (snap.exists()) {
-          const data = snap.data();
-          if (data && typeof data.payload === 'string') {
-            const cloudState = JSON.parse(data.payload) as Partial<PersistedState>;
-            const cloudLastEpoch = cloudState.lastDispatchedEpochMinute || 0;
-            const cloudSignals = cloudState.signals || [];
-
-            const minGapSec = Math.max(5, cooldownMinutes) * 60 - 30;
-            if (
-              cloudLastEpoch === targetEpochMinute ||
-              Math.abs(targetEpochMinute - cloudLastEpoch) < minGapSec
-            ) {
-              lastDispatchedEpochMinute = Math.max(lastDispatchedEpochMinute, cloudLastEpoch);
-              return false;
-            }
-
-            // Also check if cloud signals already contain a signal for this entryMinute or within the last 4 minutes
-            const recentCloudDup = cloudSignals.some(
-              s =>
-                s.targetEntryTimestamp === targetEpochMinute ||
-                (s.entryMinute === entryMinute &&
-                  Date.now() - new Date(s.createdAt).getTime() < 8 * 60 * 1000) ||
-                Date.now() - new Date(s.createdAt).getTime() < minGapSec * 1000
-            );
-            if (recentCloudDup) {
-              lastDispatchedEpochMinute = targetEpochMinute;
-              return false;
-            }
-          }
-        }
-      } catch (_e) {
-        // Continue to transaction
-      }
-
-      // 2. Execute atomic Firestore transaction to claim this minute slot
-      try {
-        const docRef = doc(serverFirestoreDb, 'system_state', 'zad_main_state_v1');
-        const acquired = await runTransaction(serverFirestoreDb, async (transaction) => {
-          const snap = await transaction.get(docRef);
-          const minGapSec = Math.max(5, cooldownMinutes) * 60 - 30;
-
-          if (snap.exists()) {
-            const data = snap.data();
-            if (data && typeof data.payload === 'string') {
-              const cloudState = JSON.parse(data.payload) as Partial<PersistedState>;
-              const cloudLastEpoch = cloudState.lastDispatchedEpochMinute || 0;
-
-              if (
-                cloudLastEpoch === targetEpochMinute ||
-                Math.abs(targetEpochMinute - cloudLastEpoch) < minGapSec
-              ) {
-                return false;
-              }
-
-              cloudState.lastDispatchedEpochMinute = targetEpochMinute;
-              if (cloudState.autopilot) {
-                cloudState.autopilot.nextRunAt = new Date(
-                  Date.now() + Math.max(5, cooldownMinutes) * 60 * 1000
-                ).toISOString();
-              }
-
-              transaction.set(docRef, {
-                updatedAt: new Date().toISOString(),
-                payload: JSON.stringify(cloudState)
-              });
-              return true;
-            }
-          }
-          return true;
-        });
-
-        if (!acquired) {
-          return false;
-        }
-      } catch (_e) {
-        // Fallback if transaction fails
-      }
-    }
-
     lastDispatchedEpochMinute = targetEpochMinute;
     return true;
   } finally {
@@ -6861,54 +6674,31 @@ async function dispatchVipMomentumPauseSignal(
     }
   }
 
-  // 4. Atomic Cloud Firestore Transaction Mutex Lock (Guarantees ONLY 1 container between ais-dev & ais-pre can dispatch!):
-  // Stored using { updatedAt, payload } schema required by firestore.rules isValidAppState()
-  if (serverFirestoreDb) {
-    try {
-      const vipLockRef = doc(serverFirestoreDb, 'system_state', 'vip_mpb_lock');
-      const lockOutcome = await runTransaction(serverFirestoreDb, async (tx) => {
-        const snap = await tx.get(vipLockRef);
-        if (snap.exists()) {
-          const raw = snap.data() || {};
-          let lockData: any = raw;
-          if (typeof raw.payload === 'string') {
-            try {
-              lockData = JSON.parse(raw.payload);
-            } catch (_e) {
-              lockData = {};
-            }
-          }
-          if (lockData && lockData.targetEntryTimestamp === targetEntryTimestamp) {
-            return { ok: false, reason: 'already_claimed_minute' as const, remSec: 180 };
-          }
-          if (lockData && typeof lockData.lockedUntil === 'number' && Date.now() < lockData.lockedUntil) {
-            const remSec = Math.ceil((lockData.lockedUntil - Date.now()) / 1000);
-            return { ok: false, reason: 'cooldown' as const, remSec };
-          }
-        }
-        const nowIsoLock = new Date().toISOString();
-        const lockPayload = {
-          lockedUntil: Date.now() + 180_000,
-          targetEntryTimestamp,
-          asset: candidate.pair,
-          lockedAt: nowIsoLock
-        };
-        tx.set(vipLockRef, {
-          updatedAt: nowIsoLock,
-          payload: JSON.stringify(lockPayload)
-        });
-        return { ok: true, reason: 'acquired' as const, remSec: 0 };
-      });
-      if (!lockOutcome.ok) {
-        return {
-          ok: false,
-          error: `تم إرسال إشارة VIP من سيرفر مشترك (متبقي في التبريد ${lockOutcome.remSec} ثانية لمنع تكرار الرسائل)`
-        };
-      }
-    } catch (_e) {
-      // Ignore Firestore transient hiccup and rely on in-memory + signalsStore guards
+  // 4. Atomic Local Disk Mutex Lock (Prevents duplicate VIP dispatches across restarts)
+  const locks = readLocalLocksStore();
+  const lockData = locks.vipMpbLock;
+  if (lockData) {
+    if (lockData.targetEntryTimestamp === targetEntryTimestamp) {
+      return {
+        ok: false,
+        error: 'تم إرسال إشارة VIP لنفس الدقيقة مسبقاً (حماية منع التكرار)'
+      };
+    }
+    if (typeof lockData.lockedUntil === 'number' && Date.now() < lockData.lockedUntil) {
+      const remSec = Math.ceil((lockData.lockedUntil - Date.now()) / 1000);
+      return {
+        ok: false,
+        error: `فترة تبريد نشطة (متبقي ${remSec} ثانية لمنع تكرار الرسائل)`
+      };
     }
   }
+  locks.vipMpbLock = {
+    lockedUntil: Date.now() + 180_000,
+    targetEntryTimestamp,
+    asset: candidate.pair,
+    lockedAt: new Date().toISOString()
+  };
+  writeLocalLocksStore(locks);
 
   lastVipSignalDispatchedAtMs = Date.now();
 
@@ -7451,80 +7241,24 @@ let lastLiveClosingReportAttemptMs = 0;
  * Uses { updatedAt, payload } schema required by firestore.rules isValidAppState().
  */
 async function readTelegramDailyNoticeMap(): Promise<Record<string, string>> {
-  if (!serverFirestoreDb) return {};
-  try {
-    const noticeRef = doc(serverFirestoreDb, 'system_state', 'zad_telegram_notices_v1');
-    const snap = await getDoc(noticeRef);
-    if (!snap.exists()) return {};
-    const raw = snap.data() || {};
-    if (typeof raw.payload === 'string') {
-      const parsed = JSON.parse(raw.payload);
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    }
-    return raw as Record<string, string>;
-  } catch (_e) {
-    return {};
-  }
+  return readLocalLocksStore().dailyNotices;
 }
 
 async function claimTelegramDailyNoticeLock(noticeKey: string): Promise<boolean> {
-  if (!serverFirestoreDb) return true;
-  try {
-    const noticeRef = doc(serverFirestoreDb, 'system_state', 'zad_telegram_notices_v1');
-    return await runTransaction(serverFirestoreDb, async (tx) => {
-      const snap = await tx.get(noticeRef);
-      const raw = snap.exists() ? (snap.data() || {}) : {};
-      let map: Record<string, string> = {};
-      if (typeof raw.payload === 'string') {
-        try {
-          const parsed = JSON.parse(raw.payload);
-          if (parsed && typeof parsed === 'object') map = parsed;
-        } catch (_e) {
-          map = {};
-        }
-      }
-      if (map[noticeKey]) {
-        return false;
-      }
-      const nowIsoNotice = new Date().toISOString();
-      map[noticeKey] = nowIsoNotice;
-      tx.set(noticeRef, {
-        updatedAt: nowIsoNotice,
-        payload: JSON.stringify(map)
-      });
-      return true;
-    });
-  } catch (_e) {
-    return true;
+  const locks = readLocalLocksStore();
+  if (locks.dailyNotices[noticeKey]) {
+    return false;
   }
+  locks.dailyNotices[noticeKey] = new Date().toISOString();
+  writeLocalLocksStore(locks);
+  return true;
 }
 
 async function releaseTelegramDailyNoticeLock(noticeKey: string): Promise<void> {
-  if (!serverFirestoreDb) return;
-  try {
-    const noticeRef = doc(serverFirestoreDb, 'system_state', 'zad_telegram_notices_v1');
-    await runTransaction(serverFirestoreDb, async (tx) => {
-      const snap = await tx.get(noticeRef);
-      if (!snap.exists()) return;
-      const raw = snap.data() || {};
-      if (typeof raw.payload !== 'string') return;
-      let map: Record<string, string> = {};
-      try {
-        const parsed = JSON.parse(raw.payload);
-        if (parsed && typeof parsed === 'object') map = parsed;
-      } catch (_e) {
-        return;
-      }
-      if (map[noticeKey]) {
-        delete map[noticeKey];
-        tx.set(noticeRef, {
-          updatedAt: new Date().toISOString(),
-          payload: JSON.stringify(map)
-        });
-      }
-    });
-  } catch (_e) {
-    // Ignore transient release error
+  const locks = readLocalLocksStore();
+  if (locks.dailyNotices[noticeKey]) {
+    delete locks.dailyNotices[noticeKey];
+    writeLocalLocksStore(locks);
   }
 }
 
@@ -7910,15 +7644,8 @@ async function checkAndSendEveningOpeningGreeting(): Promise<boolean> {
       return false;
     }
 
-    // Also respect initialNoticeSentDate if live trades have already been dispatched today
-    const hasLiveTradesToday = signalsStore.some(s => {
-      if (!s.createdAt) return false;
-      const isLive = s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'));
-      if (!isLive) return false;
-      const d = new Date(s.createdAt);
-      return !isNaN(d.getTime()) && getCurrentEgyptDateString(d) === todayEgypt;
-    });
-    if (liveBroadcastSession.initialNoticeSentDate === todayEgypt && hasLiveTradesToday) {
+    // Never re-send if evening welcome was already sent today (regardless of whether live trades exist yet)
+    if (liveBroadcastSession.initialNoticeSentDate === todayEgypt) {
       return false;
     }
 
@@ -9053,11 +8780,27 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-  // Global CORS Middleware (Allows fx.zadtoo.com and cross-origin clients)
+  // Origin-restricted CORS Middleware (Trusted app origins support credentials; approved broker origins only on stateless robot endpoints)
   app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key');
+    const origin = req.headers.origin;
+    const isRobotStatelessPath =
+      req.path === '/api/quotex-robot/feed' ||
+      req.path === '/api/quotex-robot/report-trade' ||
+      req.path.endsWith('.user.js');
+
+    if (origin && isTrustedAppOrigin(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key');
+    } else if (origin && isRobotStatelessPath && isApprovedBrokerOrAppOrigin(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+    }
+
     if (req.method === 'OPTIONS') {
       return res.sendStatus(204);
     }
@@ -9270,7 +9013,7 @@ async function startServer() {
   });
 
   // Admin: Edit subscriber details, status (ACTIVE / PENDING / BANNED), expiryDate, activationLink, brokerAccountId, planDuration, amountPaid, paymentMethod, and Quotex Robot fields
-  app.patch('/api/subscribers/:id', async (req, res) => {
+  app.patch('/api/subscribers/:id', requireAdminAuth, async (req, res) => {
     const sub = subscribersStore.find(s => s.id === req.params.id);
     if (!sub) {
       return res.status(404).json({ ok: false, error: 'العضو غير موجود' });
@@ -9350,7 +9093,7 @@ async function startServer() {
   });
 
   // Admin Quick Notes (WhatsApp-style saved replies & notes)
-  app.post('/api/quick-notes', async (req, res) => {
+  app.post('/api/quick-notes', requireAdminAuth, async (req, res) => {
     const { title, content } = req.body;
     if (!title || !content) {
       return res.status(400).json({ ok: false, error: 'العنوان والنص مطلوبان' });
@@ -9366,7 +9109,7 @@ async function startServer() {
     res.json({ ok: true, quickNotes: quickNotesStore, note });
   });
 
-  app.put('/api/quick-notes/:id', async (req, res) => {
+  app.put('/api/quick-notes/:id', requireAdminAuth, async (req, res) => {
     const note = quickNotesStore.find(n => n.id === req.params.id);
     if (!note) {
       return res.status(404).json({ ok: false, error: 'الملاحظة غير موجودة' });
@@ -9377,7 +9120,7 @@ async function startServer() {
     res.json({ ok: true, quickNotes: quickNotesStore, note });
   });
 
-  app.delete('/api/quick-notes/:id', async (req, res) => {
+  app.delete('/api/quick-notes/:id', requireAdminAuth, async (req, res) => {
     const idx = quickNotesStore.findIndex(n => n.id === req.params.id);
     if (idx !== -1) {
       quickNotesStore.splice(idx, 1);
@@ -9398,7 +9141,11 @@ async function startServer() {
       return res.status(400).json({ ok: false, error: 'نص الرسالة أو صورة الإيصال مطلوبة' });
     }
 
-    if (sender === 'member' && sub.status === 'BANNED') {
+    if (sender === 'admin' && !isAdminRequest(req)) {
+      return res.status(401).json({ ok: false, error: 'يتطلب صلاحية المشرف لإرسال رسائل الإدارة.' });
+    }
+
+    if (sender !== 'admin' && sub.status === 'BANNED') {
       return res.status(403).json({ ok: false, error: 'تم حظر هذه العضوية ولا يمكن إرسال رسائل.' });
     }
 
@@ -9424,7 +9171,7 @@ async function startServer() {
     res.json({ ok: true, subscriber: sub, message: newMsg });
   });
 
-  app.delete('/api/subscribers/:id', async (req, res) => {
+  app.delete('/api/subscribers/:id', requireAdminAuth, async (req, res) => {
     const idx = subscribersStore.findIndex(s => s.id === req.params.id);
     if (idx !== -1) {
       subscribersStore.splice(idx, 1);
@@ -9433,22 +9180,69 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  // Admin Login Verification
-  app.post('/api/admin/login', (req, res) => {
-    const { email, password } = req.body;
-    const cleanEmail = String(email || '').trim().toLowerCase();
-    const cleanPass = String(password || '').trim();
-    const isEmailValid = ADMIN_EMAILS.some(e => e.toLowerCase() === cleanEmail);
+  // Admin Authentication Status, First-Run Setup, Login & Logout
+  app.get('/api/admin/status', (req, res) => {
+    const admin = getAuthenticatedAdminFromRequest(req);
+    res.json({
+      ok: true,
+      needsSetup: adminNeedsFirstRunSetup(),
+      authenticated: Boolean(admin),
+      email: admin?.email || '',
+      token: admin?.token || ''
+    });
+  });
 
-    if (isEmailValid && cleanPass === ADMIN_PASS) {
-      res.json({ ok: true });
-    } else {
-      res.status(401).json({ ok: false, error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' });
+  app.post('/api/admin/setup', (req, res) => {
+    if (!adminNeedsFirstRunSetup()) {
+      return res.status(403).json({ ok: false, error: 'تم إعداد حساب المشرف مسبقاً. يرجى تسجيل الدخول.' });
     }
+    const cleanEmail = String(req.body?.email || '').trim().toLowerCase();
+    const cleanPass = String(req.body?.password || '').trim();
+    if (!ADMIN_EMAILS.includes(cleanEmail)) {
+      return res.status(403).json({ ok: false, error: 'البريد الإلكتروني غير مصرح له بإعداد حساب المشرف.' });
+    }
+    if (cleanPass.length < 6) {
+      return res.status(400).json({ ok: false, error: 'يجب أن تتكون كلمة المرور من 6 أحرف على الأقل.' });
+    }
+    const { salt, hash } = hashAdminPassword(cleanPass);
+    const prev = readAdminAuthStore();
+    writeAdminAuthStore({
+      ...prev,
+      email: cleanEmail,
+      salt,
+      passwordHash: hash,
+      updatedAt: new Date().toISOString()
+    });
+    const token = issueAdminSessionToken(cleanEmail);
+    setAdminSessionCookie(req, res, token);
+    return res.json({ ok: true, token, email: cleanEmail });
+  });
+
+  app.post('/api/admin/login', (req, res) => {
+    if (adminNeedsFirstRunSetup()) {
+      return res.status(409).json({
+        ok: false,
+        needsSetup: true,
+        error: 'لم يتم إعداد كلمة مرور المشرف بعد. أنشئ كلمة المرور الآن.'
+      });
+    }
+    const cleanEmail = String(req.body?.email || '').trim().toLowerCase();
+    const cleanPass = String(req.body?.password || '').trim();
+    if (verifyAdminCredentials(cleanEmail, cleanPass)) {
+      const token = issueAdminSessionToken(cleanEmail);
+      setAdminSessionCookie(req, res, token);
+      return res.json({ ok: true, token, email: cleanEmail });
+    }
+    return res.status(401).json({ ok: false, error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' });
+  });
+
+  app.post('/api/admin/logout', (req, res) => {
+    clearAdminSessionCookie(req, res);
+    res.json({ ok: true });
   });
 
   // Get signals, settings, autopilot status, robotSettings, and live global forex radar
-  app.get('/api/signals', async (_req, res) => {
+  app.get('/api/signals', async (req, res) => {
     if (!isCloudStateLoaded) {
       await loadStateFromCloudAndDisk();
     }
@@ -9473,32 +9267,41 @@ async function startServer() {
       saveState();
     }
 
+    const isAdmin = isAdminRequest(req);
     autoPilot.marketOpenStatus = isGlobalForexMarketOpen();
     autoPilot.currentEgyptHour = getCurrentEgyptHour();
     autoPilot.isFreeBotWithinSchedule = isFreeBotActiveNow(autoPilot);
     syncSignalsIntoDailyStats(signalsStore, true);
+
+    const safeAutopilot = isAdmin
+      ? autoPilot
+      : {
+          ...autoPilot,
+          botToken: '',
+          vipBotToken: ''
+        };
+
     res.json({
+      isAdmin,
       signals: signalsStore,
       settings: appSettings,
-      autopilot: autoPilot,
-      robotSettings,
+      autopilot: safeAutopilot,
+      robotSettings: { ...robotSettings, strategyEngineMode: 'VIP_WITH_MPB' },
       liveMarket: liveMarketSnapshots,
-      subscribers: subscribersStore,
-      quickNotes: quickNotesStore,
+      subscribers: isAdmin ? subscribersStore : [],
+      quickNotes: isAdmin ? quickNotesStore : [],
       dailyStats: Object.values(dailyStatsStore).sort((a, b) => b.date.localeCompare(a.date)),
       forexNews: forexNewsStore,
       plans: plansStore,
       contactLinks: contactLinksStore,
       todayEgyptDate: getCurrentEgyptDateString(new Date()),
       endOfDayReport: buildEndOfDayFinalReport(),
-      cloudSynced: Boolean(serverFirestoreDb)
+      cloudSynced: fs.existsSync(STATE_FILE)
     });
   });
 
-  // Update Quotex Automated Trading Robot Settings (Admin)
-  app.post('/api/robot-settings', async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+  // Update Quotex Automated Trading Robot Settings (Admin Only, locked to VIP_WITH_MPB)
+  app.post('/api/robot-settings', requireAdminAuth, async (req, res) => {
     const incoming = req.body || {};
     robotSettings = {
       ...robotSettings,
@@ -9507,29 +9310,22 @@ async function startServer() {
         typeof incoming.isPublishedToVisitors === 'boolean'
           ? incoming.isPublishedToVisitors
           : robotSettings.isPublishedToVisitors,
-      strategyEngineMode:
-        incoming.strategyEngineMode === 'PUBLIC_CLASSIC'
-          ? 'PUBLIC_CLASSIC'
-          : 'VIP_WITH_MPB',
+      strategyEngineMode: 'VIP_WITH_MPB', // Strictly locked to latest unified MPB strategy
       noMartingaleStrict: true // Strictly 0 Martingale
     };
     const cloudSaved = await saveState();
     res.json({ ok: true, robotSettings, cloudSaved });
   });
 
-  // Dedicated endpoint for instantly switching strategy mode from Quotex Robot HUD or Admin
-  app.post('/api/quotex-robot/strategy-mode', async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
-    const rawMode = req.body?.mode || req.body?.strategyEngineMode;
-    const mode = rawMode === 'PUBLIC_CLASSIC' ? 'PUBLIC_CLASSIC' : 'VIP_WITH_MPB';
-    robotSettings.strategyEngineMode = mode;
+  // Strategy switching disabled — always returns locked VIP_WITH_MPB (Admin Only)
+  app.post('/api/quotex-robot/strategy-mode', requireAdminAuth, async (_req, res) => {
+    robotSettings.strategyEngineMode = 'VIP_WITH_MPB';
     const cloudSaved = await saveState();
-    return res.json({ ok: true, strategyEngineMode: robotSettings.strategyEngineMode, cloudSaved });
+    return res.json({ ok: true, strategyEngineMode: 'VIP_WITH_MPB', locked: true, cloudSaved });
   });
 
   // Admin: Quickly create a dedicated member/key or generate key for Quotex Robot
-  app.post('/api/quotex-robot/create-key', async (req, res) => {
+  app.post('/api/quotex-robot/create-key', requireAdminAuth, async (req, res) => {
     const { name, brokerAccountId, expiryDate, tradeStake, defaultMode } = req.body || {};
     if (!name || !String(name).trim()) {
       return res.status(400).json({ ok: false, error: 'اسم العضو مطلوب لتوليد مفتاح الروبوت' });
@@ -9573,20 +9369,42 @@ async function startServer() {
     res.json({ ok: true, subscriber: newSub });
   });
 
-  // Quotex Floating Robot Live API Endpoint (Supports CORS for Quotex Floating Script)
-  // Takes Member API Key -> Verifies Subscription & Validity -> Returns Active Signal, Result, Pair, Expiry, and Win/Loss Stats (Strictly No Martingale)
+  // Admin: Generate ready-to-install Floating Robot script with optional embedded member key
+  app.get('/api/quotex-robot/admin-script', requireAdminAuth, (req, res) => {
+    const host = req.get('host') || 'fx.zadtoo.com';
+    const proto = host.includes('localhost') || host.includes('127.0.0.1') ? 'http' : 'https';
+    const rawOrigin = String(req.query.serverOrigin || `${proto}://${host}`).trim().replace(/\/+$/, '');
+    const serverOrigin = isApprovedBrokerOrAppOrigin(rawOrigin) ? rawOrigin : `${proto}://${host}`;
+    const requestedKey = String(req.query.apiKey || '').replace(/[^A-Za-z0-9_-]/g, '').trim();
+    const firstActiveSub = subscribersStore.find(s => s.status === 'ACTIVE' && s.robotEnabled !== false && s.robotApiKey);
+    const embeddedApiKey = requestedKey || firstActiveSub?.robotApiKey || '';
+
+    const script = buildFloatingQuotexRobotScript({
+      serverOrigin,
+      apiKey: embeddedApiKey,
+      defaultStake: robotSettings.defaultStakeUsd || 5,
+      defaultMode: robotSettings.defaultMode || 'MANUAL',
+      soundDefault: robotSettings.soundAlertsEnabled !== false,
+      autoPairDefault: robotSettings.autoSelectPair !== false,
+      autoM1Default: robotSettings.autoSetExpiryM1 !== false,
+      strategyDefault: 'VIP_WITH_MPB'
+    });
+
+    res.json({
+      ok: true,
+      script,
+      version: robotSettings.version || 'v5.0.2',
+      serverOrigin,
+      embeddedApiKey: embeddedApiKey || 'غير مضمّن'
+    });
+  });
+
+  // Quotex Floating Robot Live API Endpoint (Option A: Strictly verifies ACTIVE member in Express backend)
   app.options('/api/quotex-robot/feed', (_req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
     res.sendStatus(204);
   });
 
   app.get('/api/quotex-robot/feed', async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
-
     if (!isCloudStateLoaded) {
       await loadStateFromCloudAndDisk();
     }
@@ -9596,97 +9414,79 @@ async function startServer() {
       return res.status(401).json({
         ok: false,
         authorized: false,
-        error: 'يرجى إدخال مفتاح API الخاص بالعضو (API Key).'
+        error: 'يرجى إدخال مفتاح تفعيل العضو (API Key) الصادر من المشرف.'
       });
     }
 
-    // Check Master Admin Preview Key, Member Robot API Key, OR Member Broker Account ID (Must be explicitly approved and active)
+    // Strict Registered ACTIVE Member Verification ONLY (No demo/master test keys allowed)
     const cleanKeyUpper = apiKey.toUpperCase();
-    const isAdminMasterTest =
-      cleanKeyUpper === 'QX-ADMIN-MASTER-TEST' ||
-      cleanKeyUpper === 'ADMIN-MASTER-TEST' ||
-      cleanKeyUpper.includes('${') ||
-      cleanKeyUpper === 'DEMO';
     const member = subscribersStore.find(
       s =>
         (s.robotApiKey || '').trim().toUpperCase() === cleanKeyUpper ||
-        (s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === cleanKeyUpper) ||
-        (s.id && s.id.trim().toUpperCase() === cleanKeyUpper) ||
-        (s.phone && s.phone.trim().toUpperCase() === cleanKeyUpper) ||
-        (s.email && s.email.trim().toUpperCase() === cleanKeyUpper)
+        (s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === cleanKeyUpper)
     );
 
-    if (!member && !isAdminMasterTest) {
+    if (!member) {
       return res.status(403).json({
         ok: false,
         authorized: false,
-        member: {
-          name: `حساب غير مسجل (${apiKey})`,
-          error: 'غير مسجل لدى الإدارة'
-        },
-        error: 'رقم حساب البروكر غير مسجل لدى الإدارة. يجب مصادقة المشرف على حسابك وتفعيل خطتك أولاً.'
+        error: 'مفتاح الروبوت أو رقم حساب البروكر غير مسجل أو غير مصادق عليه من المشرف.'
       });
     }
 
     const todayStr = getCurrentEgyptDateString(new Date());
 
-    if (member) {
-      // 1. Strict Admin Approval Check: Member status must be ACTIVE
-      if (member.status === 'PENDING') {
-        return res.status(403).json({
-          ok: false,
-          authorized: false,
-          memberName: member.name,
-          error: 'حسابك قيد المراجعة وبانتظار مصادقة المشرف وتحديد خطتك وصلاحيتها.'
-        });
-      }
-
-      // 2. Admin disabled robot or banned member
-      if (member.status === 'BANNED' || member.robotEnabled === false) {
-        return res.status(403).json({
-          ok: false,
-          authorized: false,
-          memberName: member.name,
-          error: 'تم إيقاف صلاحية الروبوت لهذا الحساب من قِبل المشرف.'
-        });
-      }
-
-      // 3. Expiry Date Check: Plan validity must be set by admin and not expired
-      const expDate = (member.robotExpiryDate || member.expiryDate || '').trim();
-      if (!expDate || !/^\d{4}-\d{2}-\d{2}$/.test(expDate)) {
-        return res.status(403).json({
-          ok: false,
-          authorized: false,
-          memberName: member.name,
-          error: 'لم يحدد المشرف مدة صلاحية الخطة لهذا الحساب بعد. يرجى مراجعة الإدارة لتفعيل الخطة.'
-        });
-      }
-
-      if (expDate < todayStr) {
-        return res.status(403).json({
-          ok: false,
-          authorized: false,
-          memberName: member.name,
-          expiryDate: expDate,
-          daysLeft: 0,
-          error: `انتهت مدة صلاحية خطتك بتاريخ (${expDate}). يرجى مراجعة المشرف لتجديد الاشتراك.`
-        });
-      }
+    // 1. Strict Admin Approval Check: Member status must be ACTIVE
+    if (member.status === 'PENDING') {
+      return res.status(403).json({
+        ok: false,
+        authorized: false,
+        memberName: member.name,
+        error: 'حسابك قيد المراجعة وبانتظار مصادقة المشرف وتحديد خطتك وصلاحيتها.'
+      });
     }
 
-    const expDateStr = member
-      ? (member.robotExpiryDate || member.expiryDate || '')
-      : '2099-12-31';
+    // 2. Admin disabled robot or banned member
+    if (member.status === 'BANNED' || member.robotEnabled === false) {
+      return res.status(403).json({
+        ok: false,
+        authorized: false,
+        memberName: member.name,
+        error: 'تم إيقاف صلاحية الروبوت لهذا الحساب من قِبل المشرف.'
+      });
+    }
+
+    // 3. Expiry Date Check: Plan validity must be set by admin and not expired
+    const expDate = (member.robotExpiryDate || member.expiryDate || '').trim();
+    if (!expDate || !/^\d{4}-\d{2}-\d{2}$/.test(expDate)) {
+      return res.status(403).json({
+        ok: false,
+        authorized: false,
+        memberName: member.name,
+        error: 'لم يحدد المشرف مدة صلاحية الخطة لهذا الحساب بعد. يرجى مراجعة الإدارة لتفعيل الخطة.'
+      });
+    }
+
+    if (expDate < todayStr) {
+      return res.status(403).json({
+        ok: false,
+        authorized: false,
+        memberName: member.name,
+        expiryDate: expDate,
+        daysLeft: 0,
+        error: `انتهت مدة صلاحية خطتك بتاريخ (${expDate}). يرجى مراجعة المشرف لتجديد الاشتراك.`
+      });
+    }
+
+    const expDateStr = expDate;
 
     let daysLeft = 30;
-    if (expDateStr && /^\d{4}-\d{2}-\d{2}$/.test(expDateStr)) {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(expDateStr)) {
       const diffMs = new Date(`${expDateStr}T23:59:59Z`).getTime() - Date.now();
       daysLeft = Math.max(0, Math.ceil(diffMs / (1000 * 60 * 60 * 24)));
     }
 
-    // Strictly No Martingale (0 Gale) calculation for the Robot:
-    // Only direct 1st-candle wins count as WIN; any Gale1 or Loss counts as a direct 1st-candle LOSS in 0-Martingale mode
-    // Strictly filtered to signals within Egypt trading hours (09:00 AM to 09:00 PM Egypt Time)
+    // Strictly No Martingale (0 Gale) calculation for the Robot
     const todayTradingSignals = signalsStore.filter(s => {
       if (!s.createdAt) return false;
       const d = new Date(s.createdAt);
@@ -9701,13 +9501,8 @@ async function startServer() {
     const winRateNoGale =
       totalFinished > 0 ? Math.round((todayDirectWins / totalFinished) * 100) : 100;
 
-    // Floating Robot Strategy Mode Resolution:
-    // Respects client dropdown selection via query parameter ?strategyMode=... or headers
-    const rawMode = String(req.query.strategyMode || req.headers['x-strategy-mode'] || '').trim();
-    const effectiveMode: RobotStrategyEngineMode =
-      rawMode === 'PUBLIC_CLASSIC'
-        ? 'PUBLIC_CLASSIC'
-        : 'VIP_WITH_MPB';
+    // Strategy locked to latest VIP_WITH_MPB (no switching)
+    const effectiveMode: RobotStrategyEngineMode = 'VIP_WITH_MPB';
 
     const workingStatus = getRobotWorkingStatusForMode(effectiveMode);
     const isRobotActive = workingStatus.isActive;
@@ -9717,8 +9512,7 @@ async function startServer() {
     const freeBotStatus = getFreeBotTargetStatus();
     const isVipActive = isVipBotActiveNow();
 
-    // Latest active/recent signal for the robot to alert & auto-execute on Quotex
-    // Strictly filtered to the user's selected strategy mode, operating hours, and market open!
+    // Latest active/recent signal strictly filtered to operating hours and global market open
     const isGlobalMarketOpen = isGlobalForexMarketOpen();
     const latestSig = (isGlobalMarketOpen && isRobotActive && !warmup.isWarmup)
       ? getLiveRobotActiveSignal(effectiveMode)
@@ -9808,17 +9602,17 @@ async function startServer() {
         soundAlertsEnabled: robotSettings.soundAlertsEnabled
       },
       member: {
-        id: member ? member.id : 'admin-master',
-        name: member ? member.name : 'حساب تجريبي معتمد (ZAD FX)',
-        brokerAccountId: member ? (member.brokerAccountId || member.id) : 'QX-ADMIN-MASTER-TEST',
-        planDuration: member ? member.planDuration : 'unlimited',
-        status: member ? member.status : 'ACTIVE',
-        expiryDate: expDateStr || 'مفتوح',
+        id: member.id,
+        name: member.name,
+        brokerAccountId: member.brokerAccountId || member.id,
+        planDuration: member.planDuration,
+        status: member.status,
+        expiryDate: expDateStr,
         daysLeft,
-        defaultMode: member?.robotDefaultMode || robotSettings.defaultMode || 'AUTO',
-        tradeStakeUsd: member?.robotTradeStake || robotSettings.defaultStakeUsd || 5,
-        memberWins: member?.robotWins || 0,
-        memberLosses: member?.robotLosses || 0
+        defaultMode: member.robotDefaultMode || robotSettings.defaultMode || 'AUTO',
+        tradeStakeUsd: member.robotTradeStake || robotSettings.defaultStakeUsd || 5,
+        memberWins: member.robotWins || 0,
+        memberLosses: member.robotLosses || 0
       },
       statsNoMartingale: {
         wins: todayDirectWins,
@@ -9841,32 +9635,32 @@ async function startServer() {
     });
   });
 
-  // Dynamic Userscript serving endpoint (with automatic origin & member key injection)
+  // Dynamic Userscript serving endpoint (strictly sanitized origin & member key)
   app.get(['/api/quotex-robot/zad-broker-robot.user.js', '/zad-broker-robot.user.js'], (req, res) => {
     const host = req.get('host') || 'fx.zadtoo.com';
     const proto = host.includes('localhost') || host.includes('127.0.0.1') ? 'http' : 'https';
     const origin = `${proto}://${host}`;
-    const apiKey = (req.query.apiKey as string) || 'QX-ADMIN-MASTER-TEST';
+    const safeOrigin = isApprovedBrokerOrAppOrigin(origin) ? origin : 'https://fx.zadtoo.com';
+    const safeApiKey = String(req.query.apiKey || '').replace(/[^A-Za-z0-9_-]/g, '').trim();
     res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
-    res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     const filePath = path.join(process.cwd(), 'public', 'zad-broker-robot.user.js');
     if (fs.existsSync(filePath)) {
       let content = fs.readFileSync(filePath, 'utf-8');
-      content = content.replace(/\$\{appOrigin\}/g, origin).replace(/\$\{activeKey\}/g, apiKey);
+      content = content.replace(/\$\{appOrigin\}/g, safeOrigin).replace(/\$\{activeKey\}/g, safeApiKey);
       return res.send(content);
     }
     res.status(404).send('Userscript file not found');
   });
 
-  // Dedicated Golden Reference Baseline Userscript endpoint (Protected Immutable Backup v3.6)
+  // Dedicated Golden Reference Baseline Userscript endpoint
   app.get(['/api/quotex-robot/golden-reference.user.js', '/zad-broker-robot.golden.user.js'], (req, res) => {
     const host = req.get('host') || 'fx.zadtoo.com';
     const proto = host.includes('localhost') || host.includes('127.0.0.1') ? 'http' : 'https';
     const origin = `${proto}://${host}`;
-    const apiKey = (req.query.apiKey as string) || 'QX-ADMIN-MASTER-TEST';
+    const safeOrigin = isApprovedBrokerOrAppOrigin(origin) ? origin : 'https://fx.zadtoo.com';
+    const safeApiKey = String(req.query.apiKey || '').replace(/[^A-Za-z0-9_-]/g, '').trim();
     res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
-    res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     res.setHeader('Content-Disposition', 'inline; filename="zad-broker-robot.golden-v4.0.user.js"');
     const goldenPath = path.join(process.cwd(), 'public', 'backups', 'zad-broker-robot.golden-v3.6.user.js');
@@ -9874,14 +9668,14 @@ async function startServer() {
     const targetFile = fs.existsSync(goldenPath) ? goldenPath : fallbackPath;
     if (fs.existsSync(targetFile)) {
       let content = fs.readFileSync(targetFile, 'utf-8');
-      content = content.replace(/\$\{appOrigin\}/g, origin).replace(/\$\{activeKey\}/g, apiKey);
+      content = content.replace(/\$\{appOrigin\}/g, safeOrigin).replace(/\$\{activeKey\}/g, safeApiKey);
       return res.send(content);
     }
     res.status(404).send('Golden Userscript file not found');
   });
 
-  // Admin Restore Golden Baseline Endpoint (Instantly rolls back the robot to the tested v4.0 Golden Baseline)
-  app.post('/api/quotex-robot/restore-golden-baseline', async (_req, res) => {
+  // Admin Restore Golden Baseline Endpoint (Admin Only)
+  app.post('/api/quotex-robot/restore-golden-baseline', requireAdminAuth, async (_req, res) => {
     try {
       const goldenPath = path.join(process.cwd(), 'public', 'backups', 'zad-broker-robot.golden-v3.6.user.js');
       const publicPath = path.join(process.cwd(), 'public', 'zad-broker-robot.user.js');
@@ -9907,17 +9701,13 @@ async function startServer() {
     }
   });
 
-  // Quotex Robot Trade Execution Callback (Records member Win/Loss counter via API)
+  // Quotex Robot Trade Execution Callback CORS preflight
   app.options('/api/quotex-robot/report-trade', (_req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
     res.sendStatus(204);
   });
 
-  // Telegram Bot Diagnostic Test Endpoint (Checks Bot Credentials + Sends Real Verification Message)
-  // Telegram Bot Diagnostic Test Endpoint (Checks Bot Credentials + Sends Real Verification Message)
-  app.all(['/api/telegram/test-connection', '/api/telegram/test-vip-connection'], async (req, res) => {
+  // Telegram Bot Diagnostic Test Endpoint (Admin Only)
+  app.all(['/api/telegram/test-connection', '/api/telegram/test-vip-connection'], requireAdminAuth, async (req, res) => {
     const isVip = req.path.includes('vip') || req.query.type === 'vip' || req.body?.type === 'vip';
     const token = isVip
       ? (autoPilot.vipBotToken || autoPilot.botToken || '').trim()
@@ -9986,19 +9776,20 @@ async function startServer() {
     }
   });
 
-  // Dedicated Browser Diagnostic Verification Page (Displays member, validity, active signal, and JSON)
+  // Dedicated Browser Diagnostic Verification Page (Strictly Registered ACTIVE Members)
   app.get('/api/robot-status', async (req, res) => {
     if (!isCloudStateLoaded) {
       await loadStateFromCloudAndDisk();
     }
-    const apiKey = String(req.query.apiKey || 'QX-ADMIN-MASTER-TEST').trim();
-    const isAdminMasterTest = apiKey.toUpperCase() === 'QX-ADMIN-MASTER-TEST';
+    const apiKey = String(req.query.apiKey || '').trim();
     const cleanKeyUpper = apiKey.toUpperCase();
-    const member = subscribersStore.find(
-      s =>
-        (s.robotApiKey || '').trim().toUpperCase() === cleanKeyUpper ||
-        (s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === cleanKeyUpper)
-    );
+    const member = cleanKeyUpper
+      ? subscribersStore.find(
+          s =>
+            (s.robotApiKey || '').trim().toUpperCase() === cleanKeyUpper ||
+            (s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === cleanKeyUpper)
+        )
+      : undefined;
 
     const todayStr = getCurrentEgyptDateString(new Date());
     const todayTradingSignals = signalsStore.filter(s => {
@@ -10015,148 +9806,93 @@ async function startServer() {
     const winRateNoGale = totalFinished > 0 ? Math.round((todayDirectWins / totalFinished) * 100) : 100;
     const latestSig = signalsStore[0] || null;
 
-    const memberName = member ? member.name : (isAdminMasterTest ? 'حساب المشرف التجريبي (Master)' : 'غير معتمد');
-    const brokerId = member ? member.brokerAccountId : (isAdminMasterTest ? 'ADMIN-PRO' : 'غير مسجل');
-    const expDate = member ? (member.robotExpiryDate || member.expiryDate || '2099-12-31') : '2099-12-31';
-    const statusText = member ? member.status : (isAdminMasterTest ? 'ACTIVE (نشط)' : 'مرفوض');
+    const expDate = member ? (member.robotExpiryDate || member.expiryDate || '').trim() : '';
+    const isValidLicense = Boolean(
+      member &&
+      member.status === 'ACTIVE' &&
+      member.robotEnabled !== false &&
+      /^\d{4}-\d{2}-\d{2}$/.test(expDate) &&
+      expDate >= todayStr
+    );
 
-    res.send(`<!DOCTYPE html>
+    const memberName = escapeHtmlSafe(member ? member.name : 'غير معتمد / غير مسجل');
+    const brokerId = escapeHtmlSafe(member ? member.brokerAccountId : 'غير مسجل');
+    const safeKeyDisplay = escapeHtmlSafe(apiKey || 'لم يُمرّر مفتاح');
+    const statusText = escapeHtmlSafe(
+      isValidLicense ? 'ACTIVE (نشط ومفعّل ✓)' : member ? `${member.status} (موقوف أو منتهي)` : 'مرفوض (يتطلب مفتاح عضو ACTIVE)'
+    );
+    const expDisplay = escapeHtmlSafe(expDate ? `${expDate} ${expDate >= todayStr ? '(ساري)' : '(منتهي)'}` : 'غير محدد');
+    const sigAsset = latestSig ? escapeHtmlSafe(latestSig.asset) : '';
+    const sigEntryTime = latestSig ? escapeHtmlSafe(latestSig.entryTime) : '';
+    const sigStatus = latestSig ? escapeHtmlSafe(latestSig.status) : '';
+    const sigPrice = latestSig ? escapeHtmlSafe(latestSig.livePrice || '--') : '';
+
+    res.status(isValidLicense ? 200 : 403).send(`<!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
   <meta charset="UTF-8">
-  <title>فحص اتصال روبوت التداول المباشر وتليجرام</title>
+  <title>فحص ترخيص روبوت التداول المباشر</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #0B0F17; color: #f8fafc; padding: 24px; margin: 0; line-height: 1.6; }
-    .card { max-width: 650px; margin: 0 auto; background: #111827; border: 2px solid #10b981; border-radius: 16px; padding: 24px; box-shadow: 0 10px 40px rgba(0,0,0,0.8); }
-    h1 { color: #10b981; margin-top: 0; font-size: 20px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
-    .badge { background: #064e3b; color: #6ee7b7; padding: 4px 10px; border-radius: 8px; font-weight: bold; font-size: 12px; }
+    .card { max-width: 650px; margin: 0 auto; background: #111827; border: 2px solid ${isValidLicense ? '#10b981' : '#ef4444'}; border-radius: 16px; padding: 24px; box-shadow: 0 10px 40px rgba(0,0,0,0.8); }
+    h1 { color: ${isValidLicense ? '#10b981' : '#f87171'}; margin-top: 0; font-size: 20px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+    .badge { background: ${isValidLicense ? '#064e3b' : '#7f1d1d'}; color: ${isValidLicense ? '#6ee7b7' : '#fecaca'}; padding: 4px 10px; border-radius: 8px; font-weight: bold; font-size: 12px; }
     .row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1f2937; font-size: 14px; }
     .val { font-weight: bold; color: #fbbf24; font-family: monospace; }
     .signal-box { background: #0f172a; border: 1px solid #38bdf8; border-radius: 12px; padding: 14px; margin: 16px 0; }
-    .tg-box { background: #0c1a2e; border: 1px solid #2563eb; border-radius: 12px; padding: 14px; margin: 16px 0; }
     .btn { display: inline-block; background: #10b981; color: #020617; font-weight: bold; padding: 10px 18px; border-radius: 10px; text-decoration: none; margin: 6px 4px; font-size: 13px; cursor: pointer; border: none; }
-    .btn-tg { background: #38bdf8; color: #020617; }
     .btn:hover { opacity: 0.9; }
-    #tg-status { margin-top: 10px; font-size: 13px; font-weight: bold; display: none; padding: 10px; border-radius: 8px; }
   </style>
 </head>
 <body>
   <div class="card">
     <h1>
       <span>🤖 فحص اتصال ورخصة روبوت التداول</span>
-      <span class="badge">سيرفر متصل 🟢</span>
+      <span class="badge">${isValidLicense ? 'ترخيص ساري 🟢' : 'غير مصرّح 🔴'}</span>
     </h1>
-    <p style="color:#94a3b8;font-size:13px;margin-bottom:18px;">هذه الصفحة تؤكد اتصال السيرفر المباشر بالمتصفح، وتظهر بيانات العضو ورخصته وحالة الإشارات واتصال تليجرام بالثانية.</p>
+    <p style="color:#94a3b8;font-size:13px;margin-bottom:18px;">يتم التحقق من صلاحية المشتركين حصرياً عبر الخادم الخلفي ولا تُقبل سوى العضويات المفعّلة (ACTIVE) من قِبل المشرف.</p>
 
     <div class="row"><span>اسم العضو:</span><span class="val" style="color:#38bdf8;">${memberName}</span></div>
     <div class="row"><span>رقم حساب البروكر (ID):</span><span class="val">${brokerId}</span></div>
-    <div class="row"><span>مفتاح الـ API المستخدم:</span><span class="val" style="color:#a78bfa;">${apiKey}</span></div>
-    <div class="row"><span>حالة الاشتراك:</span><span class="val" style="color:#10b981;">${statusText}</span></div>
-    <div class="row"><span>تاريخ انتهاء الصلاحية:</span><span class="val" style="color:#34d399;">${expDate} (ساري ونشط)</span></div>
+    <div class="row"><span>مفتاح الـ API المستخدم:</span><span class="val" style="color:#a78bfa;">${safeKeyDisplay}</span></div>
+    <div class="row"><span>حالة الاشتراك:</span><span class="val" style="color:${isValidLicense ? '#10b981' : '#f87171'};">${statusText}</span></div>
+    <div class="row"><span>تاريخ انتهاء الصلاحية:</span><span class="val" style="color:#34d399;">${expDisplay}</span></div>
+    <div class="row"><span>الاستراتيجية المعتمدة:</span><span class="val" style="color:#38bdf8;">VIP_WITH_MPB (الموحدة الأخيرة)</span></div>
     <div class="row"><span>إحصائيات الصفقات اليوم:</span><span class="val" style="color:#fff;">${todayDirectWins} ربح / ${todayNoGaleLosses} خسارة (${winRateNoGale}%)</span></div>
-    <div class="row"><span>قناة تليجرام المعتمدة:</span><span class="val" style="color:#38bdf8;">${autoPilot.chatId || '@ZadNBFX'}</span></div>
-
-    <div style="font-size:11.5px;color:#cbd5e1;background:#0c1a2e;padding:10px 14px;border-radius:10px;border:1px solid #1e3a8a;margin:12px 0;">
-      🌐 <b>الرابط العام المباشر (يعمل على أي جهاز بدون فتح بيئة العمل):</b><br/>
-      <a href="https://fx.zadtoo.com/api/robot-status" style="color:#38bdf8;font-weight:bold;text-decoration:underline;display:inline-block;margin-top:4px;" target="_blank">https://fx.zadtoo.com/api/robot-status</a>
-    </div>
-
-    <div class="tg-box">
-      <div style="font-size:13px;color:#38bdf8;font-weight:bold;margin-bottom:6px;">✈️ فحص اتصال بوت تليجرام المباشر:</div>
-      <div style="font-size:12px;color:#94a3b8;margin-bottom:10px;">يمكنك تجربة إرسال رسالة فحص فورية إلى القناة لتأكيد الاتصال وصلاحيات النشر.</div>
-      <button id="btn-test-tg" class="btn btn-tg" onclick="testTelegram()">✈️ إرسال رسالة فحص لقناة تليجرام الآن</button>
-      <button class="btn" onclick="testSignalNow()" style="background:#f59e0b;color:#000;">⚡ اقتناص إشارة فورية وإرسالها</button>
-      <div id="tg-status"></div>
-    </div>
 
     <div class="signal-box">
       <div style="font-size:12px;color:#38bdf8;font-weight:bold;margin-bottom:6px;">📡 حالة الإشارة الحالية على السيرفر:</div>
-      ${latestSig ? `
-        <div style="font-size:16px;font-weight:900;color:#fff;">${latestSig.asset} | <span style="color:${latestSig.direction === 'CALL' ? '#34d399' : '#f87171'}">${latestSig.direction === 'CALL' ? 'صعود (CALL 🟢)' : 'هبوط (PUT 🔴)'}</span> | موعد الدخول <b>${latestSig.entryTime}</b></div>
-        <div style="font-size:12px;color:#94a3b8;margin-top:4px;">حالة الإشارة: <b>${latestSig.status}</b> | سعر السوق: <b>${latestSig.livePrice || '--'}</b></div>
-      ` : '<div style="color:#94a3b8;">بانتظار الإشارة القادمة (رادار السوق العالمي يمسح الأزواج بالثانية)</div>'}
+      ${isValidLicense && latestSig ? `
+        <div style="font-size:16px;font-weight:900;color:#fff;">${sigAsset} | <span style="color:${latestSig.direction === 'CALL' ? '#34d399' : '#f87171'}">${latestSig.direction === 'CALL' ? 'صعود (CALL 🟢)' : 'هبوط (PUT 🔴)'}</span> | موعد الدخول <b>${sigEntryTime}</b></div>
+        <div style="font-size:12px;color:#94a3b8;margin-top:4px;">حالة الإشارة: <b>${sigStatus}</b> | سعر السوق: <b>${sigPrice}</b></div>
+      ` : '<div style="color:#94a3b8;">' + (isValidLicense ? 'بانتظار الإشارة القادمة (رادار السوق العالمي يمسح الأزواج بالثانية)' : 'مطلوب مفتاح مشترك ACTIVE ساري لعرض تفاصيل الإشارات.') + '</div>'}
     </div>
 
     <div style="text-align:center;margin-top:20px;">
-      <a href="/api/quotex-robot/feed?apiKey=${encodeURIComponent(apiKey)}" class="btn" target="_blank">🔗 فتح رابط الـ JSON الخام (Raw API Feed)</a>
+      ${apiKey ? `<a href="/api/quotex-robot/feed?apiKey=${encodeURIComponent(apiKey)}" class="btn" target="_blank">🔗 فحص استجابة API JSON</a>` : ''}
       <a href="/" class="btn" style="background:#334155;color:#fff;">🏠 العودة للمنصة الرئيسية</a>
     </div>
   </div>
-
-  <script>
-    async function testTelegram() {
-      const btn = document.getElementById('btn-test-tg');
-      const box = document.getElementById('tg-status');
-      btn.disabled = true;
-      btn.innerText = '⏳ جاري الاتصال بتليجرام...';
-      box.style.display = 'block';
-      box.style.background = '#1e293b';
-      box.style.color = '#38bdf8';
-      box.innerText = 'جاري إرسال رسالة الفحص إلى قناة تليجرام...';
-
-      try {
-        const res = await fetch('/api/telegram/test-connection', { method: 'POST' });
-        const data = await res.json();
-        if (data.ok) {
-          box.style.background = '#064e3b';
-          box.style.color = '#34d399';
-          box.innerHTML = '✅ ' + data.message + ' (رقم الرسالة في القناة: #' + data.messageId + ')';
-        } else {
-          box.style.background = '#7f1d1d';
-          box.style.color = '#fca5a5';
-          box.innerHTML = '❌ ' + (data.error || 'فشل الاتصال بتليجرام');
-        }
-      } catch (e) {
-        box.style.background = '#7f1d1d';
-        box.style.color = '#fca5a5';
-        box.innerHTML = '❌ خطأ في الاتصال بالسيرفر: ' + e.message;
-      } finally {
-        btn.disabled = false;
-        btn.innerText = '✈️ إرسال رسالة فحص لقناة تليجرام الآن';
-      }
-    }
-
-    async function testSignalNow() {
-      const box = document.getElementById('tg-status');
-      box.style.display = 'block';
-      box.style.background = '#1e293b';
-      box.style.color = '#38bdf8';
-      box.innerText = 'جاري مسح السوق واقتناص إشارة حية وإرسالها...';
-
-      try {
-        const res = await fetch('/api/autopilot/trigger-now', { method: 'POST' });
-        const data = await res.json();
-        if (data.ok && data.signal) {
-          box.style.background = '#064e3b';
-          box.style.color = '#34d399';
-          box.innerHTML = '✅ تم اقتناص إشارة (' + data.signal.asset + ' ' + data.signal.direction + ') وإرسالها لتليجرام وللروبوت بنجاح!';
-          setTimeout(() => location.reload(), 2000);
-        } else {
-          box.style.background = '#7f1d1d';
-          box.style.color = '#fca5a5';
-          box.innerHTML = '⚠️ ' + (data.error || data.telegramError || 'تعذر إرسال الإشارة');
-        }
-      } catch (e) {
-        box.style.background = '#7f1d1d';
-        box.style.color = '#fca5a5';
-        box.innerHTML = '❌ خطأ: ' + e.message;
-      }
-    }
-  </script>
 </body>
 </html>`);
   });
 
   app.post('/api/quotex-robot/report-trade', async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
     const { apiKey, outcome } = req.body || {};
     const cleanKey = String(apiKey || '').trim().toUpperCase();
+    if (!cleanKey) {
+      return res.status(401).json({ ok: false, error: 'مفتاح العضو مطلوب' });
+    }
     const member = subscribersStore.find(
-      s => (s.robotApiKey || '').trim().toUpperCase() === cleanKey
+      s =>
+        (s.robotApiKey || '').trim().toUpperCase() === cleanKey ||
+        (s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === cleanKey)
     );
-    if (!member) {
-      return res.status(404).json({ ok: false, error: 'مفتاح العضو غير موجود' });
+    const todayStr = getCurrentEgyptDateString(new Date());
+    const expDate = member ? (member.robotExpiryDate || member.expiryDate || '').trim() : '';
+    if (!member || member.status !== 'ACTIVE' || member.robotEnabled === false || !/^\d{4}-\d{2}-\d{2}$/.test(expDate) || expDate < todayStr) {
+      return res.status(403).json({ ok: false, error: 'عضوية غير مفعلة أو منتهية الصلاحية' });
     }
     if (outcome === 'WIN') {
       member.robotWins = (member.robotWins || 0) + 1;
@@ -10183,8 +9919,8 @@ async function startServer() {
     });
   });
 
-  // Manually send or re-send the End-of-Day Final Trading Report to Telegram (Free / VIP / Both)
-  app.post('/api/daily-report/send-telegram', async (req, res) => {
+  // Manually send or re-send the End-of-Day Final Trading Report to Telegram (Admin Only)
+  app.post('/api/daily-report/send-telegram', requireAdminAuth, async (req, res) => {
     const { destination, customText } = req.body || {};
     const dest =
       destination === 'free' || destination === 'vip' || destination === 'both'
@@ -10194,8 +9930,8 @@ async function startServer() {
     res.json(result);
   });
 
-  // Reset / Clear all signals in the published log ("04. سجل إشارات السوق العالمي المنشورة") and reset daily counters
-  app.post('/api/signals/reset-daily', async (_req, res) => {
+  // Reset / Clear all signals in the published log (Admin Only)
+  app.post('/api/signals/reset-daily', requireAdminAuth, async (_req, res) => {
     const todayEgypt = getCurrentEgyptDateString(new Date());
     signalsStore = [];
     autoPilot.totalAutoSent = 0;
@@ -10225,8 +9961,8 @@ async function startServer() {
     });
   });
 
-  // Admin: Update or create a daily statistics row (for A4 Weekly/Monthly Statistics Page)
-  app.post('/api/daily-stats', async (req, res) => {
+  // Admin: Update or create a daily statistics row (Admin Only)
+  app.post('/api/daily-stats', requireAdminAuth, async (req, res) => {
     const { date, directWins, gale1Wins, losses, draws, manualOverride } = req.body;
     const cleanDate = String(date || '').trim();
     if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
@@ -10249,8 +9985,8 @@ async function startServer() {
     });
   });
 
-  // Admin: Delete / Reset a specific day's manual statistics row
-  app.delete('/api/daily-stats/:date', async (req, res) => {
+  // Admin: Delete / Reset a specific day's manual statistics row (Admin Only)
+  app.delete('/api/daily-stats/:date', requireAdminAuth, async (req, res) => {
     const cleanDate = String(req.params.date || '').trim();
     if (dailyStatsStore[cleanDate]) {
       delete dailyStatsStore[cleanDate];
@@ -10273,23 +10009,23 @@ async function startServer() {
     });
   });
 
-  // Update formatting settings
-  app.post('/api/settings', async (req, res) => {
+  // Update formatting settings (Admin Only)
+  app.post('/api/settings', requireAdminAuth, async (req, res) => {
     appSettings = { ...appSettings, ...req.body };
     const cloudSaved = await saveState();
     res.json({ ok: true, settings: appSettings, cloudSaved });
   });
 
-  // Get Auto-Pilot configuration
-  app.get('/api/autopilot', (_req, res) => {
+  // Get Auto-Pilot configuration (Admin Only — contains Telegram tokens)
+  app.get('/api/autopilot', requireAdminAuth, (_req, res) => {
     autoPilot.marketOpenStatus = isGlobalForexMarketOpen();
     autoPilot.currentEgyptHour = getCurrentEgyptHour();
     autoPilot.isFreeBotWithinSchedule = isFreeBotActiveNow(autoPilot);
     res.json({ ok: true, autoPilot });
   });
 
-  // Update Auto-Pilot configuration
-  app.post('/api/autopilot', async (req, res) => {
+  // Update Auto-Pilot configuration (Admin Only)
+  app.post('/api/autopilot', requireAdminAuth, async (req, res) => {
     const prevEnabled = autoPilot.enabled;
     const incoming = req.body || {};
 
@@ -10372,8 +10108,8 @@ async function startServer() {
     res.json({ ok: true, autopilot: autoPilot, cloudSaved });
   });
 
-  // Add custom trading pair to admin list
-  app.post('/api/autopilot/add-pair', async (req, res) => {
+  // Add custom trading pair to admin list (Admin Only)
+  app.post('/api/autopilot/add-pair', requireAdminAuth, async (req, res) => {
     let rawPair = String(req.body?.pair || '').toUpperCase().trim();
     if (!rawPair) {
       return res.status(400).json({ ok: false, error: 'يرجى كتابة رمز الزوج' });
@@ -10403,8 +10139,8 @@ async function startServer() {
     res.json({ ok: true, autopilot: autoPilot, cloudSaved, addedPair: rawPair });
   });
 
-  // Remove custom trading pair from admin list
-  app.post('/api/autopilot/remove-pair', async (req, res) => {
+  // Remove custom trading pair from admin list (Admin Only)
+  app.post('/api/autopilot/remove-pair', requireAdminAuth, async (req, res) => {
     const rawPair = String(req.body?.pair || '').toUpperCase().trim();
     if (rawPair === (autoPilot.primaryFixedPair || 'EUR/JPY')) {
       return res.status(400).json({ ok: false, error: 'لا يمكن حذف الزوج الثابت الأساسي المحدد كافتراضي' });
@@ -10418,19 +10154,8 @@ async function startServer() {
     res.json({ ok: true, autopilot: autoPilot, cloudSaved, removedPair: rawPair });
   });
 
-  app.options('/api/autopilot/trigger-now', (_req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
-    res.sendStatus(204);
-  });
-
-  // Trigger an immediate focused analysis & dispatch now
-  app.post('/api/autopilot/trigger-now', async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
-
+  // Trigger an immediate focused analysis & dispatch now (Admin Only)
+  app.post('/api/autopilot/trigger-now', requireAdminAuth, async (req, res) => {
     const preferredPair = req.body?.preferredPair || (req.query?.preferredPair as string | undefined);
     const { selectedCandidate } = await scanRealGlobalForexMarket(true, preferredPair);
     if (!selectedCandidate) {
@@ -10454,11 +10179,8 @@ async function startServer() {
     });
   });
 
-  // Trigger VIP Momentum Pause Breakout Signal Now (Manual Admin Trigger)
-  app.post('/api/admin/momentum-pause/trigger-now', async (req, res) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
+  // Trigger VIP Momentum Pause Breakout Signal Now (Admin Only)
+  app.post('/api/admin/momentum-pause/trigger-now', requireAdminAuth, async (req, res) => {
 
     const preferredPair = req.body?.preferredPair || (req.query?.preferredPair as string | undefined);
     const forcedDirection = req.body?.direction as 'CALL' | 'PUT' | undefined;
@@ -10505,8 +10227,8 @@ async function startServer() {
     });
   });
 
-  // Get live status of 4-indicator confluence across all scanned pairs
-  app.get('/api/admin/momentum-pause/status', async (_req, res) => {
+  // Get live status of 4-indicator confluence across all scanned pairs (Admin Only)
+  app.get('/api/admin/momentum-pause/status', requireAdminAuth, async (_req, res) => {
     const { snapshots } = await scanRealGlobalForexMarket(false);
     const radar = snapshots.map(s => ({
       pair: s.pair,
@@ -10527,8 +10249,8 @@ async function startServer() {
     });
   });
 
-  // Pull best real global setup into the manual studio editor
-  app.get('/api/scrape-source', async (_req, res) => {
+  // Pull best real global setup into the manual studio editor (Admin Only)
+  app.get('/api/scrape-source', requireAdminAuth, async (_req, res) => {
     const { selectedCandidate } = await scanRealGlobalForexMarket(true);
     if (selectedCandidate) {
       const nextMin = String(new Date(Date.now() + 60000).getMinutes()).padStart(2, '0');
@@ -10545,8 +10267,8 @@ async function startServer() {
     }
   });
 
-  // Publish signal manually
-  app.post('/api/signals/publish', async (req, res) => {
+  // Publish signal manually (Admin Only)
+  app.post('/api/signals/publish', requireAdminAuth, async (req, res) => {
     const {
       asset,
       direction,
@@ -10639,8 +10361,8 @@ async function startServer() {
     });
   });
 
-  // Admin Live Broadcast - Dedicated endpoint for Admin Live Stream signals & celebrations
-  app.post('/api/admin/live-broadcast', async (req, res) => {
+  // Admin Live Broadcast - Dedicated endpoint for Admin Live Stream signals & celebrations (Admin Only)
+  app.post('/api/admin/live-broadcast', requireAdminAuth, async (req, res) => {
     try {
       const {
         type = 'signal', // 'signal' | 'announcement'
@@ -10957,8 +10679,8 @@ async function startServer() {
     }
   });
 
-  // Update signal status (WIN / LOSS / PENDING) + Edit original signal message with concise result
-  app.patch('/api/signals/:id/status', async (req, res) => {
+  // Update signal status (WIN / LOSS / PENDING) (Admin Only)
+  app.patch('/api/signals/:id/status', requireAdminAuth, async (req, res) => {
     const { id } = req.params;
     const { status, botToken, chatId, notifyTelegram } = req.body;
 
@@ -10990,8 +10712,8 @@ async function startServer() {
     res.json({ ok: true, signal, telegramSent });
   });
 
-  // Delete signal
-  app.delete('/api/signals/:id', (req, res) => {
+  // Delete signal (Admin Only)
+  app.delete('/api/signals/:id', requireAdminAuth, (req, res) => {
     const idx = signalsStore.findIndex(s => s.id === req.params.id);
     if (idx !== -1) {
       signalsStore.splice(idx, 1);
@@ -11001,11 +10723,10 @@ async function startServer() {
   });
 
   // -------------------------------------------------------------
-  // 6:00 PM LIVE BROADCAST SESSION ENDPOINTS
+  // 6:00 PM LIVE BROADCAST SESSION ENDPOINTS (Admin Only)
   // -------------------------------------------------------------
 
-  // Get current Live Broadcast Session status & stats
-  app.get('/api/admin/live-broadcast-session', async (_req, res) => {
+  app.get('/api/admin/live-broadcast-session', requireAdminAuth, async (_req, res) => {
     if (!isCloudStateLoaded) {
       await loadStateFromCloudAndDisk();
     }
@@ -11037,8 +10758,7 @@ async function startServer() {
     });
   });
 
-  // Update Live Broadcast Session settings or perform action (reset, toggle)
-  app.post('/api/admin/live-broadcast-session/config', async (req, res) => {
+  app.post('/api/admin/live-broadcast-session/config', requireAdminAuth, async (req, res) => {
     const {
       enabled,
       minWinRateTarget,
@@ -11078,8 +10798,8 @@ async function startServer() {
     res.json({ ok: true, session: liveBroadcastSession });
   });
 
-  // Manually trigger pre-scan or immediate live broadcast signal
-  app.post('/api/admin/live-broadcast-session/trigger-now', async (req, res) => {
+  // Manually trigger pre-scan or immediate live broadcast signal (Admin Only)
+  app.post('/api/admin/live-broadcast-session/trigger-now', requireAdminAuth, async (req, res) => {
     const { mode } = req.body || {}; // 'scan' | 'signal'
     const { selectedCandidate } = await scanRealGlobalForexMarket(false);
 
@@ -11129,8 +10849,8 @@ async function startServer() {
     res.json({ ok: true, news: mapped });
   });
 
-  // Create news item (Admin)
-  app.post('/api/forex-news', async (req, res) => {
+  // Create news item (Admin Only)
+  app.post('/api/forex-news', requireAdminAuth, async (req, res) => {
     const itemData = req.body;
     if (!itemData || !itemData.title || !itemData.currency) {
       return res.status(400).json({ ok: false, error: 'العنوان والعملة حقول مطلوبة' });
@@ -11162,8 +10882,8 @@ async function startServer() {
     res.json({ ok: true, item: newItem });
   });
 
-  // Update news item (Admin)
-  app.put('/api/forex-news/:id', async (req, res) => {
+  // Update news item (Admin Only)
+  app.put('/api/forex-news/:id', requireAdminAuth, async (req, res) => {
     try {
       const rawId = String(req.params?.id || '');
       const cleanId = decodeURIComponent(rawId);
@@ -11213,8 +10933,8 @@ async function startServer() {
     }
   });
 
-  // Delete news item (Admin)
-  app.delete('/api/forex-news/:id', async (req, res) => {
+  // Delete news item (Admin Only)
+  app.delete('/api/forex-news/:id', requireAdminAuth, async (req, res) => {
     const rawId = String(req.params?.id || '');
     const cleanId = decodeURIComponent(rawId);
     const idx = forexNewsStore.findIndex(n => n.id === cleanId || n.id === rawId);
@@ -11225,8 +10945,8 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  // Auto-fetch and sync breaking forex news & economic calendar releases (Auto-purges expired + live refresh)
-  app.post('/api/forex-news/auto-fetch', async (req, res) => {
+  // Auto-fetch and sync breaking forex news & economic calendar releases (Admin Only)
+  app.post('/api/forex-news/auto-fetch', requireAdminAuth, async (req, res) => {
     try {
       if (!isCloudStateLoaded) {
         await loadStateFromCloudAndDisk();
@@ -11253,15 +10973,15 @@ async function startServer() {
     }
   });
 
-  // Re-seed default weekly news schedule (Admin)
-  app.post('/api/forex-news/seed-weekly', async (_req, res) => {
+  // Re-seed default weekly news schedule (Admin Only)
+  app.post('/api/forex-news/seed-weekly', requireAdminAuth, async (_req, res) => {
     forexNewsStore = filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS);
     await cleanupAndAutoUpdateForexNews({ forceRemote: true });
     res.json({ ok: true, count: forexNewsStore.length, news: forexNewsStore });
   });
 
-  // Broadcast news as recommendation to Telegram (Admin)
-  app.post(['/api/forex-news/:id/broadcast', '/api/forex-news/broadcast'], async (req, res) => {
+  // Broadcast news as recommendation to Telegram (Admin Only)
+  app.post(['/api/forex-news/:id/broadcast', '/api/forex-news/broadcast'], requireAdminAuth, async (req, res) => {
     try {
       const rawId = String(req.params?.id || req.body?.id || req.body?.item?.id || '');
       const cleanId = decodeURIComponent(rawId);
@@ -11413,8 +11133,8 @@ async function startServer() {
     });
   });
 
-  // Save all plans (Admin: bulk update, re-order, or batch edit)
-  app.post('/api/platform-config/plans', async (req, res) => {
+  // Save all plans (Admin Only)
+  app.post('/api/platform-config/plans', requireAdminAuth, async (req, res) => {
     const { plans } = req.body || {};
     if (!Array.isArray(plans)) {
       return res.status(400).json({ ok: false, error: 'قائمة الباقات يجب أن تكون مصفوفة' });
@@ -11438,8 +11158,8 @@ async function startServer() {
     res.json({ ok: true, plans: plansStore });
   });
 
-  // Add a new single subscription plan (Admin)
-  app.post('/api/platform-config/plans/add', async (req, res) => {
+  // Add a new single subscription plan (Admin Only)
+  app.post('/api/platform-config/plans/add', requireAdminAuth, async (req, res) => {
     const p = req.body || {};
     if (!p.name || !String(p.name).trim()) {
       return res.status(400).json({ ok: false, error: 'مسمى الباقة مطلوب' });
@@ -11469,8 +11189,8 @@ async function startServer() {
     res.json({ ok: true, plan: newPlan, plans: plansStore });
   });
 
-  // Edit / Update an existing plan by ID (Admin)
-  app.put('/api/platform-config/plans/:id', async (req, res) => {
+  // Edit / Update an existing plan by ID (Admin Only)
+  app.put('/api/platform-config/plans/:id', requireAdminAuth, async (req, res) => {
     const { id } = req.params;
     let idx = plansStore.findIndex(p => p.id === id);
     if (idx === -1) {
@@ -11533,8 +11253,8 @@ async function startServer() {
     res.json({ ok: true, plan: plansStore[idx], plans: plansStore });
   });
 
-  // Delete a subscription plan by ID (Admin)
-  app.delete('/api/platform-config/plans/:id', async (req, res) => {
+  // Delete a subscription plan by ID (Admin Only)
+  app.delete('/api/platform-config/plans/:id', requireAdminAuth, async (req, res) => {
     const { id } = req.params;
     let idx = plansStore.findIndex(p => p.id === id);
     if (idx === -1) {
@@ -11547,15 +11267,15 @@ async function startServer() {
     res.json({ ok: true, plans: plansStore });
   });
 
-  // Reset subscription plans to system defaults (Admin)
-  app.post('/api/platform-config/reset-plans', async (_req, res) => {
+  // Reset subscription plans to system defaults (Admin Only)
+  app.post('/api/platform-config/reset-plans', requireAdminAuth, async (_req, res) => {
     plansStore = [...INITIAL_SUBSCRIPTION_PLANS];
     await saveState();
     res.json({ ok: true, plans: plansStore });
   });
 
-  // Save / Update Platform Contact & Referral Links (Admin)
-  app.post('/api/platform-config/contact-links', async (req, res) => {
+  // Save / Update Platform Contact & Referral Links (Admin Only)
+  app.post('/api/platform-config/contact-links', requireAdminAuth, async (req, res) => {
     const incoming = req.body || {};
     contactLinksStore = {
       ...contactLinksStore,
@@ -11606,20 +11326,21 @@ async function startServer() {
   // PAYMENTS & PAYMENT METHODS MANAGEMENT ENDPOINTS
   // -------------------------------------------------------------
 
-  // Get current payment methods and transaction log
-  app.get('/api/payments/config', async (_req, res) => {
+  // Get current payment methods (transactions redacted unless authenticated Admin)
+  app.get('/api/payments/config', async (req, res) => {
     if (!isCloudStateLoaded) {
       await loadStateFromCloudAndDisk();
     }
+    const isAdmin = isAdminRequest(req);
     res.json({
       ok: true,
       paymentMethods: paymentMethodsStore,
-      paymentTransactions: paymentTransactionsStore
+      paymentTransactions: isAdmin ? paymentTransactionsStore : []
     });
   });
 
-  // Save / Update payment methods (Admin)
-  app.post('/api/payments/methods', async (req, res) => {
+  // Save / Update payment methods (Admin Only)
+  app.post('/api/payments/methods', requireAdminAuth, async (req, res) => {
     const { paymentMethods } = req.body || {};
     if (!Array.isArray(paymentMethods)) {
       return res.status(400).json({ ok: false, error: 'قائمة وسائل الدفع يجب أن تكون مصفوفة' });
@@ -11695,8 +11416,8 @@ async function startServer() {
     res.json({ ok: true, transaction: newTx });
   });
 
-  // Review transaction (Approve or Reject)
-  app.post('/api/payments/review-transaction', async (req, res) => {
+  // Review transaction (Approve or Reject - Admin Only)
+  app.post('/api/payments/review-transaction', requireAdminAuth, async (req, res) => {
     const { transactionId, action, notes } = req.body || {};
     const tx = paymentTransactionsStore.find(t => t.id === transactionId);
     if (!tx) {
@@ -11942,14 +11663,14 @@ async function startServer() {
   });
 
   // =========================================================================
-  // TELEGRAM BOT HUB & ONBOARDING SYSTEM REST API ENDPOINTS
+  // TELEGRAM BOT HUB & ONBOARDING SYSTEM REST API ENDPOINTS (Admin Only)
   // =========================================================================
 
-  app.get('/api/telegram-bot/config', (_req, res) => {
+  app.get('/api/telegram-bot/config', requireAdminAuth, (_req, res) => {
     res.json({ ok: true, config: telegramBotConfigStore });
   });
 
-  app.post('/api/telegram-bot/config', async (req, res) => {
+  app.post('/api/telegram-bot/config', requireAdminAuth, async (req, res) => {
     try {
       telegramBotConfigStore = {
         ...telegramBotConfigStore,
@@ -11962,11 +11683,11 @@ async function startServer() {
     }
   });
 
-  app.get('/api/telegram-bot/users', (_req, res) => {
+  app.get('/api/telegram-bot/users', requireAdminAuth, (_req, res) => {
     res.json({ ok: true, users: telegramBotUsersStore });
   });
 
-  app.post('/api/telegram-bot/users', async (req, res) => {
+  app.post('/api/telegram-bot/users', requireAdminAuth, async (req, res) => {
     try {
       const b = req.body;
       const newUser: TelegramBotUser = {
@@ -11993,7 +11714,7 @@ async function startServer() {
     }
   });
 
-  app.put('/api/telegram-bot/users/:id', async (req, res) => {
+  app.put('/api/telegram-bot/users/:id', requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
       const idx = telegramBotUsersStore.findIndex(u => u.id === id);
@@ -12012,7 +11733,7 @@ async function startServer() {
     }
   });
 
-  app.delete('/api/telegram-bot/users/:id', async (req, res) => {
+  app.delete('/api/telegram-bot/users/:id', requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
       telegramBotUsersStore = telegramBotUsersStore.filter(u => u.id !== id);
@@ -12023,7 +11744,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/telegram-bot/users/:id/status', async (req, res) => {
+  app.post('/api/telegram-bot/users/:id/status', requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
       const { status } = req.body;
@@ -12039,7 +11760,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/telegram-bot/users/:id/message', async (req, res) => {
+  app.post('/api/telegram-bot/users/:id/message', requireAdminAuth, async (req, res) => {
     try {
       const { id } = req.params;
       const { message } = req.body;
@@ -12059,7 +11780,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/telegram-bot/broadcast', async (req, res) => {
+  app.post('/api/telegram-bot/broadcast', requireAdminAuth, async (req, res) => {
     try {
       const { message, targetLanguage, targetStatus } = req.body;
       if (!message || !message.trim()) {
@@ -12091,7 +11812,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/telegram-bot/test-token', async (req, res) => {
+  app.post('/api/telegram-bot/test-token', requireAdminAuth, async (req, res) => {
     try {
       const { token } = req.body;
       const checkToken = (token || telegramBotConfigStore.botToken || autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
@@ -12185,7 +11906,7 @@ async function startServer() {
     <div class="w-16 h-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto text-3xl font-bold">✓</div>
     <div class="space-y-2">
       <h1 class="text-2xl font-black text-white">تم التحقق وتثبيت دولتك بنجاح!</h1>
-      <p class="text-emerald-400 text-xl font-extrabold tracking-wide">${detectedCountry}</p>
+      <p class="text-emerald-400 text-xl font-extrabold tracking-wide">${escapeHtmlSafe(detectedCountry)}</p>
     </div>
     <div class="bg-slate-800/80 rounded-2xl p-4 text-xs text-slate-300 space-y-2 border border-slate-700/50">
       <p>🔒 <b>تم قفل وتثبيت الدولة في ملفك الشخصي:</b></p>

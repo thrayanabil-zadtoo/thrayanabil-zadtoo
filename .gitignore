@@ -6,3 +6,7 @@ coverage/
 *.log
 .env*
 !.env.example
+autopilot-state.json
+*-state.json
+admin-auth.json
+telegram-locks.json

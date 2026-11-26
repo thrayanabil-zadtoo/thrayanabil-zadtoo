@@ -56,7 +56,6 @@ import {
   DEFAULT_CUSTOM_TEMPLATE,
   FormatterOptions
 } from './utils/signalParser';
-import { loadCloudSystemState, saveCloudSystemState, saveCloudPlans, saveCloudContactLinks } from './firebase';
 import QuotexRobotAdminPage, { QuotexRobotSettings } from './components/QuotexRobotAdminPage';
 import FloatingRobotVisitorBanner from './components/FloatingRobotVisitorBanner';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -77,6 +76,23 @@ import {
   INITIAL_SUBSCRIPTION_PLANS,
   INITIAL_CONTACT_LINKS
 } from './types/platformConfig';
+import {
+  subscribeFirebaseAdminAuth,
+  signInAdminWithGoogle,
+  signOutFirebaseAdmin,
+  canWriteFirestoreAsAdmin,
+  loadCloudPlans,
+  loadCloudContactLinks,
+  loadCloudRobotSettings,
+  loadSubscribersFromFirestore,
+  saveSubscriberToFirestore,
+  deleteSubscriberFromFirestore,
+  loadSignalsFromFirestore,
+  saveSignalToFirestore,
+  deleteSignalFromFirestore,
+  syncRobotPublicFeedToFirestore,
+  syncAllAdminStateToFirestore
+} from './firebase';
 
 export interface SubscriberMessage {
   id: string;
@@ -324,10 +340,24 @@ export interface AutoPilotConfig {
 }
 
 export default function App() {
-  // Public visitors see 'visitor' view by default; admin studio, stats & robot are hidden unless logged in
-  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(
-    () => typeof window !== 'undefined' && (sessionStorage.getItem('zad_admin_auth') === 'true' || localStorage.getItem('zad_admin_auth') === 'true')
-  );
+  // Public visitors see 'visitor' view by default; admin studio, stats & robot require a signed server token held in memory (with HttpOnly cookie restoration)
+  const [adminToken, setAdminToken] = useState<string>(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      sessionStorage.removeItem('zad_admin_token');
+      sessionStorage.removeItem('zad_admin_auth');
+      localStorage.removeItem('zad_admin_auth');
+      localStorage.removeItem('tg_bot_token');
+      localStorage.removeItem('tg_vip_bot_token');
+    } catch (_e) {}
+    return '';
+  });
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(false);
+  const [adminNeedsSetup, setAdminNeedsSetup] = useState<boolean>(false);
+  const [isFirebaseAdmin, setIsFirebaseAdmin] = useState<boolean>(false);
+  const [isGoogleLoggingIn, setIsGoogleLoggingIn] = useState<boolean>(false);
+  const effectiveIsAdmin = isAdminAuthenticated || isFirebaseAdmin;
+  const lastFirestoreMirrorRef = React.useRef<number>(0);
   const [activeView, setActiveView] = useState<'visitor' | 'admin' | 'stats' | 'robot'>('visitor');
   const [zadtooTab, setZadtooTab] = useState<'home' | 'signals' | 'news' | 'autotrade' | 'memberships' | 'admin' | 'telegram_bot'>('home');
   const [aboutContactType, setAboutContactType] = useState<'about' | 'contact' | null>(null);
@@ -345,10 +375,73 @@ export default function App() {
     defaultStakeUsd: 5
   });
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
-  const [loginEmail, setLoginEmail] = useState<string>('thrayanabil2026@gmail.com');
+  const [loginEmail, setLoginEmail] = useState<string>('');
   const [loginPassword, setLoginPassword] = useState<string>('');
   const [loginError, setLoginError] = useState<string>('');
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
+
+  const getAdminHeaders = (tokenOverride?: string, includeJson = true): Record<string, string> => {
+    const tok = tokenOverride ?? adminToken;
+    const headers: Record<string, string> = {};
+    if (includeJson) headers['Content-Type'] = 'application/json';
+    if (tok) headers['Authorization'] = `Bearer ${tok}`;
+    return headers;
+  };
+
+  const clearAdminSession = () => {
+    try {
+      sessionStorage.removeItem('zad_admin_token');
+      sessionStorage.removeItem('zad_admin_auth');
+      localStorage.removeItem('zad_admin_auth');
+    } catch (_e) {}
+    fetch('/api/admin/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
+    setAdminToken('');
+    setIsAdminAuthenticated(false);
+    setIsFirebaseAdmin(false);
+    signOutFirebaseAdmin();
+    setActiveView('visitor');
+  };
+
+  useEffect(() => {
+    return subscribeFirebaseAdminAuth((isFbAdmin) => {
+      setIsFirebaseAdmin(isFbAdmin);
+    });
+  }, []);
+
+  const checkAdminAuthStatus = async (tokOverride?: string) => {
+    try {
+      const tok = tokOverride ?? adminToken;
+      const res = await fetch('/api/admin/status', {
+        credentials: 'include',
+        headers: tok ? { Authorization: `Bearer ${tok}` } : undefined
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
+        const data = await res.json();
+        setAdminNeedsSetup(Boolean(data.needsSetup));
+        if (data.authenticated === true && data.token) {
+          setAdminToken(data.token);
+          setIsAdminAuthenticated(true);
+        } else if (data.authenticated === false) {
+          setAdminToken('');
+          setIsAdminAuthenticated(false);
+          if (!canWriteFirestoreAsAdmin()) {
+            setActiveView('visitor');
+          }
+        }
+      }
+    } catch (_e) {}
+  };
+
+  useEffect(() => {
+    checkAdminAuthStatus();
+  }, []);
+
+  useEffect(() => {
+    if (showLoginModal) {
+      checkAdminAuthStatus();
+    }
+  }, [showLoginModal]);
 
   // Live device clock (phone/computer) updated every second
   const [deviceNow, setDeviceNow] = useState<Date>(() => new Date());
@@ -358,22 +451,6 @@ export default function App() {
       setDeviceNow(new Date());
     }, 1000);
     return () => clearInterval(clockTimer);
-  }, []);
-
-  // Emergency direct admin unlock via URL query parameter (e.g. https://fx.zadtoo.com/?admin=Tr@7177)
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const search = window.location.search;
-      if (search.includes('admin=Tr@7177') || search.includes('auth=Tr@7177') || search.includes('pass=Tr@7177')) {
-        sessionStorage.setItem('zad_admin_auth', 'true');
-        localStorage.setItem('zad_admin_auth', 'true');
-        setIsAdminAuthenticated(true);
-        setActiveView('admin');
-        try {
-          window.history.replaceState({}, document.title, window.location.pathname);
-        } catch (_e) {}
-      }
-    }
   }, []);
 
   const [visitorFilter, setVisitorFilter] = useState<'ALL' | 'WIN' | 'PENDING'>('ALL');
@@ -519,12 +596,16 @@ export default function App() {
   });
   const [adminChatInput, setAdminChatInput] = useState<string>('');
   const [isSavingSubscriber, setIsSavingSubscriber] = useState<boolean>(false);
+  const [modalSaveFeedback, setModalSaveFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
-  // Server-side 24/7 Focused Auto-Pilot state
+  // Server-side 24/7 Focused Auto-Pilot state (tokens live exclusively on server)
   const [autoPilot, setAutoPilot] = useState<AutoPilotConfig>({
     enabled: true,
     freeBotEnabled: true,
-    botToken: localStorage.getItem('tg_bot_token') || '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U',
+    botToken: '',
     chatId: localStorage.getItem('tg_chat_id') || '@ZadNBFX',
     freeScheduleEnabled: true,
     freeStartHourEgypt: Number(localStorage.getItem('tg_free_start_hour') ?? 10),
@@ -536,7 +617,7 @@ export default function App() {
     freeWinGale1ImageUrl: localStorage.getItem('tg_free_gale1_img') || '',
     freeLossImageUrl: localStorage.getItem('tg_free_loss_img') || '',
     vipEnabled: true,
-    vipBotToken: localStorage.getItem('tg_vip_bot_token') || '8814918920:AAGeXmZrTy03s9gozdDAOj3hkIijHm9yJHM',
+    vipBotToken: '',
     vipChatId: localStorage.getItem('tg_vip_chat_id') || '-1004323890544',
     vipWinIcon: localStorage.getItem('tg_vip_win_icon') || '👑✅ ربح VIP',
     vipWinGale1Icon: localStorage.getItem('tg_vip_gale1_icon') || '👑✅ ربح مضاعفة واحدة',
@@ -641,7 +722,9 @@ export default function App() {
   const fetchAnalytics = async () => {
     setIsLoadingAnalytics(true);
     try {
-      const res = await fetch('/api/analytics/performance');
+      const res = await fetch('/api/analytics/performance', {
+        headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : undefined
+      });
       const data = await res.json();
       if (data.ok) {
         setAnalyticsData(data);
@@ -653,19 +736,69 @@ export default function App() {
     }
   };
 
-  // Load signals, settings, autopilot state, and live global market radar
-  const fetchSignals = async () => {
+  // Load signals, settings, autopilot state, and live global market radar (Node API + Firestore Cloud sync/fallback for fx.zadtoo.com)
+  const loadFromCloudFirestoreFallback = async () => {
     try {
-      const res = await fetch('/api/signals');
+      const [fbSigs, fbPlans, fbLinks, fbRobot, fbSubs] = await Promise.all([
+        loadSignalsFromFirestore(),
+        loadCloudPlans<SubscriptionPlan[]>(),
+        loadCloudContactLinks<PlatformContactLinks>(),
+        loadCloudRobotSettings<QuotexRobotSettings>(),
+        canWriteFirestoreAsAdmin() ? loadSubscribersFromFirestore() : Promise.resolve(null)
+      ]);
+      if (Array.isArray(fbSigs) && fbSigs.length > 0) {
+        setSignals(fbSigs);
+      }
+      if (Array.isArray(fbPlans) && fbPlans.length > 0) {
+        setPlatformPlans(fbPlans);
+        try {
+          localStorage.setItem('zad_platform_plans', JSON.stringify(fbPlans));
+        } catch (_e) {}
+      }
+      if (fbLinks) {
+        setPlatformContactLinks(prev => ({ ...prev, ...fbLinks }));
+        try {
+          localStorage.setItem('zad_platform_contact_links', JSON.stringify(fbLinks));
+        } catch (_e) {}
+      }
+      if (fbRobot) {
+        setRobotSettings(prev => ({ ...prev, ...fbRobot, noMartingaleStrict: true }));
+      }
+      if (Array.isArray(fbSubs)) {
+        setSubscribers(fbSubs);
+      }
+    } catch (_err) {}
+  };
+
+  const fetchSignals = async (tokenOverride?: string) => {
+    const activeToken = tokenOverride ?? adminToken;
+    try {
+      const res = await fetch('/api/signals', {
+        credentials: 'include',
+        headers: activeToken ? { Authorization: `Bearer ${activeToken}` } : undefined
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('application/json')) {
+        await loadFromCloudFirestoreFallback();
+        return;
+      }
       const data = await res.json();
+      if (activeToken && data.isAdmin === false) {
+        setAdminToken('');
+        setIsAdminAuthenticated(false);
+      }
       if (data.signals) {
         setSignals(data.signals);
       }
       if (data.liveMarket) {
         setLiveMarket(data.liveMarket);
       }
-      if (data.subscribers) {
-        setSubscribers(data.subscribers);
+      if (Array.isArray(data.subscribers)) {
+        setSubscribers(prev => {
+          if (data.isAdmin) return data.subscribers;
+          if (canWriteFirestoreAsAdmin()) return prev;
+          return prev.filter(s => s.id === currentMemberId);
+        });
       }
       if (data.quickNotes) {
         setQuickNotes(data.quickNotes);
@@ -703,19 +836,10 @@ export default function App() {
         }));
       }
       if (data.autopilot && Date.now() - lastAutoPilotSaveRef.current > 4000) {
-        const savedLocalToken = localStorage.getItem('tg_bot_token') || '';
-        const savedLocalChat = localStorage.getItem('tg_chat_id') || '';
-        const resolvedToken = data.autopilot.botToken || savedLocalToken;
-        const resolvedChat = data.autopilot.chatId || savedLocalChat || '@ZadNBFX';
+        const resolvedChat = data.autopilot.chatId || localStorage.getItem('tg_chat_id') || '@ZadNBFX';
+        const resolvedVipChat = data.autopilot.vipChatId || localStorage.getItem('tg_vip_chat_id') || '';
 
-        const savedLocalVipToken = localStorage.getItem('tg_vip_bot_token') || '';
-        const savedLocalVipChat = localStorage.getItem('tg_vip_chat_id') || '';
-        const resolvedVipToken = data.autopilot.vipBotToken || savedLocalVipToken;
-        const resolvedVipChat = data.autopilot.vipChatId || savedLocalVipChat;
-
-        if (resolvedToken) localStorage.setItem('tg_bot_token', resolvedToken);
         if (resolvedChat) localStorage.setItem('tg_chat_id', resolvedChat);
-        if (resolvedVipToken) localStorage.setItem('tg_vip_bot_token', resolvedVipToken);
         if (resolvedVipChat) localStorage.setItem('tg_vip_chat_id', resolvedVipChat);
         if (data.autopilot.freeStartHourEgypt !== undefined) {
           localStorage.setItem('tg_free_start_hour', String(data.autopilot.freeStartHourEgypt));
@@ -749,9 +873,9 @@ export default function App() {
           primaryFixedPair: data.autopilot.primaryFixedPair || prev.primaryFixedPair || 'EUR/JPY',
           allowedPairs: Array.isArray(data.autopilot.allowedPairs) && data.autopilot.allowedPairs.length > 0 ? data.autopilot.allowedPairs : prev.allowedPairs,
           quotexReferralLink: resolvedQxLink,
-          botToken: resolvedToken || prev.botToken,
+          botToken: data.autopilot.botToken || '',
           chatId: resolvedChat || prev.chatId,
-          vipBotToken: resolvedVipToken || prev.vipBotToken,
+          vipBotToken: data.autopilot.vipBotToken || '',
           vipChatId: resolvedVipChat || prev.vipChatId,
           freeWinImageUrl: data.autopilot.freeWinImageUrl !== undefined ? data.autopilot.freeWinImageUrl : (prev.freeWinImageUrl || ''),
           freeWinGale1ImageUrl: data.autopilot.freeWinGale1ImageUrl !== undefined ? data.autopilot.freeWinGale1ImageUrl : (prev.freeWinGale1ImageUrl || ''),
@@ -760,55 +884,21 @@ export default function App() {
           vipWinGale1ImageUrl: data.autopilot.vipWinGale1ImageUrl !== undefined ? data.autopilot.vipWinGale1ImageUrl : (prev.vipWinGale1ImageUrl || ''),
           vipLossImageUrl: data.autopilot.vipLossImageUrl !== undefined ? data.autopilot.vipLossImageUrl : (prev.vipLossImageUrl || '')
         }));
+      }
 
-        // If browser had a token in localStorage that the server didn't have yet, push it to server immediately
-        if (!data.autopilot.botToken && savedLocalToken) {
-          fetch('/api/autopilot', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              ...data.autopilot,
-              botToken: savedLocalToken,
-              chatId: resolvedChat
-            })
-          }).catch(() => {});
-        }
-        if (!data.autopilot.vipBotToken && savedLocalVipToken) {
-          fetch('/api/autopilot', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              ...data.autopilot,
-              vipBotToken: savedLocalVipToken,
-              vipChatId: resolvedVipChat
-            })
-          }).catch(() => {});
-        }
+      // Mirror live server state into Firestore periodically when signed in as Firebase Admin
+      if (canWriteFirestoreAsAdmin() && Date.now() - lastFirestoreMirrorRef.current > 25000) {
+        lastFirestoreMirrorRef.current = Date.now();
+        syncAllAdminStateToFirestore({
+          subscribers: data.isAdmin && Array.isArray(data.subscribers) ? data.subscribers : undefined,
+          signals: Array.isArray(data.signals) ? data.signals : undefined,
+          plans: Array.isArray(data.plans) ? data.plans : undefined,
+          contactLinks: data.contactLinks || undefined,
+          robotSettings: data.robotSettings || undefined
+        }).catch(() => {});
       }
     } catch (_err) {
-      // Fallback to direct Firestore read if backend is momentarily restarting
-      try {
-        const cloudData = await loadCloudSystemState();
-        if (cloudData?.autopilot) {
-          setAutoPilot(prev => ({
-            ...prev,
-            ...cloudData.autopilot,
-            botToken: cloudData.autopilot.botToken || prev.botToken || localStorage.getItem('tg_bot_token') || '8613581536:AAGroIlY3zs-ArBt8p6qnzH3_-2U9tSJ-8U',
-            chatId: cloudData.autopilot.chatId || prev.chatId || localStorage.getItem('tg_chat_id') || '@ZadNBFX',
-            vipBotToken: cloudData.autopilot.vipBotToken || prev.vipBotToken || localStorage.getItem('tg_vip_bot_token') || '8814918920:AAGeXmZrTy03s9gozdDAOj3hkIijHm9yJHM',
-            vipChatId: cloudData.autopilot.vipChatId || prev.vipChatId || localStorage.getItem('tg_vip_chat_id') || '-1004323890544',
-            vipEnabled: cloudData.autopilot.vipEnabled ?? prev.vipEnabled ?? true
-          }));
-        }
-        if (cloudData?.signals) {
-          setSignals(cloudData.signals);
-        }
-        if (cloudData?.dailyStats && Array.isArray(cloudData.dailyStats)) {
-          setDailyStats(cloudData.dailyStats);
-        }
-      } catch (_e) {
-        // Ignore
-      }
+      await loadFromCloudFirestoreFallback();
     } finally {
       setIsLoading(false);
     }
@@ -816,9 +906,9 @@ export default function App() {
 
   useEffect(() => {
     fetchSignals();
-    const timer = setInterval(fetchSignals, 10000);
+    const timer = setInterval(() => fetchSignals(), 10000);
     return () => clearInterval(timer);
-  }, []);
+  }, [adminToken, isFirebaseAdmin]);
 
   // Force refresh live market radar
   const handleRefreshMarketRadar = async () => {
@@ -836,7 +926,7 @@ export default function App() {
     }
   };
 
-  // Handle Admin Login
+  // Handle Admin Login / First-Run Admin Setup via Server
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
@@ -845,42 +935,92 @@ export default function App() {
     const cleanEmail = (loginEmail || '').trim().toLowerCase();
     const cleanPassword = (loginPassword || '').trim();
 
-    // Direct secure credential verification (guarantees instant login on fx.zadtoo.com / GitHub Pages / Cloud Run)
-    const isEmailValid = cleanEmail === 'thrayanabil2026@gmail.com' || cleanEmail === 'thrayanabil@gmail.com';
-    const isPasswordValid = cleanPassword === 'Tr@7177';
-
-    if (isEmailValid && isPasswordValid) {
-      sessionStorage.setItem('zad_admin_auth', 'true');
-      localStorage.setItem('zad_admin_auth', 'true');
-      setIsAdminAuthenticated(true);
-      setShowLoginModal(false);
-      setActiveView('admin');
-      setLoginPassword('');
+    if (!cleanEmail || !cleanPassword) {
+      setLoginError('يرجى إدخال البريد الإلكتروني وكلمة المرور');
       setIsLoggingIn(false);
-
-      // Best effort background sync with server
-      try {
-        fetch('/api/admin/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: cleanEmail, password: cleanPassword })
-        }).catch(() => {});
-      } catch (_e) {}
       return;
     }
 
-    if (!isEmailValid || !isPasswordValid) {
-      setLoginError('البريد الإلكتروني أو كلمة المرور غير صحيحة');
+    try {
+      const endpoint = adminNeedsSetup ? '/api/admin/setup' : '/api/admin/login';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password: cleanPassword })
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        setLoginError(
+          `الخادم الخلفي (/api) لا يستجيب بصيغة JSON على هذا الرابط (رمز ${res.status}). تأكد من فتح رابط الخادم الكامل وليس استضافة ملفات ثابتة فقط.`
+        );
+        return;
+      }
+      const data = await res.json();
+
+      if (res.status === 409 && data?.needsSetup) {
+        setAdminNeedsSetup(true);
+        setLoginError(data.error || 'لم يتم إعداد حساب المشرف بعد. أنشئ حساب المشرف الآن.');
+        return;
+      }
+
+      if (res.status === 403 && adminNeedsSetup) {
+        setAdminNeedsSetup(false);
+        setLoginError(data?.error || 'تم إعداد حساب المشرف مسبقاً. يرجى تسجيل الدخول.');
+        return;
+      }
+
+      if (res.ok && data.ok && data.token) {
+        setAdminToken(data.token);
+        setIsAdminAuthenticated(true);
+        setAdminNeedsSetup(false);
+        setShowLoginModal(false);
+        setActiveView('admin');
+        setLoginPassword('');
+        await fetchSignals(data.token);
+      } else {
+        setLoginError(data?.error || 'البريد الإلكتروني أو كلمة المرور غير صحيحة');
+      }
+    } catch (err: any) {
+      const reason = err?.message ? ` (${err.message})` : '';
+      setLoginError(`تعذر الاتصال بالخادم للتحقق من بيانات الدخول${reason}`);
+    } finally {
       setIsLoggingIn(false);
-      return;
+    }
+  };
+
+  const handleGoogleAdminLogin = async () => {
+    setLoginError('');
+    setIsGoogleLoggingIn(true);
+    try {
+      const result = await signInAdminWithGoogle();
+      if (!result.ok) {
+        setLoginError(result.error || 'تعذر تسجيل الدخول بحساب المشرف عبر Google.');
+        return;
+      }
+      setIsFirebaseAdmin(true);
+      setShowLoginModal(false);
+      setActiveView('admin');
+      await loadFromCloudFirestoreFallback();
+      if (subscribers.length > 0 || signals.length > 0) {
+        await syncAllAdminStateToFirestore({
+          subscribers: subscribers.length > 0 ? subscribers : undefined,
+          signals: signals.length > 0 ? signals : undefined,
+          plans: platformPlans,
+          contactLinks: platformContactLinks,
+          robotSettings
+        });
+      }
+      await fetchSignals();
+    } catch (err: any) {
+      setLoginError(err?.message || 'حدث خطأ أثناء تسجيل الدخول عبر Google.');
+    } finally {
+      setIsGoogleLoggingIn(false);
     }
   };
 
   const handleAdminLogout = () => {
-    sessionStorage.removeItem('zad_admin_auth');
-    localStorage.removeItem('zad_admin_auth');
-    setIsAdminAuthenticated(false);
-    setActiveView('visitor');
+    clearAdminSession();
   };
 
   // Direct Trader Registration without email/gmail verification
@@ -1044,9 +1184,10 @@ export default function App() {
       paymentMethod: sub.paymentMethod || PAYMENT_METHODS[1],
       status: sub.status || 'PENDING',
       activationLink: sub.activationLink || '',
-      expiryDate: sub.expiryDate || ''
+      expiryDate: sub.expiryDate || sub.robotExpiryDate || ''
     });
     setAdminChatInput('');
+    setModalSaveFeedback(null);
   };
 
   // Helper to calculate days left until expiry
@@ -1114,7 +1255,7 @@ export default function App() {
     try {
       const res = await fetch('/api/quick-notes', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({
           title: newNoteTitle.trim(),
           content: newNoteContent.trim()
@@ -1134,7 +1275,10 @@ export default function App() {
 
   const handleDeleteQuickNote = async (id: string) => {
     try {
-      const res = await fetch(`/api/quick-notes/${id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/quick-notes/${id}`, {
+        method: 'DELETE',
+        headers: getAdminHeaders(undefined, false)
+      });
       const data = await res.json();
       if (data.ok && data.quickNotes) {
         setQuickNotes(data.quickNotes);
@@ -1150,14 +1294,72 @@ export default function App() {
     updates: Partial<VipSubscriber> & { sendActivationMessage?: boolean }
   ) => {
     setIsSavingSubscriber(true);
+    setModalSaveFeedback(null);
+    const payload: Partial<VipSubscriber> & { sendActivationMessage?: boolean } = {
+      ...updates,
+      ...(updates.expiryDate !== undefined && updates.robotExpiryDate === undefined
+        ? { robotExpiryDate: updates.expiryDate }
+        : {})
+    };
+
+    const applyLocalAndFirestore = async (targetSub: VipSubscriber) => {
+      await saveSubscriberToFirestore(targetSub);
+      setSubscribers(prev => prev.map(s => (s.id === subId ? targetSub : s)));
+      if (selectedAdminSubId === subId) {
+        const planObj = VIP_PLANS.find(p => p.id === targetSub.planDuration) || VIP_PLANS[0];
+        const isRef =
+          targetSub.subscriptionType === 'quotex_referral' ||
+          targetSub.planDuration === 'quotex_referral_free';
+        setAdminEditForm({
+          name: targetSub.name || '',
+          telegramUsername: targetSub.telegramUsername || '',
+          country: targetSub.country || COUNTRIES_LIST[0],
+          email: targetSub.email || '',
+          phone: targetSub.phone || '',
+          broker: targetSub.broker || BROKERS_LIST[0],
+          brokerAccountId: targetSub.brokerAccountId || '',
+          subscriptionType: isRef ? 'quotex_referral' : 'paid_plan',
+          quotexDepositConfirmed: Boolean(targetSub.quotexDepositConfirmed),
+          planDuration: targetSub.planDuration || '1_month',
+          amountPaid:
+            typeof targetSub.amountPaid === 'number'
+              ? targetSub.amountPaid
+              : planObj.price,
+          paymentMethod: targetSub.paymentMethod || PAYMENT_METHODS[1],
+          status: targetSub.status || 'PENDING',
+          activationLink: targetSub.activationLink || '',
+          expiryDate: targetSub.expiryDate || targetSub.robotExpiryDate || ''
+        });
+      }
+      const okMsg = updates.sendActivationMessage
+        ? '✅ تم إرسال رابط التفعيل وتاريخ الانتهاء وتثبيته في السحابة (fx.zadtoo.com) بنجاح!'
+        : `✅ تم حفظ التعديلات وتاريخ الانتهاء (${targetSub.expiryDate || targetSub.robotExpiryDate || ''}) في السحابة (fx.zadtoo.com) بنجاح!`;
+      setModalSaveFeedback({ type: 'success', message: okMsg });
+      setPublishStatus({ type: 'success', message: okMsg });
+      setTimeout(() => setPublishStatus({ type: 'idle' }), 4000);
+    };
+
     try {
       const res = await fetch(`/api/subscribers/${subId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updates)
+        headers: getAdminHeaders(),
+        body: JSON.stringify(payload)
       });
-      const data = await res.json();
-      if (data.ok && data.subscriber) {
+      const contentType = res.headers.get('content-type') || '';
+      const rawText = await res.text();
+      let data: any = {};
+      if (contentType.includes('application/json')) {
+        try {
+          data = rawText ? JSON.parse(rawText) : {};
+        } catch (_parseErr) {
+          data = {};
+        }
+      }
+
+      if (res.ok && data?.ok && data?.subscriber) {
+        if (canWriteFirestoreAsAdmin()) {
+          await saveSubscriberToFirestore(data.subscriber);
+        }
         setSubscribers(prev => prev.map(s => (s.id === subId ? data.subscriber : s)));
         if (selectedAdminSubId === subId) {
           const planObj = VIP_PLANS.find(p => p.id === data.subscriber.planDuration) || VIP_PLANS[0];
@@ -1182,19 +1384,46 @@ export default function App() {
             paymentMethod: data.subscriber.paymentMethod || PAYMENT_METHODS[1],
             status: data.subscriber.status || 'PENDING',
             activationLink: data.subscriber.activationLink || '',
-            expiryDate: data.subscriber.expiryDate || ''
+            expiryDate: data.subscriber.expiryDate || data.subscriber.robotExpiryDate || ''
           });
         }
-        setPublishStatus({
-          type: 'success',
-          message: updates.sendActivationMessage
-            ? '✅ تم إرسال رابط التفعيل وتاريخ الانتهاء إلى حساب العضو وتفعيل عضويته!'
-            : '✅ تم تحديث بيانات العضوية بنجاح.'
-        });
+        const okMsg = updates.sendActivationMessage
+          ? '✅ تم إرسال رابط التفعيل وتاريخ الانتهاء وتثبيته في قاعدة البيانات بنجاح!'
+          : `✅ تم حفظ التعديلات وتاريخ الانتهاء (${data.subscriber.expiryDate || data.subscriber.robotExpiryDate || ''}) في قاعدة بيانات الخادم بنجاح!`;
+        setModalSaveFeedback({ type: 'success', message: okMsg });
+        setPublishStatus({ type: 'success', message: okMsg });
         setTimeout(() => setPublishStatus({ type: 'idle' }), 4000);
+      } else if (canWriteFirestoreAsAdmin()) {
+        const existing = subscribers.find(s => s.id === subId);
+        if (existing) {
+          const mergedSub: VipSubscriber = {
+            ...existing,
+            ...payload
+          };
+          await applyLocalAndFirestore(mergedSub);
+        } else {
+          setModalSaveFeedback({ type: 'error', message: '❌ لم يتم العثور على العضو في القائمة.' });
+        }
+      } else {
+        const errMsg =
+          data?.error ||
+          (res.status === 401 || res.status === 403
+            ? '❌ انتهت جلسة المشرف — يرجى إعادة تسجيل الدخول بحساب Google أو كلمة المرور.'
+            : '❌ تعذر حفظ التعديلات — سجل الدخول بحساب المشرف عبر Google للربط المباشر.');
+        setModalSaveFeedback({ type: 'error', message: errMsg });
+        setPublishStatus({ type: 'error', message: errMsg });
       }
     } catch (_e) {
-      // Ignore
+      if (canWriteFirestoreAsAdmin()) {
+        const existing = subscribers.find(s => s.id === subId);
+        if (existing) {
+          await applyLocalAndFirestore({ ...existing, ...payload });
+          return;
+        }
+      }
+      const netMsg = '❌ تعذر الاتصال — يرجى تسجيل الدخول بحساب المشرف عبر Google للحفظ المباشر على fx.zadtoo.com.';
+      setModalSaveFeedback({ type: 'error', message: netMsg });
+      setPublishStatus({ type: 'error', message: netMsg });
     } finally {
       setIsSavingSubscriber(false);
     }
@@ -1330,13 +1559,18 @@ export default function App() {
     if (!text.trim() && !imageUrl) return;
     if (sender === 'member') setIsSendingMemberMsg(true);
     try {
+      const memberCred =
+        sender === 'member'
+          ? (subscribers.find(s => s.id === subId)?.brokerAccountId || '').trim()
+          : '';
       const res = await fetch(`/api/subscribers/${subId}/message`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: sender === 'admin' ? getAdminHeaders() : { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           sender,
           text: text.trim() || '📸 صورة إيصال التحويل لتجديد الاشتراك',
           imageUrl,
+          ...(sender === 'member' && memberCred ? { brokerAccountId: memberCred } : {}),
           ...extraUpdates
         })
       });
@@ -1440,8 +1674,15 @@ export default function App() {
   };
 
   const handleDeleteSubscriber = async (id: string) => {
+    const target = subscribers.find(s => s.id === id);
     try {
-      await fetch(`/api/subscribers/${id}`, { method: 'DELETE' });
+      await fetch(`/api/subscribers/${id}`, {
+        method: 'DELETE',
+        headers: getAdminHeaders(undefined, false)
+      }).catch(() => {});
+      if (canWriteFirestoreAsAdmin()) {
+        await deleteSubscriberFromFirestore(id, target?.robotApiKey);
+      }
       setSubscribers(prev => prev.filter(s => s.id !== id));
       if (selectedAdminSubId === id) setSelectedAdminSubId(null);
     } catch (_e) {
@@ -1449,20 +1690,15 @@ export default function App() {
     }
   };
 
-  // Sync formatting rules to server & Cloud Firestore
+  // Sync formatting rules to server
   const updateFormatterOptions = async (updater: (prev: FormatterOptions) => FormatterOptions) => {
     const next = updater(formatterOptions);
     setFormatterOptions(next);
     try {
       await fetch('/api/settings', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify(next)
-      });
-      await saveCloudSystemState({
-        signals: signals.slice(0, 50),
-        settings: next,
-        autopilot: autoPilot
       });
     } catch (_e) {
       // Ignore
@@ -1484,7 +1720,6 @@ export default function App() {
       }
     };
 
-    if (merged.botToken) safeSet('tg_bot_token', merged.botToken);
     if (merged.chatId) safeSet('tg_chat_id', merged.chatId);
     if (merged.freeStartHourEgypt !== undefined) {
       safeSet('tg_free_start_hour', String(merged.freeStartHourEgypt));
@@ -1510,7 +1745,6 @@ export default function App() {
       if (merged.freeLossImageUrl) safeSet('tg_free_loss_img', merged.freeLossImageUrl);
       else { try { localStorage.removeItem('tg_free_loss_img'); } catch(e) {} }
     }
-    if (merged.vipBotToken !== undefined) safeSet('tg_vip_bot_token', merged.vipBotToken);
     if (merged.vipChatId !== undefined) safeSet('tg_vip_chat_id', merged.vipChatId);
     if (merged.vipWinIcon !== undefined) safeSet('tg_vip_win_icon', merged.vipWinIcon);
     if (merged.vipWinGale1Icon !== undefined) safeSet('tg_vip_gale1_icon', merged.vipWinGale1Icon);
@@ -1543,9 +1777,19 @@ export default function App() {
     try {
       const res = await fetch('/api/autopilot', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify(merged)
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        lastAutoPilotSaveRef.current = Date.now();
+        setPublishStatus({
+          type: 'success',
+          message: '✅ تم حفظ الإعدادات والأزواج على متصفحك ورابط fx.zadtoo.com بنجاح!'
+        });
+        setTimeout(() => setPublishStatus({ type: 'idle' }), 4000);
+        return;
+      }
       if (!res.ok) {
         let errDetail = '';
         try {
@@ -1559,25 +1803,10 @@ export default function App() {
       lastAutoPilotSaveRef.current = Date.now();
       setAutoPilot(updatedAutopilot);
 
-      // Best-effort secondary sync to Cloud Firestore (does not break local server persistence if unauthenticated)
-      try {
-        await saveCloudSystemState({
-          signals: signals.slice(0, 50),
-          settings: formatterOptions,
-          autopilot: updatedAutopilot,
-          subscribers: subscribers.slice(0, 200),
-          quickNotes: quickNotes.slice(0, 50),
-          dailyStats: dailyStats.slice(0, 120)
-        });
-      } catch (cloudErr) {
-        console.warn('Optional secondary cloud sync notice:', cloudErr);
-      }
-
       const startH = updatedAutopilot.freeStartHourEgypt ?? 10;
       const endH = updatedAutopilot.freeEndHourEgypt ?? 13;
       const startLabel = startH === 0 ? '12 ص' : startH < 12 ? `${startH} صباحاً` : startH === 12 ? '12 ظهراً' : `${startH - 12} مساءً`;
       const endLabel = endH === 0 ? '12 ص' : endH < 12 ? `${endH} صباحاً` : endH === 12 ? '12 ظهراً' : `${endH - 12} مساءً`;
-      const galeLabel = updatedAutopilot.oneGaleEnabled === true ? 'مضاعفة واحدة مفعّلة' : 'بدون مضاعفات (متوقف)';
       const pairModeLabel = updatedAutopilot.pairSelectionMode === 'fixed_single'
         ? `الزوج الثابت: ${updatedAutopilot.primaryFixedPair || 'EUR/JPY'}`
         : updatedAutopilot.pairSelectionMode === 'custom_list'
@@ -1613,7 +1842,7 @@ export default function App() {
     try {
       const res = await fetch('/api/telegram/test-vip-connection', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({ type: 'vip' })
       });
       const data = await res.json();
@@ -1648,9 +1877,17 @@ export default function App() {
     try {
       const res = await fetch('/api/autopilot/add-pair', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({ pair: p })
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const nextCustom = Array.from(new Set([...(autoPilot.customPairsList || []), p]));
+        const nextAllowed = Array.from(new Set([...(autoPilot.allowedPairs || []), p]));
+        await handleSaveAutoPilot({ customPairsList: nextCustom, allowedPairs: nextAllowed });
+        setNewCustomPairInput('');
+        return;
+      }
       const data = await res.json();
       if (data.ok && data.autopilot) {
         setAutoPilot(data.autopilot);
@@ -1673,9 +1910,16 @@ export default function App() {
     try {
       const res = await fetch('/api/autopilot/remove-pair', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({ pair: pairToRemove })
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const nextCustom = (autoPilot.customPairsList || []).filter(x => x !== pairToRemove);
+        const nextAllowed = (autoPilot.allowedPairs || []).filter(x => x !== pairToRemove);
+        await handleSaveAutoPilot({ customPairsList: nextCustom, allowedPairs: nextAllowed });
+        return;
+      }
       const data = await res.json();
       if (data.ok && data.autopilot) {
         setAutoPilot(data.autopilot);
@@ -1704,7 +1948,7 @@ export default function App() {
     try {
       const res = await fetch('/api/autopilot/trigger-now', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({ preferredPair: pair })
       });
       const data = await res.json();
@@ -1775,15 +2019,10 @@ export default function App() {
 
     fetch('/api/settings', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAdminHeaders(),
       body: JSON.stringify(nextOptions)
     })
       .then(() => {
-        saveCloudSystemState({
-          signals: signals.slice(0, 50),
-          settings: nextOptions,
-          autopilot: autoPilot
-        }).catch(() => {});
         setMessageAutoSaveStatus('saved');
       })
       .catch(() => {
@@ -1800,7 +2039,9 @@ export default function App() {
   const handlePullFromLiveGlobalRadar = async () => {
     setIsFetchingSource(true);
     try {
-      const res = await fetch('/api/scrape-source');
+      const res = await fetch('/api/scrape-source', {
+        headers: getAdminHeaders(undefined, false)
+      });
       const data = await res.json();
       if (data.ok && data.messages && data.messages.length > 0) {
         handleRawInputChange(data.messages[0]);
@@ -1826,10 +2067,42 @@ export default function App() {
   const handlePublishSignal = async () => {
     setPublishStatus({ type: 'loading', message: 'جاري تنسيق إشارة السوق العالمي وإرسالها...' });
 
+    const publishViaFirestoreOnly = async () => {
+      const now = new Date();
+      const nextMin = new Date(now.getTime() + 60000);
+      nextMin.setSeconds(0, 0);
+      const newSig: SignalItem = {
+        id: `sig_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        asset: parsedSignal.asset,
+        isOtc: false,
+        direction: parsedSignal.direction,
+        timeframe: parsedSignal.timeframe || 'M1',
+        entryMinute: parsedSignal.entryMinute || String(nextMin.getMinutes()).padStart(2, '0'),
+        entryTime: parsedSignal.entryTime || `${String(nextMin.getHours()).padStart(2, '0')}:${String(nextMin.getMinutes()).padStart(2, '0')}`,
+        targetEntryTimestamp: Math.floor(nextMin.getTime() / 1000),
+        livePrice: parsedSignal.livePrice,
+        rsiValue: parsedSignal.rsiValue,
+        analysisReason: parsedSignal.analysisReason,
+        formattedMessage: formattedPreview,
+        rawOriginal: rawInput,
+        status: 'PENDING',
+        createdAt: now.toISOString()
+      };
+      await saveSignalToFirestore(newSig);
+      const nextList = [newSig, ...signals];
+      await syncRobotPublicFeedToFirestore(nextList);
+      setSignals(nextList);
+      setPublishStatus({
+        type: 'success',
+        message: '✅ تم نشر الإشارة في سحابة fx.zadtoo.com والروبوت العائم وصفحة الزوار بنجاح!'
+      });
+      setTimeout(() => setPublishStatus({ type: 'idle' }), 5000);
+    };
+
     try {
       const res = await fetch('/api/signals/publish', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({
           asset: parsedSignal.asset,
           isOtc: false,
@@ -1848,9 +2121,23 @@ export default function App() {
         })
       });
 
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json') || !res.ok) {
+        if (canWriteFirestoreAsAdmin()) {
+          await publishViaFirestoreOnly();
+          return;
+        }
+        throw new Error('تعذر الاتصال بخادم البث.');
+      }
+
       const data = await res.json();
       if (data.ok) {
-        setSignals(prev => [data.signal, ...prev]);
+        const nextList = [data.signal, ...signals];
+        setSignals(nextList);
+        if (canWriteFirestoreAsAdmin()) {
+          saveSignalToFirestore(data.signal).catch(() => {});
+          syncRobotPublicFeedToFirestore(nextList).catch(() => {});
+        }
 
         if (autoPilot.botToken.trim() && autoPilot.chatId.trim()) {
           if (data.telegramSent) {
@@ -1873,6 +2160,10 @@ export default function App() {
         setTimeout(() => setPublishStatus({ type: 'idle' }), 5000);
       }
     } catch (_err) {
+      if (canWriteFirestoreAsAdmin()) {
+        await publishViaFirestoreOnly();
+        return;
+      }
       setPublishStatus({
         type: 'error',
         message: 'حدث خطأ أثناء الاتصال بالخادم.'
@@ -1884,10 +2175,25 @@ export default function App() {
     id: string,
     status: 'WIN' | 'WIN_GALE1' | 'LOSS' | 'DRAW' | 'PENDING'
   ) => {
+    const updateViaFirestore = async () => {
+      const target = signals.find(s => s.id === id);
+      if (!target) return;
+      const updatedSig: SignalItem = { ...target, status };
+      const nextList = signals.map(s => (s.id === id ? updatedSig : s));
+      await saveSignalToFirestore(updatedSig);
+      await syncRobotPublicFeedToFirestore(nextList);
+      setSignals(nextList);
+      setPublishStatus({
+        type: 'success',
+        message: '✅ تم تحديث نتيجة الإشارة في السحابة والروبوت العائم بنجاح!'
+      });
+      setTimeout(() => setPublishStatus({ type: 'idle' }), 4000);
+    };
+
     try {
       const res = await fetch(`/api/signals/${id}/status`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({
           status,
           botToken: autoPilot.botToken,
@@ -1895,9 +2201,23 @@ export default function App() {
           notifyTelegram: Boolean(autoPilot.botToken.trim() && autoPilot.chatId.trim())
         })
       });
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json') || !res.ok) {
+        if (canWriteFirestoreAsAdmin()) {
+          await updateViaFirestore();
+        }
+        return;
+      }
       const data = await res.json();
       if (data.ok) {
-        setSignals(prev => prev.map(s => (s.id === id ? data.signal : s)));
+        setSignals(prev => {
+          const next = prev.map(s => (s.id === id ? data.signal : s));
+          if (canWriteFirestoreAsAdmin()) {
+            saveSignalToFirestore(data.signal).catch(() => {});
+            syncRobotPublicFeedToFirestore(next).catch(() => {});
+          }
+          return next;
+        });
         setPublishStatus({
           type: 'success',
           message:
@@ -1912,14 +2232,24 @@ export default function App() {
         setTimeout(() => setPublishStatus({ type: 'idle' }), 4000);
       }
     } catch (_e) {
-      // Ignore
+      if (canWriteFirestoreAsAdmin()) {
+        await updateViaFirestore();
+      }
     }
   };
 
   const handleDeleteSignal = async (id: string) => {
     try {
-      await fetch(`/api/signals/${id}`, { method: 'DELETE' });
-      setSignals(prev => prev.filter(s => s.id !== id));
+      await fetch(`/api/signals/${id}`, {
+        method: 'DELETE',
+        headers: getAdminHeaders(undefined, false)
+      }).catch(() => {});
+      const remaining = signals.filter(s => s.id !== id);
+      setSignals(remaining);
+      if (canWriteFirestoreAsAdmin()) {
+        await deleteSignalFromFirestore(id);
+        await syncRobotPublicFeedToFirestore(remaining);
+      }
     } catch (_e) {
       // Ignore
     }
@@ -1928,7 +2258,10 @@ export default function App() {
   // Manual & Daily Reset for "04. سجل إشارات السوق العالمي المنشورة" and daily accuracy/wins stats
   const handleResetDailySignalsLog = async () => {
     try {
-      const res = await fetch('/api/signals/reset-daily', { method: 'POST' });
+      const res = await fetch('/api/signals/reset-daily', {
+        method: 'POST',
+        headers: getAdminHeaders(undefined, false)
+      });
       const data = await res.json();
       if (data.ok) {
         setSignals([]);
@@ -1938,11 +2271,6 @@ export default function App() {
         if (data.autopilot) {
           setAutoPilot(prev => ({ ...prev, ...data.autopilot, totalAutoSent: 0 }));
         }
-        await saveCloudSystemState({
-          signals: [],
-          settings: formatterOptions,
-          autopilot: { ...autoPilot, totalAutoSent: 0 }
-        });
         setPublishStatus({
           type: 'success',
           message: '✅ تم تصفير (04. سجل إشارات السوق العالمي المنشورة) وتصفير عداد الصفقات والنسبة اليومية بنجاح!'
@@ -2180,7 +2508,7 @@ export default function App() {
     try {
       const res = await fetch('/api/daily-report/send-telegram', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({
           destination,
           customText: endOfDayReportData.telegramReportText
@@ -2780,7 +3108,7 @@ export default function App() {
     try {
       const res = await fetch('/api/daily-stats', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAdminHeaders(),
         body: JSON.stringify({
           date: editStatForm.date,
           directWins: Math.max(0, Number(editStatForm.directWins) || 0),
@@ -2792,12 +3120,6 @@ export default function App() {
       const data = await res.json();
       if (data.ok && Array.isArray(data.dailyStats)) {
         setDailyStats(data.dailyStats);
-        await saveCloudSystemState({
-          signals: signals.slice(0, 80),
-          settings: formatterOptions,
-          autopilot: autoPilot,
-          dailyStats: data.dailyStats
-        });
         setEditingStatDate(null);
       }
     } catch (_e) {
@@ -2815,15 +3137,18 @@ export default function App() {
         setActiveTab={(tab) => {
           setZadtooTab(tab);
           if (tab === 'admin') {
-            if (!isAdminAuthenticated) {
+            if (!effectiveIsAdmin) {
               setShowLoginModal(true);
             } else {
               setShowLegacyAdminStudio(false);
             }
           }
         }}
-        isAdmin={isAdminAuthenticated}
-        onOpenLogin={() => setShowLoginModal(true)}
+        isAdmin={effectiveIsAdmin}
+        onOpenLogin={() => {
+          checkAdminAuthStatus();
+          setShowLoginModal(true);
+        }}
         onOpenAbout={() => setAboutContactType('about')}
         onOpenContact={() => setAboutContactType('contact')}
       />
@@ -2842,7 +3167,8 @@ export default function App() {
       {/* Screen 2: صفحة الأخبار العاجلة والمفكرة الاقتصادية وتوقعات الدولار */}
       {zadtooTab === 'news' && (
         <ZadtooForexNewsPage
-          isAdmin={isAdminAuthenticated}
+          isAdmin={effectiveIsAdmin}
+          adminToken={adminToken}
           onNavigateSignals={() => setZadtooTab('signals')}
           onNavigateHome={() => setZadtooTab('home')}
         />
@@ -2878,13 +3204,12 @@ export default function App() {
       {/* Screen 3: صفحة التداول الآلي */}
       {zadtooTab === 'autotrade' && (
         <ZadtooAutoTradePage
-          isAdmin={isAdminAuthenticated}
+          isAdmin={effectiveIsAdmin}
           onOpenRobotAdmin={() => {
             setZadtooTab('admin');
             setShowLegacyAdminStudio(true);
             setActiveView('robot');
           }}
-          onDownloadScript={() => window.open('/api/quotex-robot/zad-broker-robot.user.js', '_blank')}
         />
       )}
 
@@ -2901,15 +3226,37 @@ export default function App() {
         />
       )}
 
-      {/* Screen 6: قسم بوت التليجرام الذكي */}
+      {/* Screen 6: قسم بوت التليجرام الذكي (محمي للمشرف فقط) */}
       {zadtooTab === 'telegram_bot' && (
-        <TelegramBotManager />
+        effectiveIsAdmin ? (
+          <TelegramBotManager adminToken={adminToken} />
+        ) : (
+          <div className="max-w-md mx-auto my-16 p-8 bg-white border border-slate-200 rounded-3xl shadow-lg text-center space-y-4">
+            <div className="w-14 h-14 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center mx-auto text-xl font-bold">
+              🔒
+            </div>
+            <h2 className="text-xl font-black text-slate-900">منطقة مدير النظام</h2>
+            <p className="text-xs text-slate-500">
+              يرجى تسجيل الدخول بحساب المشرف لإدارة بوت التليجرام.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                checkAdminAuthStatus();
+                setShowLoginModal(true);
+              }}
+              className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl cursor-pointer"
+            >
+              تسجيل الدخول الآن
+            </button>
+          </div>
+        )
       )}
 
       {/* Screen 5: لوحة تحكم الإدارة */}
       {zadtooTab === 'admin' && (
         <>
-          {!isAdminAuthenticated ? (
+          {!effectiveIsAdmin ? (
             <div className="max-w-md mx-auto my-16 p-8 bg-white border border-slate-200 rounded-3xl shadow-lg text-center space-y-4">
               <div className="w-14 h-14 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center mx-auto text-xl font-bold">
                 🔒
@@ -2920,7 +3267,10 @@ export default function App() {
               </p>
               <button
                 type="button"
-                onClick={() => setShowLoginModal(true)}
+                onClick={() => {
+                  checkAdminAuthStatus();
+                  setShowLoginModal(true);
+                }}
                 className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl cursor-pointer"
               >
                 تسجيل الدخول الآن
@@ -2928,6 +3278,7 @@ export default function App() {
             </div>
           ) : !showLegacyAdminStudio ? (
             <ZadtooAdminDashboard
+              adminToken={adminToken}
               onLogout={handleAdminLogout}
               onOpenSignalModal={() => {
                 setShowLegacyAdminStudio(true);
@@ -2973,8 +3324,6 @@ export default function App() {
                   localStorage.setItem('zad_platform_plans', JSON.stringify(newPlans));
                   localStorage.setItem('zad_platform_contact_links', JSON.stringify(newLinks));
                 } catch (_e) {}
-                saveCloudPlans(newPlans).catch(() => {});
-                saveCloudContactLinks(newLinks).catch(() => {});
               }}
             />
           ) : (
@@ -2997,9 +3346,9 @@ export default function App() {
       )}
 
       {/* Main Content Container for Legacy Admin / Studio when requested */}
-      {zadtooTab === 'admin' && isAdminAuthenticated && showLegacyAdminStudio && (
+      {zadtooTab === 'admin' && effectiveIsAdmin && showLegacyAdminStudio && (
         <main className="flex-1 w-full max-w-[1240px] mx-auto px-3 sm:px-6 py-6 sm:py-8 bg-[#0B0F17] text-slate-100 rounded-3xl mb-8">
-        {activeView === 'admin' && isAdminAuthenticated ? (
+        {activeView === 'admin' && effectiveIsAdmin ? (
           /* ==========================================
              PROTECTED ADMIN VIEW: Focused Global Forex Engine
              ========================================== */
@@ -3250,10 +3599,14 @@ export default function App() {
                       </label>
                       <input
                         type="password"
-                        value={autoPilot.botToken}
+                        value={autoPilot.botToken === 'CONFIGURED' ? '' : autoPilot.botToken}
                         onChange={(e) => setAutoPilot(prev => ({ ...prev, botToken: e.target.value }))}
-                        onBlur={() => handleSaveAutoPilot({ botToken: autoPilot.botToken })}
-                        placeholder="7123456789:AAHxyz..."
+                        onBlur={() => {
+                          if (autoPilot.botToken && autoPilot.botToken !== 'CONFIGURED') {
+                            handleSaveAutoPilot({ botToken: autoPilot.botToken });
+                          }
+                        }}
+                        placeholder={autoPilot.botToken === 'CONFIGURED' ? 'محفوظ بأمان في السيرفر (أدخل توكن جديد للتحديث)' : 'أدخل توكن البوت المجاني'}
                         dir="ltr"
                         className="w-full px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-emerald-500 font-mono-num"
                       />
@@ -3742,17 +4095,18 @@ export default function App() {
                       </div>
                       <input
                         type={showVipToken ? 'text' : 'password'}
-                        value={autoPilot.vipBotToken || ''}
+                        value={autoPilot.vipBotToken === 'CONFIGURED' ? '' : (autoPilot.vipBotToken || '')}
                         onChange={(e) => {
                           const val = e.target.value;
                           setAutoPilot(prev => ({ ...prev, vipBotToken: val }));
-                          try { localStorage.setItem('tg_vip_bot_token', val); } catch(_) {}
                         }}
                         onBlur={(e) => {
                           const val = e.target.value;
-                          handleSaveAutoPilot({ vipBotToken: val });
+                          if (val && val !== 'CONFIGURED') {
+                            handleSaveAutoPilot({ vipBotToken: val });
+                          }
                         }}
-                        placeholder="8814918920:AAGeXm..."
+                        placeholder={autoPilot.vipBotToken === 'CONFIGURED' ? 'محفوظ بأمان في السيرفر (أدخل توكن جديد للتحديث)' : 'أدخل توكن بوت VIP'}
                         dir="ltr"
                         className="w-full px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 font-mono-num"
                       />
@@ -3776,7 +4130,7 @@ export default function App() {
                           const val = e.target.value;
                           handleSaveAutoPilot({ vipChatId: val });
                         }}
-                        placeholder="@YourVipChannel أو -1004323890544"
+                        placeholder="@YourVipChannel أو -100..."
                         dir="ltr"
                         className="w-full px-3 py-2 text-xs bg-slate-900 border border-slate-800 rounded-lg text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-500 font-mono-num"
                       />
@@ -3791,11 +4145,10 @@ export default function App() {
                         const token = (autoPilot.vipBotToken || '').trim();
                         const chat = (autoPilot.vipChatId || '').trim();
                         try {
-                          localStorage.setItem('tg_vip_bot_token', token);
                           localStorage.setItem('tg_vip_chat_id', chat);
                         } catch (_) {}
                         await handleSaveAutoPilot({
-                          vipBotToken: token,
+                          ...(token && token !== 'CONFIGURED' ? { vipBotToken: token } : {}),
                           vipChatId: chat,
                           vipEnabled: true
                         });
@@ -6060,6 +6413,7 @@ export default function App() {
                   </h2>
                 </div>
                 <ZadtooPlansAndLinksManager
+                  adminToken={adminToken}
                   initialPlans={platformPlans}
                   initialContactLinks={platformContactLinks}
                   onConfigChanged={(p, c) => {
@@ -6074,6 +6428,7 @@ export default function App() {
             {(adminSectionTab === 'all' || adminSectionTab === 'admin_live') && (
               <section className="space-y-4">
                 <ZadtooAdminLiveBroadcast
+                  adminToken={adminToken}
                   autoPilot={autoPilot}
                   onRefreshSignals={fetchSignals}
                   onSignalCreated={(sig) => {
@@ -6086,6 +6441,7 @@ export default function App() {
         ) : activeView === 'robot' ? (
           <ErrorBoundary>
             <QuotexRobotAdminPage
+              adminToken={adminToken}
               robotSettings={robotSettings}
               setRobotSettings={setRobotSettings}
               subscribers={subscribers}
@@ -6094,11 +6450,14 @@ export default function App() {
               liveMarket={liveMarket}
               onTriggerSignalNow={handleTriggerAutoNow}
               onNavigateView={setActiveView}
-              isAdmin={isAdminAuthenticated}
-              onOpenLoginModal={() => setShowLoginModal(true)}
+              isAdmin={effectiveIsAdmin}
+              onOpenLoginModal={() => {
+                checkAdminAuthStatus();
+                setShowLoginModal(true);
+              }}
             />
           </ErrorBoundary>
-        ) : activeView === 'stats' && isAdminAuthenticated ? (
+        ) : activeView === 'stats' && effectiveIsAdmin ? (
           /* ==========================================
              PROTECTED ADMIN-ONLY STATISTICS PAGE (A4 SINGLE-LINE-PER-DAY SHEET)
              ========================================== */
@@ -9384,6 +9743,19 @@ export default function App() {
                       +{pl.label} ({pl.price}$)
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setAdminEditForm(p => ({
+                        ...p,
+                        status: 'ACTIVE',
+                        expiryDate: '2099-12-31'
+                      }))
+                    }
+                    className="px-2 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded font-bold cursor-pointer"
+                  >
+                    +دائم (2099-12-31)
+                  </button>
                 </div>
 
                 <div>
@@ -9402,14 +9774,26 @@ export default function App() {
                   />
                 </div>
 
+                {modalSaveFeedback && (
+                  <div
+                    className={`p-2.5 rounded-lg border text-xs font-bold ${
+                      modalSaveFeedback.type === 'success'
+                        ? 'bg-emerald-950/70 border-emerald-500/50 text-emerald-300'
+                        : 'bg-rose-950/70 border-rose-500/50 text-rose-300'
+                    }`}
+                  >
+                    {modalSaveFeedback.message}
+                  </div>
+                )}
+
                 <div className="flex flex-wrap gap-2 pt-2">
                   <button
                     type="button"
                     disabled={isSavingSubscriber}
                     onClick={() => handleAdminUpdateSubscriber(selectedAdminSub.id, adminEditForm)}
-                    className="flex-1 py-2 px-3 text-xs font-bold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-lg transition-colors cursor-pointer"
+                    className="flex-1 py-2 px-3 text-xs font-bold text-slate-950 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 rounded-lg transition-colors cursor-pointer"
                   >
-                    حفظ التعديلات وتاريخ الانتهاء
+                    {isSavingSubscriber ? '⏳ جاري الحفظ...' : 'حفظ التعديلات وتاريخ الانتهاء'}
                   </button>
 
                   <button
@@ -9805,7 +10189,9 @@ export default function App() {
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2">
                 <Lock className="w-4 h-4 text-emerald-400" />
-                <h3 className="text-base font-bold text-white">تسجيل دخول المشرف</h3>
+                <h3 className="text-base font-bold text-white">
+                  {adminNeedsSetup ? 'إعداد حساب المشرف لأول مرة' : 'تسجيل دخول المشرف'}
+                </h3>
               </div>
               <button
                 onClick={() => {
@@ -9818,6 +10204,38 @@ export default function App() {
               </button>
             </div>
 
+            {/* Direct Google Admin Sign-In for fx.zadtoo.com */}
+            <div className="space-y-2.5">
+              <button
+                type="button"
+                onClick={handleGoogleAdminLogin}
+                disabled={isGoogleLoggingIn}
+                className="w-full py-3 px-4 text-sm font-black text-slate-950 bg-gradient-to-r from-emerald-400 to-teal-300 hover:from-emerald-300 hover:to-teal-200 rounded-xl shadow-lg flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-60"
+              >
+                <ShieldCheck className="w-4 h-4" />
+                <span>
+                  {isGoogleLoggingIn
+                    ? 'جاري المصادقة مع Google...'
+                    : '🔐 دخول المشرف عبر Google (لربط fx.zadtoo.com)'}
+                </span>
+              </button>
+              <p className="text-[11px] text-slate-400 text-center leading-relaxed">
+                يفتح لوحة المشرف والأعضاء والبيانات البنكية وروابط الدعم والروبوت مباشرة على <span className="text-emerald-300 font-mono">fx.zadtoo.com</span> بحساب <span dir="ltr" className="text-slate-200 font-mono">thrayanabil@gmail.com</span>
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 text-[11px] text-slate-500">
+              <div className="flex-1 h-px bg-slate-800" />
+              <span>أو الدخول بكلمة مرور الخادم</span>
+              <div className="flex-1 h-px bg-slate-800" />
+            </div>
+
+            {adminNeedsSetup && (
+              <p className="text-xs text-amber-300 bg-amber-950/50 border border-amber-500/40 rounded-lg p-2.5 leading-relaxed">
+                لم يتم ضبط حساب المشرف على هذا الخادم بعد. أدخل البريد الإلكتروني وكلمة المرور (6 أحرف على الأقل) لاعتماد حساب المشرف بشكل مشفر.
+              </p>
+            )}
+
             <form onSubmit={handleAdminLogin} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-slate-300 mb-1.5">
@@ -9829,7 +10247,7 @@ export default function App() {
                   value={loginEmail}
                   onChange={(e) => setLoginEmail(e.target.value)}
                   dir="ltr"
-                  placeholder="thrayanabil2026@gmail.com"
+                  placeholder="admin@example.com"
                   autoComplete="email"
                   className="w-full px-3.5 py-2.5 text-sm bg-[#0B0F17] border border-slate-800 rounded-lg text-slate-100 focus:outline-none focus:border-emerald-500 font-mono-num"
                 />
@@ -9842,10 +10260,12 @@ export default function App() {
                 <input
                   type="password"
                   required
+                  minLength={adminNeedsSetup ? 6 : undefined}
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
                   dir="ltr"
                   placeholder="••••••••"
+                  autoComplete={adminNeedsSetup ? 'new-password' : 'current-password'}
                   className="w-full px-3.5 py-2.5 text-sm bg-[#0B0F17] border border-slate-800 rounded-lg text-slate-100 focus:outline-none focus:border-emerald-500 font-mono-num"
                 />
               </div>
@@ -9859,7 +10279,11 @@ export default function App() {
                 disabled={isLoggingIn}
                 className="w-full py-2.5 text-sm font-bold text-slate-950 bg-emerald-400 hover:bg-emerald-300 rounded-lg transition-colors cursor-pointer"
               >
-                {isLoggingIn ? 'جاري التحقق...' : 'دخول إلى لوحة المشرف'}
+                {isLoggingIn
+                  ? 'جاري التحقق...'
+                  : adminNeedsSetup
+                  ? 'إنشاء حساب المشرف والدخول'
+                  : 'دخول إلى لوحة المشرف'}
               </button>
             </form>
           </div>
@@ -9880,7 +10304,7 @@ export default function App() {
               قناتنا المجانية @ZadNBFX
             </a>
             <span aria-hidden="true">·</span>
-            {isAdminAuthenticated ? (
+            {effectiveIsAdmin ? (
               <button
                 onClick={() => setActiveView(activeView === 'admin' ? 'visitor' : 'admin')}
                 className="text-slate-400 hover:text-white transition-colors cursor-pointer"
@@ -9889,7 +10313,10 @@ export default function App() {
               </button>
             ) : (
               <button
-                onClick={() => setShowLoginModal(true)}
+                onClick={() => {
+                  checkAdminAuthStatus();
+                  setShowLoginModal(true);
+                }}
                 className="relative z-30 flex items-center gap-1 text-slate-500 hover:text-emerald-400 transition-colors cursor-pointer pointer-events-auto"
                 title="دخول المشرف"
               >
@@ -10084,17 +10511,7 @@ export default function App() {
                   </div>
 
                   {/* Actions / Export */}
-                  <div className="pt-2 flex flex-wrap items-center justify-between gap-3 border-t border-slate-800">
-                    <a
-                      href="/strategy.txt"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-medium transition-colors"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      <span>عرض ملف الاستراتيجية الشامل (strategy.txt)</span>
-                    </a>
-
+                  <div className="pt-2 flex flex-wrap items-center justify-end gap-3 border-t border-slate-800">
                     <button
                       type="button"
                       onClick={() => {

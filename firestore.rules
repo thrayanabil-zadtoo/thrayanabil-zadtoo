@@ -1,38 +1,101 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Pillar 1 / Global Safety Net: Default-deny catch-all
     match /{document=**} {
       allow read, write: if false;
     }
 
+    // Pillar 3: Path Variable Hardening
     function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function incoming() {
       return request.resource.data;
     }
 
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    // Tiered Identity Logic: Bootstrapped verified admin emails or trusted admins collection
+    function isAdmin() {
+      return isVerifiedUser() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        request.auth.token.email == 'thrayanabil@gmail.com' ||
+        request.auth.token.email == 'thrayanabil2026@gmail.com'
+      );
+    }
+
+    // Pillar 2: Validation Blueprints (exact match with firebase-blueprint.json)
     function isValidAppState(data) {
       return data.keys().hasAll(['updatedAt', 'payload']) &&
              data.keys().hasOnly(['updatedAt', 'payload']) &&
-             data.updatedAt is string && data.updatedAt.size() <= 64 &&
+             data.updatedAt is string && data.updatedAt.size() > 0 && data.updatedAt.size() <= 64 &&
              data.payload is string && data.payload.size() <= 500000;
     }
 
+    function isValidRobotFeed(data) {
+      return data.keys().hasAll(['updatedAt']) &&
+             data.keys().hasOnly(['updatedAt', 'payload', 'signal']) &&
+             data.updatedAt is string && data.updatedAt.size() > 0 && data.updatedAt.size() <= 64 &&
+             (!('payload' in data) || (data.payload is string && data.payload.size() <= 500000)) &&
+             (!('signal' in data) || data.signal == null || (data.signal is map && data.signal.keys().size() <= 32));
+    }
+
+    function isValidAdminDoc(data) {
+      return data.keys().hasAll(['email', 'role']) &&
+             data.keys().hasOnly(['email', 'role', 'createdAt']) &&
+             data.email is string && data.email.size() > 0 && data.email.size() <= 200 &&
+             data.role is string && data.role == 'admin' &&
+             (!('createdAt' in data) || (data.createdAt is string && data.createdAt.size() > 0 && data.createdAt.size() <= 64));
+    }
+
+    // Connection health check (read-only)
     match /test/{docId} {
-      allow get: if isValidId(docId);
+      allow get: if isValidId(docId) && docId == 'connection';
+      allow list: if false;
+      allow create, update, delete: if false;
     }
 
+    // Trusted admin lookup documents
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && isVerifiedUser() && (request.auth.uid == userId || isAdmin());
+      allow list: if false;
+      allow create: if isValidId(userId) && isAdmin() && isValidAdminDoc(incoming());
+      allow update: if isValidId(userId) && isAdmin() && isValidAdminDoc(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['email', 'role', 'createdAt']) &&
+                       incoming().email == existing().email;
+      allow delete: if isValidId(userId) && isAdmin();
+    }
+
+    // System state: PII & tokens isolated to verified Admin; only public marketing docs allow single-doc get
     match /system_state/{docId} {
-      allow get, list: if isValidId(docId);
-      allow create, update: if isValidId(docId) && isValidAppState(incoming());
+      allow get: if isValidId(docId) && (isAdmin() || docId in ['platform_plans', 'platform_contact_links']);
+      allow list: if false;
+      allow create: if isValidId(docId) && isAdmin() && isValidAppState(incoming());
+      allow update: if isValidId(docId) && isAdmin() && isValidAppState(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['updatedAt', 'payload']);
+      allow delete: if isValidId(docId) && isAdmin();
     }
 
+    // Public live robot signal feed (get only for 'live', writes strictly Admin-only)
     match /robot_feed/{docId} {
-      // Direct Public Stream for Quotex Robot: Zero auth cookies, global CORS, 100% direct access from broker
-      allow get: if docId == 'live';
-      allow create, update: if docId == 'live';
+      allow get: if isValidId(docId) && docId == 'live';
+      allow list: if false;
+      allow create: if isValidId(docId) && docId == 'live' && isAdmin() && isValidRobotFeed(incoming());
+      allow update: if isValidId(docId) && docId == 'live' && isAdmin() && isValidRobotFeed(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['updatedAt', 'payload', 'signal']);
+      allow delete: if isValidId(docId) && docId == 'live' && isAdmin();
     }
   }
 }

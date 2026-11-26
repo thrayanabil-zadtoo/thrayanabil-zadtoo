@@ -41,29 +41,17 @@
 // @match        *://zadtoo.com/*
 // @match        *://localhost:*/*
 // @match        *://127.0.0.1:*/*
-// @match        *://*/*
-// @include      *://*quotex*/*
-// @include      *://*qxbroker*/*
-// @include      *://*broker-qx*/*
-// @include      *://*market-qx*/*
-// @include      *://*qx*/*
-// @include      *://*pocketoption*/*
-// @include      *://*po.market*/*
-// @include      *://*po.trade*/*
-// @include      *://*zadtoo*/*
-// @include      *
 // @noframes
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addValueChangeListener
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
-// @connect      firestore.googleapis.com
-// @connect      googleapis.com
 // @connect      *.run.app
 // @connect      *.zadtoo.com
 // @connect      zadtoo.com
-// @connect      *
+// @connect      localhost
+// @connect      127.0.0.1
 // @run-at       document-end
 // ==/UserScript==
 
@@ -178,11 +166,15 @@
     }
   }
   const INJECTED_KEY = "${activeKey}";
-  let MEMBER_IDENTIFIER = savedKey || (!INJECTED_KEY.includes("${") && INJECTED_KEY ? INJECTED_KEY : "") || "QX-ADMIN-MASTER-TEST";
+  let MEMBER_IDENTIFIER = savedKey || (!INJECTED_KEY.includes("${") && INJECTED_KEY ? INJECTED_KEY : "");
+  if (MEMBER_IDENTIFIER && /^(QX-ADMIN-MASTER-TEST|ADMIN-MASTER-TEST|DEMO)$/i.test(MEMBER_IDENTIFIER.trim())) {
+    MEMBER_IDENTIFIER = "";
+    try { localStorage.removeItem("zad_broker_key"); } catch(e) {}
+  }
 
   // بمجرد تثبيت البرنامج العائم يكون على وضع التداول اليدوي وليس الآلي افتراضياً
   let ROBOT_MODE = localStorage.getItem("zad_robot_mode") || "MANUAL"; // "MANUAL" | "AUTO"
-  let ROBOT_STRATEGY_MODE = "VIP_WITH_MPB";
+  const ROBOT_STRATEGY_MODE = "VIP_WITH_MPB";
   try { localStorage.setItem("zad_robot_strategy_mode", "VIP_WITH_MPB"); } catch(e) {}
   let LAST_EXECUTED_SIG_ID = "";
   let LAST_ALERTED_SIG_ID = "";
@@ -207,17 +199,25 @@
   const currentHost = window.location.hostname.toLowerCase();
   const isWebPlatformHub = currentHost.includes("run.app") || currentHost.includes("zadtoo.com") || currentHost.includes("localhost") || currentHost.includes("127.0.0.1");
 
-  // مزامنة التبويب في الخلفية مع ذاكرة تامبرمونكي المشتركة
+  // مزامنة التبويب في الخلفية مع ذاكرة تامبرمونكي المشتركة فقط للعضو المرخص والمفعّل من السيرفر
   if (isWebPlatformHub) {
     console.log("%c[روبوت ZAD FX] متصل ومتزامن بالسيرفر ⚡", "color:#10b981;font-weight:bold;font-size:12px;");
     async function syncHubToTampermonkey() {
+      if (!MEMBER_IDENTIFIER) return;
       try {
         const res = await fetch(window.location.origin + "/api/quotex-robot/feed?apiKey=" + encodeURIComponent(MEMBER_IDENTIFIER));
-        if (res.ok) {
-          const data = await res.json();
-          if (data && data.ok && typeof GM_setValue === "function") {
+        const data = await res.json().catch(() => null);
+        if (data && typeof GM_setValue === "function") {
+          if (res.ok && data.ok && data.authorized === true) {
             GM_setValue("zad_robot_live_payload", JSON.stringify(data));
             GM_setValue("zad_robot_last_ping", Date.now());
+          } else {
+            GM_setValue("zad_robot_live_payload", JSON.stringify({
+              ok: false,
+              authorized: false,
+              error: data.error || "الحساب غير مصرح له بتشغيل الروبوت",
+              member: data.member || { name: "غير مصرح", error: data.error || "غير مصرح" }
+            }));
           }
         }
       } catch(e) {}
@@ -309,11 +309,11 @@
     <!-- شريط العضو وتعديل المفتاح/رقم الحساب -->
     <div style="font-size:9.5px;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;color:#cbd5e1;background:#0f172a;padding:3px 6px;border-radius:5px;border:1px solid #1e293b;">
       <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px;">
-        <span>العضو: <b id="zad-robot-member" style="color:#fbbf24;">${MEMBER_IDENTIFIER.startsWith('QX-') ? 'حساب تجريبي (ZAD FX)' : ('حساب ' + MEMBER_IDENTIFIER)}</b></span>
+        <span>العضو: <b id="zad-robot-member" style="color:#fbbf24;">${MEMBER_IDENTIFIER ? 'جاري التحقق من السيرفر...' : 'أدخل مفتاح التفعيل 🔑'}</b></span>
       </div>
       <div style="display:flex;align-items:center;gap:3px;">
-        <span id="zad-robot-days" style="color:#34d399;font-weight:bold;">30 يوم</span>
-        <button id="zad-change-key-btn" style="background:#1e293b;color:#38bdf8;border:1px solid #334155;border-radius:3px;padding:1px 4px;font-size:8.5px;font-weight:bold;cursor:pointer;" title="تغيير أو إدخال رقم حساب كيوتكس (ID)">🔑 ID</button>
+        <span id="zad-robot-days" style="color:#94a3b8;font-weight:bold;">--</span>
+        <button id="zad-change-key-btn" style="background:#1e293b;color:#38bdf8;border:1px solid #334155;border-radius:3px;padding:1px 4px;font-size:8.5px;font-weight:bold;cursor:pointer;" title="تغيير أو إدخال رقم حساب كيوتكس (ID) أو مفتاح الروبوت">🔑 ID</button>
       </div>
     </div>
 
@@ -341,16 +341,9 @@
       <button id="zad-mode-manual" style="padding:3.5px 2px;font-size:9.5px;font-weight:bold;border-radius:6px;border:1px solid ${ROBOT_MODE === 'MANUAL' ? '#f59e0b' : '#334155'};background:${ROBOT_MODE === 'MANUAL' ? '#f59e0b' : '#1e293b'};color:${ROBOT_MODE === 'MANUAL' ? '#020617' : '#cbd5e1'};cursor:pointer;">🖐️ تداول يدوي</button>
     </div>
 
-    <!-- قائمة منسدلة حصرية لاختيار استراتيجية المؤشرات (تعمل في الخلفية ومخفية عن الواجهة لتقليل المساحة) -->
+    <!-- الاستراتيجية المعتمدة موحدة وثابتة (أحدث إصدار MPB بدون تبديل) -->
     <div style="display:none;" id="zad-strategy-wrapper">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;font-size:8.5px;">
-        <span style="color:#93c5fd;font-weight:bold;display:flex;align-items:center;gap:2px;"><span>🎯</span><span>استراتيجية المؤشرات:</span></span>
-        <span id="zad-strategy-badge" style="color:#fde047;font-weight:bold;font-family:monospace;font-size:8px;background:#0f172a;padding:1px 4px;border-radius:3px;border:1px solid #334155;">${ROBOT_STRATEGY_MODE === 'PUBLIC_CLASSIC' ? '1 دقيقة ⏳' : '5 ثوانٍ ⚡'}</span>
-      </div>
-      <select id="zad-robot-strategy-mode" style="width:100%;background:#06101e;color:#f8fafc;border:1px solid #0284c7;border-radius:4px;padding:2px 3px;font-size:9px;font-weight:bold;cursor:pointer;outline:none;" title="الاستراتيجية المعتمدة رسمياً">
-        <option value="VIP_WITH_MPB" selected>💎 استراتيجية VIP مع MPB (4 مؤشرات | 3 من 4 | 5 ثوانٍ ⚡)</option>
-        <option value="PUBLIC_CLASSIC" disabled style="color:#64748b;">🚫 استراتيجية القناة العامة (ملغاة ومحجوبة بطلبك)</option>
-      </select>
+      <span id="zad-strategy-badge">5 ثوانٍ ⚡ (MPB الموحدة)</span>
     </div>
 
     <!-- شريط مسح الأزواج الستة في الوقت الحقيقي (يعمل في الخلفية ومخفي عن الواجهة لتقليل المساحة) -->
@@ -395,7 +388,7 @@
       </div>
 
       <div id="zad-manual-trigger-container" style="display:none;margin-bottom:4px;">
-        <button id="zad-manual-trade-btn" style="width:100%;padding:5px 4px;font-size:10px;font-weight:extrabold;border-radius:6px;background:#10b981;color:#020617;border:none;cursor:pointer;animation:pulse 1.5s infinite;">
+        <button id="zad-manual-trade-btn" style="width:100%;padding:5px 4px;font-size:10px;font-weight:extrabold;border-radius:6px;background:#10b981;color:#020617;border:none;cursor:pointer;">
           🚀 اضغط هنا للدخول فوراً في المنصة!
         </button>
       </div>
@@ -534,7 +527,11 @@
       // تحديث حالة العرض الأولية فقط عند أول تحميل (لمنع الوميض)
       try {
         if (!currentRobotUiState && (!activeSignalObj || activeSignalObj.status !== "PENDING")) {
-          renderWaitingState();
+          if (serverLockedInfo && serverLockedInfo.isLockedOutsideHours === true) {
+            renderLockedState(serverLockedInfo);
+          } else {
+            renderWaitingState();
+          }
         }
       } catch(e) {}
     } catch(err) {
@@ -670,14 +667,17 @@
         const currentStored = localStorage.getItem("zad_broker_key") || "";
         const defaultPrompt = (currentStored && !currentStored.includes("${"))
           ? currentStored
-          : (MEMBER_IDENTIFIER && !MEMBER_IDENTIFIER.includes("${") && MEMBER_IDENTIFIER !== "QX-ADMIN-MASTER-TEST" ? MEMBER_IDENTIFIER : "");
-        const input = prompt("ادخل رقم حساب كيوتكس الخاص بك (Quotex ID) أو مفتاح الروبوت الخاص بك من المشرف:", defaultPrompt);
-        if (input && input.trim()) {
+          : (MEMBER_IDENTIFIER && !MEMBER_IDENTIFIER.includes("${") ? MEMBER_IDENTIFIER : "");
+        const input = prompt("ادخل رقم حساب كيوتكس الخاص بك (Quotex ID) أو مفتاح الروبوت المفعّل من المشرف:", defaultPrompt);
+        if (input !== null) {
           MEMBER_IDENTIFIER = input.trim();
-          localStorage.setItem("zad_broker_key", MEMBER_IDENTIFIER);
+          if (MEMBER_IDENTIFIER) {
+            localStorage.setItem("zad_broker_key", MEMBER_IDENTIFIER);
+          } else {
+            localStorage.removeItem("zad_broker_key");
+          }
           const memEl = widget.querySelector("#zad-robot-member");
-          if (memEl) memEl.innerText = "جاري التحقق من السيرفر...";
-          checkCloudFirestoreStream();
+          if (memEl) memEl.innerText = MEMBER_IDENTIFIER ? "جاري التحقق من السيرفر..." : "أدخل مفتاح التفعيل 🔑";
           checkDirectApi();
         }
       };
@@ -801,33 +801,7 @@
       };
     }
 
-    // 6.5. اختيار استراتيجية المؤشرات (القائمة المنسدلة الحصرية)
-    const strategySelect = widget.querySelector("#zad-robot-strategy-mode");
-    const strategyBadge = widget.querySelector("#zad-strategy-badge");
-    if (strategySelect && !strategySelect.dataset.bound) {
-      strategySelect.dataset.bound = "1";
-      strategySelect.value = ROBOT_STRATEGY_MODE;
-      strategySelect.onchange = async (e) => {
-        e.stopPropagation();
-        ROBOT_STRATEGY_MODE = strategySelect.value;
-        localStorage.setItem("zad_robot_strategy_mode", ROBOT_STRATEGY_MODE);
-        if (strategyBadge) {
-          strategyBadge.innerText = ROBOT_STRATEGY_MODE === "PUBLIC_CLASSIC" ? "1 دقيقة ⏳" : "5 ثوانٍ ⚡";
-        }
-        currentRobotUiState = "";
-        checkDirectApi();
-        try {
-          const appOrigin = window.location.origin.includes("run.app") || window.location.origin.includes("zadtoo.com") || window.location.origin.includes("localhost")
-            ? window.location.origin
-            : "https://fx.zadtoo.com";
-          await fetch(appOrigin + "/api/quotex-robot/strategy-mode", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ mode: ROBOT_STRATEGY_MODE })
-          });
-        } catch(err) {}
-      };
-    }
+    // 6.5. الاستراتيجية موحدة ومقفلة على أحدث تحديث (VIP_WITH_MPB) بدون تبديل
 
     // 7. زر الإغلاق والتصغير المؤقت
     const closeBtn = widget.querySelector("#zad-close-btn");
@@ -1615,12 +1589,19 @@
     }
   }
 
-  // دالة عرض وضع قفل الأمان خارج أوقات عمل الاستراتيجية المختارة (بدلاً من وضع الانتظار WAIT)
+  let serverLockedInfo = null;
+  let latestReceivedServerEpochMs = 0;
+
+  // دالة عرض وضع التوقف الهادئ خارج أوقات العمل أو بعد تحقيق الهدف (مستقر تماماً دون وميض أو تعارض مع WAIT)
   function renderLockedState(lockedInfo) {
     if (currentActiveTrade && Date.now() < currentActiveTrade.expireTime) {
       renderInTradeState();
       return;
     }
+    if (lockedInfo) {
+      serverLockedInfo = { ...lockedInfo, isLockedOutsideHours: true };
+    }
+    const activeLock = serverLockedInfo || lockedInfo || {};
     const sigElem = document.getElementById("zad-robot-signal");
     const actElem = document.getElementById("zad-robot-action");
     const cdContainer = document.getElementById("zad-robot-countdown");
@@ -1628,37 +1609,52 @@
     const manBtn = document.getElementById("zad-manual-trigger-container");
     if (manBtn) manBtn.style.display = "none";
 
-    const reason = (lockedInfo && lockedInfo.lockReason) || "الروبوت مقفل خارج أوقات عمل هذه الاستراتيجية";
-    const workingHours = (lockedInfo && lockedInfo.workingHoursText) || "الجلسة الصباحية: 10:00 ص - 12:00 م | البث المباشر: 06:00 م - 07:00 م";
-    const nextSession = (lockedInfo && lockedInfo.nextSessionText) || "بانتظار موعد انطلاق الجلسة القادمة";
+    const reason = activeLock.lockReason || "الروبوت في وضع التوقف الهادئ خارج أوقات الجلسات";
+    const workingHours = activeLock.workingHoursText || "الجلسة الصباحية: 10:30 ص - 01:00 م | البث المباشر: 04:30 م - 08:00 م";
+    const nextSession = activeLock.nextSessionText || "بانتظار موعد انطلاق الجلسة القادمة";
+    const isTargetAchieved = reason.includes("المستهدف") || reason.includes("الهدف") || reason.includes("60%+");
 
-    const stateKey = "LOCKED_" + reason.slice(0, 15);
+    const stateKey = "LOCKED_" + (isTargetAchieved ? "DONE_" : "PAUSE_") + reason.slice(0, 18);
     if (currentRobotUiState === stateKey) return;
     currentRobotUiState = stateKey;
 
+    const cardBg = isTargetAchieved ? "rgba(6,78,59,0.28)" : "rgba(15,23,42,0.92)";
+    const cardBorder = isTargetAchieved ? "#10b981" : "#f59e0b";
+    const titleColor = isTargetAchieved ? "#34d399" : "#fbbf24";
+    const titleIcon = isTargetAchieved ? "✅" : "⏸️";
+    const titleText = isTargetAchieved ? "اكتملت الجلسة بتحقيق الهدف" : "استراحة بين الجلسات";
+    const reasonColor = isTargetAchieved ? "#d1fae5" : "#e2e8f0";
+
     if (sigElem) {
       sigElem.innerHTML = `
-        <div style="background:rgba(239,68,68,0.12);border:1.5px solid #ef4444;border-radius:7px;padding:6px 8px;text-align:center;">
-          <div style="color:#f87171;font-size:11.5px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:5px;">
-            <span style="font-size:14px;">🛑</span>
-            <span style="letter-spacing:0.3px;">تنبيه: الروبوت متوقف حالياً</span>
+        <div style="background:${cardBg};border:1.5px solid ${cardBorder};border-radius:7px;padding:6px 8px;text-align:center;">
+          <div style="color:${titleColor};font-size:11px;font-weight:800;display:flex;align-items:center;justify-content:center;gap:5px;">
+            <span style="font-size:12px;">${titleIcon}</span>
+            <span>${titleText}</span>
           </div>
-          <div style="color:#fca5a5;font-size:9.5px;margin-top:3px;font-weight:600;line-height:1.3;">${reason}</div>
-          <div style="margin-top:5px;background:#1e1b4b;border:1px solid #6366f1;border-radius:5px;padding:3px 6px;font-size:8.5px;color:#c7d2fe;text-align:right;">
-            <div>⏰ <b>أوقات العمل:</b> ${workingHours}</div>
-            <div style="color:#fde047;margin-top:2px;">⏳ <b>الجلسة القادمة:</b> ${nextSession}</div>
+          <div style="color:${reasonColor};font-size:9.5px;margin-top:3px;font-weight:600;line-height:1.4;">${reason}</div>
+          <div style="margin-top:5px;background:#0f172a;border:1px solid #334155;border-radius:5px;padding:4px 6px;font-size:8.5px;color:#cbd5e1;text-align:right;line-height:1.45;">
+            <div>⏰ <b>المواعيد:</b> ${workingHours}</div>
+            <div style="color:#fde047;margin-top:2px;">⏳ <b>القادم:</b> ${nextSession}</div>
           </div>
         </div>
       `;
     }
     if (actElem) {
-      actElem.innerHTML = `<span style="color:#f87171;font-weight:bold;">🛑 الروبوت متوقف حالياً وفق مواعيد وقوانين الاستراتيجية المختارة</span>`;
+      const actMsg = isTargetAchieved
+        ? "✅ تم تحقيق المستهدف الربحي بنجاح — بانتظار الجلسة القادمة"
+        : "⏸️ الروبوت في استراحة مجدولة — بانتظار بدء الجلسة القادمة";
+      if (actElem.textContent !== actMsg) {
+        actElem.textContent = actMsg;
+        actElem.style.color = isTargetAchieved ? "#34d399" : "#fbbf24";
+        actElem.style.fontWeight = "bold";
+      }
     }
-    widget.style.borderColor = "#64748b";
+    widget.style.borderColor = isTargetAchieved ? "#10b981" : "#64748b";
     widget.style.boxShadow = "0 10px 25px rgba(0,0,0,0.8)";
   }
 
-  // دالة تحديث خانة الزوج والإشارة: إما 'وضع الانتظار (WAIT)' أو 'مغلق السوق' دون وميض نهائياً
+  // دالة تحديث خانة الزوج والإشارة: 'وضع الانتظار (WAIT)' أو 'مغلق السوق' دون وميض نهائياً
   function renderWaitingState() {
     if (currentActiveTrade && Date.now() < currentActiveTrade.expireTime) {
       renderInTradeState();
@@ -1673,16 +1669,21 @@
       if (currentRobotUiState !== "MARKET_CLOSED") {
         currentRobotUiState = "MARKET_CLOSED";
         sigElem.innerHTML = `
-          <div style="background:rgba(239,68,68,0.14);border:1.5px solid #ef4444;border-radius:7px;padding:6px 8px;text-align:center;">
-            <div style="color:#f87171;font-size:11px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:4px;">
-              <span style="font-size:12px;">🔴</span>
-              <span id="zad-signal-pair-name" style="letter-spacing:0.5px;">مغلق السوق</span>
+          <div style="background:rgba(15,23,42,0.95);border:1.5px solid #f43f5e;border-radius:7px;padding:6px 8px;text-align:center;">
+            <div style="color:#fda4af;font-size:11px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:4px;">
+              <span style="font-size:12px;">⏸️</span>
+              <span id="zad-signal-pair-name" style="letter-spacing:0.3px;">السوق مغلق (عطلة أسبوعية)</span>
             </div>
             <div style="color:#94a3b8;font-size:8.5px;margin-top:2px;">السوق العالمي في عطلة أسبوعية حالياً</div>
           </div>
         `;
-        if (actElem) actElem.innerHTML = `<span style="color:#f87171;font-weight:bold;">السوق مغلق حالياً — بانتظار الافتتاح</span>`;
+        if (actElem) actElem.innerHTML = `<span style="color:#fda4af;font-weight:bold;">السوق مغلق حالياً — بانتظار الافتتاح</span>`;
       }
+      return;
+    }
+
+    if (serverLockedInfo && serverLockedInfo.isLockedOutsideHours === true) {
+      renderLockedState(serverLockedInfo);
       return;
     }
 
@@ -1692,28 +1693,34 @@
     if (currentRobotUiState !== stateKey) {
       currentRobotUiState = stateKey;
       sigElem.innerHTML = `
-        <div style="background:${warmupNotice ? 'rgba(16,185,129,0.1)' : 'rgba(234,179,8,0.08)'};border:1.5px solid ${warmupNotice ? '#10b981' : '#ca8a04'};border-radius:7px;padding:5px 7px;text-align:center;">
+        <div style="background:${warmupNotice ? 'rgba(6,78,59,0.22)' : '#0f172a'};border:1.5px solid ${warmupNotice ? '#10b981' : '#ca8a04'};border-radius:7px;padding:6px 7px;text-align:center;">
           <div style="color:${warmupNotice ? '#34d399' : '#fde047'};font-size:11px;font-weight:bold;display:flex;align-items:center;justify-content:center;gap:4px;">
             <span>${warmupNotice ? '☀️' : '⏸️'}</span>
             <span id="zad-signal-pair-name">${warmupNotice ? 'فترة الاستعداد ومسح الأزواج' : 'وضع الانتظار (WAIT)'}</span>
           </div>
-          <div style="color:${warmupNotice ? '#a7f3d0' : '#94a3b8'};font-size:8.5px;margin-top:2px;">${warmupNotice || 'جاري مسح السوق في الأزواج الستة المفتوحة — لن يتم التكرار'}</div>
+          <div style="color:${warmupNotice ? '#a7f3d0' : '#cbd5e1'};font-size:8.5px;margin-top:2px;">${warmupNotice || 'جاري مسح السوق في الأزواج الستة المفتوحة — لن يتم التكرار'}</div>
           <div style="margin-top:4px;display:inline-flex;align-items:center;gap:4px;background:#061b2d;border:1px solid #0284c7;border-radius:5px;padding:2px 6px;font-size:9.5px;">
             <span style="color:#93c5fd;">⏳ اكتمال الشمعة:</span>
-            <b id="zad-wait-candle-cd" style="color:#38bdf8;font-family:monospace;font-size:11px;">${cSec} ثانية</b>
+            <b id="zad-wait-candle-cd" style="color:#38bdf8;font-family:monospace;font-variant-numeric:tabular-nums;font-size:11px;">${cSec} ثانية</b>
           </div>
         </div>
       `;
       widget.style.borderColor = "#10b981";
       widget.style.boxShadow = "0 8px 20px rgba(0,0,0,0.75)";
       if (actElem) {
-        actElem.innerText = warmupNotice
+        const waitActText = warmupNotice
           ? `☀️ صباح الخير — جاري مسح الأزواج الستة المفتوحة (5-10 دقائق قبل أول إشارة)`
           : `جاهز لاستقبال الإشارة القادمة وتنفيذها بالثانية (${ROBOT_MODE === 'AUTO' ? 'آلياً' : 'يدوياً'})`;
+        if (actElem.textContent !== waitActText) {
+          actElem.textContent = waitActText;
+          actElem.style.color = "#94a3b8";
+          actElem.style.fontWeight = "normal";
+        }
       }
     } else {
       const waitEl = document.getElementById("zad-wait-candle-cd");
-      if (waitEl) waitEl.textContent = cSec + " ثانية";
+      const nextSecText = cSec + " ثانية";
+      if (waitEl && waitEl.textContent !== nextSecText) waitEl.textContent = nextSecText;
     }
   }
 
@@ -2188,12 +2195,16 @@
     const cdLabel = document.getElementById("zad-countdown-label");
     const actElem = document.getElementById("zad-robot-action");
 
-    // 1. إذا لم تكن هناك إشارة نشطة: البقاء في وضع الانتظار (WAIT) المستقر وتحديث العداد
+    // 1. إذا لم تكن هناك إشارة نشطة: البقاء في الحالة المعتمدة (إما قفل خارج الجلسة أو وضع الانتظار WAIT المستقر)
     if (!activeSignalObj || activeSignalObj.status !== "PENDING" || !currentTargetEntryEpoch) {
       if (cdContainer) cdContainer.style.display = "none";
       const manContainer = document.getElementById("zad-manual-trigger-container");
       if (manContainer) manContainer.style.display = "none";
-      renderWaitingState();
+      if (serverLockedInfo && serverLockedInfo.isLockedOutsideHours === true) {
+        renderLockedState(serverLockedInfo);
+      } else {
+        renderWaitingState();
+      }
       return;
     }
 
@@ -2377,6 +2388,23 @@
     if (!data || !data.ok) return;
     const nowRecvMs = Date.now();
     lastDataReceivedTime = nowRecvMs;
+    const payloadEpochMs = typeof data.serverEpochMs === "number"
+      ? data.serverEpochMs
+      : (typeof data.serverEpochSeconds === "number" ? data.serverEpochSeconds * 1000 : 0);
+
+    // تجاهل الحمولات القديمة المخبأة في الجسر أو الكاش لمنع تضارب الحالات ووميض الصندوق
+    if (
+      payloadEpochMs > 0 &&
+      latestReceivedServerEpochMs > 0 &&
+      (payloadEpochMs + 1500) < latestReceivedServerEpochMs &&
+      (sourceLabel === "bridge_poll" || sourceLabel === "bridge_listener" || sourceLabel === "google_cloud_stream" || sourceLabel === "gm_cloud_stream")
+    ) {
+      return;
+    }
+    if (payloadEpochMs > latestReceivedServerEpochMs) {
+      latestReceivedServerEpochMs = payloadEpochMs;
+    }
+
     let sig = data.activeSignal || data.signal || null;
 
     // معايرة الساعة بدقة الملي ثانية حصرياً من استجابة API السيرفر الحية مع فلترة التذبذبات البطيئة وتثبيت الساعة قبل الدخول بـ 12 ثانية
@@ -2417,25 +2445,38 @@
       serverTargetPair = data.targetPair;
     }
 
-    if (data.member) {
-      const isAuth = data.authorized !== false;
-      const memberElem = document.getElementById("zad-robot-member");
-      const daysElem = document.getElementById("zad-robot-days");
-      if (memberElem) {
-        memberElem.innerHTML = isAuth
-          ? `<span style="color:#fbbf24">${data.member.name}</span>`
-          : `<span style="color:#ef4444">${data.member.name} (${data.member.error || 'غير مفعل'})</span>`;
-      }
-      if (daysElem) {
-        daysElem.innerHTML = isAuth
-          ? `<span style="color:#34d399">${data.member.daysLeft} يوم</span>`
-          : `<span style="color:#ef4444">0 يوم</span>`;
-      }
-      if (!isAuth) {
-        document.getElementById("zad-robot-signal").innerHTML = `<span style="color:#ef4444">🔒 ${data.member.error || 'الحساب بانتظار تفعيل المشرف'}</span>`;
-        document.getElementById("zad-robot-action").innerText = "اضغط على زر 🔑 ID لكتابة رقم حسابك المصرح له أو راجع المشرف";
-        return;
-      }
+    const isAuth = data && data.ok === true && data.authorized === true;
+    const memberElem = document.getElementById("zad-robot-member");
+    const daysElem = document.getElementById("zad-robot-days");
+    const errText = (data && (data.error || (data.member && data.member.error))) || "الحساب غير مفعل أو بانتظار مصادقة المشرف";
+    if (memberElem) {
+      const nextMemberHtml = isAuth && data.member
+        ? `<span style="color:#fbbf24">${data.member.name}</span>`
+        : `<span style="color:#ef4444">${(data && data.member && data.member.name) ? data.member.name : "غير مصرح"}</span>`;
+      if (memberElem.innerHTML !== nextMemberHtml) memberElem.innerHTML = nextMemberHtml;
+    }
+    if (daysElem) {
+      const nextDaysHtml = isAuth && data.member
+        ? `<span style="color:#34d399">${data.member.daysLeft} يوم</span>`
+        : `<span style="color:#ef4444">0 يوم</span>`;
+      if (daysElem.innerHTML !== nextDaysHtml) daysElem.innerHTML = nextDaysHtml;
+    }
+    if (!isAuth) {
+      serverLockedInfo = null;
+      activeSignalObj = null;
+      currentActiveSignalId = null;
+      currentTargetEntryEpoch = null;
+      currentRobotUiState = "UNAUTH_" + errText;
+      const sigEl = document.getElementById("zad-robot-signal");
+      if (sigEl) sigEl.innerHTML = `<span style="color:#ef4444;font-weight:bold;">🔒 ${errText}</span>`;
+      const actEl = document.getElementById("zad-robot-action");
+      if (actEl) actEl.innerText = "اضغط على زر 🔑 ID لإدخال مفتاح التفعيل أو رقم حسابك المعتمد من المشرف";
+      const cdContainer = document.getElementById("zad-robot-countdown");
+      if (cdContainer) cdContainer.style.display = "none";
+      const manBtn = document.getElementById("zad-manual-trigger-container");
+      if (manBtn) manBtn.style.display = "none";
+      widget.style.borderColor = "#ef4444";
+      return;
     }
 
     // إذا كانت هناك صفقة جارية حالياً: استمرار ظهور "الصفقة جارية الآن" طوال فترة فتحها وعدم مقاطعتها
@@ -2447,20 +2488,24 @@
     // 1. فحص أمان صارم: إغلاق السوق العالمي (عطلة نهاية الأسبوع من الجمعة 21:00 UTC حتى الأحد 21:00 UTC)
     const isMarketOpenNow = isForexMarketOpen();
     if (!isMarketOpenNow || serverMarketOpen === false) {
+      serverLockedInfo = null;
       activeSignalObj = null;
       currentActiveSignalId = null;
       currentTargetEntryEpoch = null;
-      renderWaitingState(); // يعرض كارت "مغلق السوق" بالأحمر ويرفض أي صفقات
+      renderWaitingState();
       return;
     }
 
     window.__zadWarmupReason = (data.isWarmup && data.warmupReason) ? data.warmupReason : "";
 
     // 2. فحص قفل ساعات العمل الموحدة:
-    // الجلسة الصباحية (11:00 ص - 12:00 ظهراً) + البث المباشر (06:00 م - 07:00 م) بتوقيت مصر، أو الإيقاف عند تحقق النسبة (60%+)
-    const cairoNow = new Date(Date.now() + 2 * 60 * 60 * 1000); // Egypt UTC+2
-    const cairoHour = cairoNow.getUTCHours();
-    const isUnifiedSessionHour = (cairoHour === 11) || (cairoHour === 18);
+    // الجلسة الصباحية (10:30 ص - 01:00 م) + البث المباشر (04:30 م - 08:00 م) بتوقيت مصر، أو الإيقاف عند تحقق النسبة (60%+)
+    const clockBaseMs = Date.now() + (typeof serverClockOffsetMs === "number" ? serverClockOffsetMs : 0);
+    const cairoNow = new Date(clockBaseMs + 2 * 60 * 60 * 1000); // Egypt UTC+2
+    const cairoMins = cairoNow.getUTCHours() * 60 + cairoNow.getUTCMinutes();
+    const isUnifiedSessionHour =
+      (cairoMins >= 10 * 60 + 30 && cairoMins < 13 * 60) ||
+      (cairoMins >= 16 * 60 + 30 && cairoMins < 20 * 60);
 
     let shouldLock = false;
     if (data.isLockedOutsideHours === true || data.isTradingHours === false) {
@@ -2472,12 +2517,19 @@
     }
 
     if (shouldLock) {
+      serverLockedInfo = {
+        isLockedOutsideHours: true,
+        lockReason: data.lockReason || "",
+        workingHoursText: data.workingHoursText || "",
+        nextSessionText: data.nextSessionText || ""
+      };
       activeSignalObj = null;
       currentActiveSignalId = null;
       currentTargetEntryEpoch = null;
-      renderLockedState(data);
+      renderLockedState(serverLockedInfo);
       return;
     }
+    serverLockedInfo = null;
 
     // 3. عزل الاستراتيجيات 100%:
     // عند اختيار الاستراتيجية الثانية (MPB): يتم إلغاء ومنع أي إشارة تخص الاستراتيجية العامة نهائياً
@@ -2681,10 +2733,13 @@
 
       renderWaitingState();
       const actElem = document.getElementById("zad-robot-action");
-      if (actElem) {
-        actElem.innerText = isForexMarketOpen()
+      if (actElem && !window.__zadWarmupReason) {
+        const nextAct = isForexMarketOpen()
           ? `جاهز لاستقبال الإشارة القادمة وتنفيذها بالثانية (${ROBOT_MODE === 'AUTO' ? 'آلياً' : 'يدوياً'})`
           : "السوق مغلق حالياً";
+        if (actElem.textContent !== nextAct) {
+          actElem.textContent = nextAct;
+        }
       }
       widget.style.borderColor = "#10b981";
       widget.style.boxShadow = "0 15px 35px rgba(0,0,0,0.85)";
@@ -2692,134 +2747,30 @@
   }
 
   // =========================================================================
-  // المحرك السحابي للاتصال الثلاثي (Triple-Redundant Cloud Connection Engine)
-  // يعمل مستقلاً 100% داخل كيوتكس دون الحاجة لفتح أي صفحة خارجية
+  // الخيار أ (الأكثر أماناً): التحقق من صلاحية العضو واستلام الإشارات حصرياً من السيرفر
+  // (/api/quotex-robot/feed?apiKey=...) دون أي اعتماد على ملفات مفتوحة في Firestore
   // =========================================================================
 
-  const FIRESTORE_STREAM_URL = "https://firestore.googleapis.com/v1/projects/gen-lang-client-0312361187/databases/ai-studio-62ed8503-c2dd-48e0-82a9-957ea3f351dc/documents/robot_feed/live?key=AIzaSyDrMd1UkpgA3S7SwEhEgjvHQfNmizv7Hl8";
-
-  function parseCloudFeedDoc(doc) {
-    if (!doc || !doc.fields) return null;
-    let cloudData = null;
-    if (doc.fields.payload && doc.fields.payload.stringValue) {
-      try {
-        cloudData = JSON.parse(doc.fields.payload.stringValue);
-      } catch(e) {}
-    }
-
-    if (!cloudData && doc.fields.signal) {
-      try {
-        const sigField = doc.fields.signal;
-        let sigObj = null;
-        if (sigField.stringValue) {
-          sigObj = JSON.parse(sigField.stringValue);
-        } else if (sigField.mapValue && sigField.mapValue.fields) {
-          const f = sigField.mapValue.fields;
-          sigObj = {
-            id: f.id?.stringValue || ("SIG-" + Date.now()),
-            asset: f.asset?.stringValue || "EUR/JPY",
-            direction: f.direction?.stringValue || "CALL",
-            status: f.status?.stringValue || "PENDING",
-            targetEntryTimestamp: f.targetEntryTimestamp?.integerValue ? parseInt(f.targetEntryTimestamp.integerValue, 10) : undefined,
-            timeframe: f.timeframe?.stringValue || "M1"
-          };
-        }
-        if (sigObj) {
-          cloudData = {
-            ok: true,
-            activeSignal: sigObj,
-            serverEpochSeconds: Math.floor(Date.now() / 1000),
-            marketOpen: true,
-            isTradingHours: true
-          };
-        }
-      } catch(e) {}
-    }
-
-    if (!cloudData) return null;
-
-    const keyClean = (MEMBER_IDENTIFIER && !MEMBER_IDENTIFIER.includes("${") ? MEMBER_IDENTIFIER : "QX-ADMIN-MASTER-TEST").toUpperCase().trim();
-    const memberInfo = (cloudData.authorizedKeys && cloudData.authorizedKeys[keyClean]) || {
-      name: keyClean.startsWith("QX-") ? "حساب تجريبي (ZAD FX)" : "حساب عضو (" + keyClean + ")",
-      brokerId: keyClean,
-      authorized: true,
-      daysLeft: 30,
-      error: ""
-    };
-
-    return {
-      ok: true,
-      member: memberInfo,
-      authorized: memberInfo.authorized,
-      statsNoMartingale: cloudData.statsNoMartingale,
-      serverEpochSeconds: cloudData.serverEpochSeconds,
-      activeSignal: cloudData.activeSignal,
-      targetPair: cloudData.targetPair || "EUR/JPY",
-      marketOpen: cloudData.marketOpen !== undefined ? cloudData.marketOpen : cloudData.isMarketOpen,
-      isTradingHours: cloudData.isTradingHours,
-      isLockedOutsideHours: cloudData.isLockedOutsideHours,
-      lockReason: cloudData.lockReason,
-      workingHoursText: cloudData.workingHoursText,
-      nextSessionText: cloudData.nextSessionText
-    };
-  }
-
-  // 1. القناة السحابية المباشرة الأولى (Google Cloud Edge Stream):
-  // صفر كوكيز، صفر حظر CORS، استجابة عالمية فائقة السرعة من سيرفرات جوجل مباشرة
-  function checkCloudFirestoreStream() {
-    if (typeof fetch === "function") {
-      fetch(FIRESTORE_STREAM_URL, { cache: "no-store", mode: "cors" })
-        .then(function(r) { return r.json(); })
-        .then(function(doc) {
-          const payload = parseCloudFeedDoc(doc);
-          if (payload) {
-            processRobotPayload(payload, "google_cloud_stream");
-          }
-        })
-        .catch(function() {});
-    }
-
-    if (typeof GM_xmlhttpRequest === "function") {
-      GM_xmlhttpRequest({
-        method: "GET",
-        url: FIRESTORE_STREAM_URL,
-        timeout: 8000,
-        onload: function(response) {
-          try {
-            if (response.status === 200) {
-              const doc = JSON.parse(response.responseText);
-              const payload = parseCloudFeedDoc(doc);
-              if (payload) {
-                processRobotPayload(payload, "gm_cloud_stream");
-              }
-            }
-          } catch(e) {}
-        },
-        onerror: function() {},
-        ontimeout: function() {}
-      });
-    }
-  }
-  // الفحص التكيفي فائق السرعة المتزامن مع ساعة السيرفر لضمان وصول الإشارة في أقل من نصف ثانية
-  function scheduleNextCloudPoll() {
-    checkCloudFirestoreStream();
-    const serverSyncedSec = new Date(Date.now() + (typeof serverClockOffsetMs === "number" ? serverClockOffsetMs : 0)).getUTCSeconds();
-    const isCritical = (activeSignalObj && activeSignalObj.status === "PENDING") || (serverSyncedSec >= 46 || serverSyncedSec <= 5);
-    setTimeout(scheduleNextCloudPoll, isCritical ? 550 : 1200);
-  }
-  scheduleNextCloudPoll();
-
-  // 2. قناة الـ API المباشرة للسيرفر (Server API Feed) + معايرة التوقيت بالملي ثانية مع RTT
   function checkDirectApi() {
-    const feedUrl = API_BASE + "/api/quotex-robot/feed?apiKey=" + encodeURIComponent(MEMBER_IDENTIFIER) +
-      "&strategyMode=" + encodeURIComponent(ROBOT_STRATEGY_MODE || "VIP_WITH_MPB");
+    if (!MEMBER_IDENTIFIER) {
+      processRobotPayload({
+        ok: false,
+        authorized: false,
+        error: "يرجى إدخال مفتاح الروبوت أو رقم حساب البروكر المفعّل من المشرف"
+      }, "no_key");
+      return;
+    }
+
+    const feedUrl = API_BASE + "/api/quotex-robot/feed?apiKey=" + encodeURIComponent(MEMBER_IDENTIFIER);
 
     if (typeof fetch === "function") {
       const reqStart = Date.now();
       fetch(feedUrl, { mode: "cors", cache: "no-store" })
-        .then(function(r) { return r.json(); })
+        .then(function(r) { return r.json().catch(() => null); })
         .then(function(data) {
-          if (data && data.ok) processRobotPayload(data, "server_fetch", reqStart);
+          if (data && (data.ok || data.authorized === false || data.error)) {
+            processRobotPayload(data, "server_fetch", reqStart);
+          }
         })
         .catch(function() {});
     }
@@ -2832,9 +2783,9 @@
         timeout: 8000,
         onload: function(response) {
           try {
-            if (response.status === 200) {
-              const data = JSON.parse(response.responseText);
-              if (data && data.ok) processRobotPayload(data, "server_gm", gmStart);
+            const data = JSON.parse(response.responseText);
+            if (data && (data.ok || data.authorized === false || data.error)) {
+              processRobotPayload(data, "server_gm", gmStart);
             }
           } catch(e) {}
         },

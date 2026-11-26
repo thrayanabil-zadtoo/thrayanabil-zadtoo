@@ -30,6 +30,14 @@ import {
   Zap
 } from 'lucide-react';
 import type { VipSubscriber, SignalItem, LivePairSnapshot } from '../App';
+import { buildFloatingQuotexRobotScript } from '../utils/robotScriptTemplate';
+import {
+  fetchRobotFeedFromFirestore,
+  saveSubscriberToFirestore,
+  saveCloudRobotSettings,
+  canWriteFirestoreAsAdmin,
+  FIRESTORE_REST_BASE
+} from '../firebase';
 
 export type RobotStrategyEngineMode = 'PUBLIC_CLASSIC' | 'VIP_WITH_MPB';
 
@@ -47,6 +55,7 @@ export interface QuotexRobotSettings {
 }
 
 interface QuotexRobotAdminPageProps {
+  adminToken?: string;
   robotSettings: QuotexRobotSettings;
   setRobotSettings: React.Dispatch<React.SetStateAction<QuotexRobotSettings>>;
   subscribers?: VipSubscriber[];
@@ -60,6 +69,7 @@ interface QuotexRobotAdminPageProps {
 }
 
 export default function QuotexRobotAdminPage({
+  adminToken,
   robotSettings,
   setRobotSettings,
   subscribers = [],
@@ -103,7 +113,7 @@ export default function QuotexRobotAdminPage({
   const [widgetMode, setWidgetMode] = useState<'AUTO' | 'MANUAL'>(robotSettings.defaultMode || 'MANUAL');
   const [widgetStakeUsd, setWidgetStakeUsd] = useState<number>(robotSettings.defaultStakeUsd || 5);
   const [widgetSoundOn, setWidgetSoundOn] = useState<boolean>(robotSettings.soundAlertsEnabled ?? true);
-  const [selectedTestApiKey, setSelectedTestApiKey] = useState<string>('QX-ADMIN-MASTER-TEST');
+  const [selectedTestApiKey, setSelectedTestApiKey] = useState<string>('QX-ZAD-TRIAL-8801');
   const [apiFeedResponse, setApiFeedResponse] = useState<any>(null);
   const [isTestingApi, setIsTestingApi] = useState<boolean>(false);
 
@@ -216,15 +226,21 @@ export default function QuotexRobotAdminPage({
   const [momentumTriggerFeedback, setMomentumTriggerFeedback] = useState<string | null>(null);
   const [momentumRadar, setMomentumRadar] = useState<any[]>([]);
   const [isLoadingMomentumRadar, setIsLoadingMomentumRadar] = useState(false);
-  const [showMq4CodeModal, setShowMq4CodeModal] = useState(false);
-  const [mq4SourceCode, setMq4SourceCode] = useState<string>('');
+
+  const getAuthHeaders = (includeJson = true): Record<string, string> => ({
+    ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
+    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
+  });
 
   const fetchMomentumRadar = async () => {
+    if (!adminToken) return;
     setIsLoadingMomentumRadar(true);
     try {
-      const res = await fetch('/api/admin/momentum-pause/status');
+      const res = await fetch('/api/admin/momentum-pause/status', {
+        headers: getAuthHeaders(false)
+      });
       const data = await res.json();
-      if (data.ok && Array.isArray(data.radar)) {
+      if (res.ok && data.ok && Array.isArray(data.radar)) {
         setMomentumRadar(data.radar);
       }
     } catch (_e) {
@@ -238,7 +254,7 @@ export default function QuotexRobotAdminPage({
     fetchMomentumRadar();
     const interval = setInterval(fetchMomentumRadar, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [adminToken]);
 
   const handleTriggerMomentumPauseNow = async (preferredPair?: string, direction?: 'CALL' | 'PUT') => {
     setIsTriggeringMomentumPause(true);
@@ -246,11 +262,11 @@ export default function QuotexRobotAdminPage({
     try {
       const res = await fetch('/api/admin/momentum-pause/trigger-now', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ preferredPair, direction })
       });
       const data = await res.json();
-      if (data.ok) {
+      if (res.ok && data.ok) {
         setMomentumTriggerFeedback(`✅ تم إرسال إشارة Momentum Pause بنجاح إلى قناة VIP وروبوت كيوتكس! (${data.signal?.asset} - ${data.signal?.direction})`);
       } else {
         setMomentumTriggerFeedback(`❌ فشل: ${data.error || 'تعذر الإرسال'}`);
@@ -260,19 +276,6 @@ export default function QuotexRobotAdminPage({
     } finally {
       setIsTriggeringMomentumPause(false);
       setTimeout(() => setMomentumTriggerFeedback(null), 8000);
-    }
-  };
-
-  const handleOpenMq4CodeModal = async () => {
-    setShowMq4CodeModal(true);
-    if (!mq4SourceCode) {
-      try {
-        const res = await fetch('/api/strategy/mq4-code');
-        const data = await res.json();
-        if (data.ok && data.code) {
-          setMq4SourceCode(data.code);
-        }
-      } catch (_e) {}
     }
   };
 
@@ -389,9 +392,12 @@ export default function QuotexRobotAdminPage({
     setIsTestingTelegram(true);
     setTelegramTestResult(null);
     try {
-      const res = await fetch('/api/telegram/test-connection', { method: 'POST' });
+      const res = await fetch('/api/telegram/test-connection', {
+        method: 'POST',
+        headers: getAuthHeaders(false)
+      });
       const data = await res.json();
-      if (data.ok) {
+      if (res.ok && data.ok) {
         setTelegramTestResult({
           ok: true,
           message: data.message || 'تم إرسال رسالة الفحص بنجاح إلى القناة!',
@@ -413,30 +419,51 @@ export default function QuotexRobotAdminPage({
     }
   };
 
-  // Fetch Live API Feed for the selected API Key
-  const fetchLiveRobotApiFeed = async (keyToTest?: string) => {
-    const activeKey = keyToTest ?? selectedTestApiKey;
-    setIsTestingApi(true);
+  const lastAlertedSignalIdRef = useRef<string | null>(null);
+
+  // Fetch Live API Feed for the selected registered member API Key (Backend Express API strictly)
+  const fetchLiveRobotApiFeed = async (keyToTest?: string, silent = false) => {
+    const activeKey = (keyToTest ?? selectedTestApiKey).trim();
+    if (!silent) setIsTestingApi(true);
     try {
-      const res = await fetch(`/api/quotex-robot/feed?apiKey=${encodeURIComponent(activeKey)}`);
-      const data = await res.json();
-      setApiFeedResponse(data);
+      const res = await fetch(`/api/quotex-robot/feed?apiKey=${encodeURIComponent(activeKey)}`, {
+        credentials: 'include',
+        headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : {}
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const data = await res.json();
+        setApiFeedResponse(data);
+        return;
+      }
     } catch (_e) {
-      setApiFeedResponse({ ok: false, error: 'تعذر الاتصال بنقطة API' });
+      // Fallback below when Express API unreachable
     } finally {
-      setIsTestingApi(false);
+      if (!silent) setIsTestingApi(false);
     }
+
+    const fsFeed = await fetchRobotFeedFromFirestore(activeKey);
+    setApiFeedResponse(fsFeed);
   };
 
   useEffect(() => {
-    fetchLiveRobotApiFeed(selectedTestApiKey);
-  }, [selectedTestApiKey, safeSignals.length]);
+    fetchLiveRobotApiFeed(selectedTestApiKey, false);
+    const pollTimer = setInterval(() => {
+      fetchLiveRobotApiFeed(selectedTestApiKey, true);
+    }, 3000);
+    return () => clearInterval(pollTimer);
+  }, [selectedTestApiKey, safeSignals.length, adminToken, isAdmin]);
 
   useEffect(() => {
-    if (latestSignal?.asset && latestSignal.status === 'PENDING') {
-      setSimQuotexPair(latestSignal.asset);
+    const activeSig = latestSignal?.status === 'PENDING' ? latestSignal : apiFeedResponse?.activeSignal;
+    if (activeSig?.asset && activeSig.status === 'PENDING') {
+      setSimQuotexPair(activeSig.asset);
+      if (activeSig.id && lastAlertedSignalIdRef.current !== activeSig.id) {
+        lastAlertedSignalIdRef.current = activeSig.id;
+        playRobotAlertSound('signal');
+      }
     }
-  }, [latestSignal?.id, latestSignal?.asset, latestSignal?.status]);
+  }, [latestSignal?.id, latestSignal?.asset, latestSignal?.status, apiFeedResponse?.activeSignal?.id]);
 
   // Simulate receiving signal -> Alert -> Auto selecting Pair & Expiry -> Auto opening trade at entry time
   const handleSimulateFullCycle = () => {
@@ -498,6 +525,12 @@ export default function QuotexRobotAdminPage({
     }, 2800);
   };
 
+  const generateMemberApiKeyStr = () => {
+    const seg = () => Math.random().toString(36).toUpperCase().replace(/[^A-Z0-9]/g, 'X').slice(2, 6).padEnd(4, 'X');
+    const num = Math.floor(1000 + Math.random() * 9000);
+    return `QX-ZAD-${seg()}-${seg()}-${num}`;
+  };
+
   const handleSaveRobotSettings = async (nextSettings?: Partial<QuotexRobotSettings>) => {
     const updated: QuotexRobotSettings = {
       ...robotSettings,
@@ -506,53 +539,114 @@ export default function QuotexRobotAdminPage({
     };
     setRobotSettings(updated);
     setIsSavingSettings(true);
+    let savedOk = false;
     try {
-      const res = await fetch('/api/robot-settings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updated)
-      });
-      const data = await res.json();
-      if (data.ok && data.robotSettings) {
-        setRobotSettings(data.robotSettings);
-        setSettingsSavedBadge(true);
-        setTimeout(() => setSettingsSavedBadge(false), 2500);
+      if (adminToken) {
+        const res = await fetch('/api/robot-settings', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify(updated)
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data.ok && data.robotSettings) {
+            setRobotSettings(data.robotSettings);
+            savedOk = true;
+          }
+        }
       }
-    } catch (_e) {
-      // Ignore
-    } finally {
-      setIsSavingSettings(false);
+    } catch (_e) {}
+
+    if (canWriteFirestoreAsAdmin()) {
+      const cloudOk = await saveCloudRobotSettings(updated).catch(() => false);
+      if (cloudOk) savedOk = true;
     }
+
+    if (savedOk) {
+      setSettingsSavedBadge(true);
+      setTimeout(() => setSettingsSavedBadge(false), 2500);
+    }
+    setIsSavingSettings(false);
   };
+
+  const [memberUpdateToast, setMemberUpdateToast] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
 
   const handleCreateMemberKey = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newKeyMemberName.trim()) return;
     setIsCreatingKey(true);
+    let createdSub: VipSubscriber | null = null;
     try {
-      const res = await fetch('/api/quotex-robot/create-key', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: newKeyMemberName.trim(),
-          brokerAccountId: newKeyQuotexId.trim() || 'QX-TRADER',
-          expiryDate: newKeyExpiryDate,
-          tradeStake: newKeyStake,
-          defaultMode: newKeyMode
-        })
-      });
-      const data = await res.json();
-      if (data.ok && data.subscriber) {
-        setSubscribers(prev => [data.subscriber, ...prev]);
-        setSelectedTestApiKey(data.subscriber.robotApiKey || 'QX-ADMIN-MASTER-TEST');
-        setNewKeyMemberName('');
-        setNewKeyQuotexId('');
+      if (adminToken) {
+        const res = await fetch('/api/quotex-robot/create-key', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({
+            name: newKeyMemberName.trim(),
+            brokerAccountId: newKeyQuotexId.trim() || 'QX-TRADER',
+            expiryDate: newKeyExpiryDate,
+            tradeStake: newKeyStake,
+            defaultMode: newKeyMode
+          })
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data.ok && data.subscriber) {
+            createdSub = data.subscriber;
+          }
+        }
       }
-    } catch (_e) {
-      // Ignore
-    } finally {
-      setIsCreatingKey(false);
+    } catch (_e) {}
+
+    if (!createdSub && canWriteFirestoreAsAdmin()) {
+      const newKey = generateMemberApiKeyStr();
+      createdSub = {
+        id: `sub_${Date.now()}`,
+        name: newKeyMemberName.trim(),
+        email: '',
+        phone: '',
+        broker: 'Quotex (كوتيكس)',
+        brokerAccountId: newKeyQuotexId.trim() || 'QX-TRADER',
+        subscriptionType: 'paid_plan',
+        planDuration: '1_month',
+        status: 'ACTIVE',
+        expiryDate: newKeyExpiryDate,
+        robotExpiryDate: newKeyExpiryDate,
+        robotEnabled: true,
+        robotApiKey: newKey,
+        robotDefaultMode: newKeyMode,
+        robotTradeStake: newKeyStake,
+        createdAt: new Date().toISOString()
+      };
     }
+
+    if (createdSub) {
+      if (canWriteFirestoreAsAdmin()) {
+        await saveSubscriberToFirestore(createdSub).catch(() => false);
+      }
+      setSubscribers(prev => [createdSub!, ...prev.filter(s => s.id !== createdSub!.id)]);
+      const activeKey = createdSub.robotApiKey || '';
+      if (activeKey) setSelectedTestApiKey(activeKey);
+      if (createdSub.robotApiKey) setScriptApiKey(createdSub.robotApiKey);
+      setNewKeyMemberName('');
+      setNewKeyQuotexId('');
+      setMemberUpdateToast({
+        type: 'success',
+        message: `✅ تم إنشاء مفتاح العضو (${createdSub.name}) ومزامنته مع السحابة: ${activeKey}`
+      });
+      setTimeout(() => setMemberUpdateToast(null), 5000);
+    } else {
+      setMemberUpdateToast({
+        type: 'error',
+        message: '❌ تعذر إنشاء المفتاح — تأكد من تسجيل الدخول بحساب المشرف عبر Google'
+      });
+    }
+    setIsCreatingKey(false);
   };
 
   const handleUpdateSubscriberRobot = async (
@@ -566,18 +660,56 @@ export default function QuotexRobotAdminPage({
       regenerateRobotApiKey?: boolean;
     }
   ) => {
+    let updatedSub: VipSubscriber | null = null;
     try {
-      const res = await fetch(`/api/subscribers/${subId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-      const data = await res.json();
-      if (data.ok && data.subscriber) {
-        setSubscribers(prev => prev.map(s => (s.id === subId ? data.subscriber : s)));
+      if (adminToken) {
+        const res = await fetch(`/api/subscribers/${subId}`, {
+          method: 'PATCH',
+          headers: getAuthHeaders(),
+          body: JSON.stringify(payload)
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data.ok && data.subscriber) {
+            updatedSub = data.subscriber;
+          }
+        }
       }
-    } catch (_e) {
-      // Ignore
+    } catch (_e) {}
+
+    if (!updatedSub && canWriteFirestoreAsAdmin()) {
+      const existing = safeSubscribers.find(s => s.id === subId);
+      if (existing) {
+        updatedSub = {
+          ...existing,
+          ...(payload.status !== undefined ? { status: payload.status } : {}),
+          ...(payload.robotEnabled !== undefined ? { robotEnabled: payload.robotEnabled } : {}),
+          ...(payload.robotExpiryDate !== undefined
+            ? { robotExpiryDate: payload.robotExpiryDate, expiryDate: payload.robotExpiryDate }
+            : {}),
+          ...(payload.robotDefaultMode !== undefined ? { robotDefaultMode: payload.robotDefaultMode } : {}),
+          ...(payload.robotTradeStake !== undefined ? { robotTradeStake: payload.robotTradeStake } : {}),
+          ...(payload.regenerateRobotApiKey ? { robotApiKey: generateMemberApiKeyStr() } : {})
+        };
+      }
+    }
+
+    if (updatedSub) {
+      if (canWriteFirestoreAsAdmin()) {
+        await saveSubscriberToFirestore(updatedSub).catch(() => false);
+      }
+      setSubscribers(prev => prev.map(s => (s.id === subId ? updatedSub! : s)));
+      setMemberUpdateToast({
+        type: 'success',
+        message: `✅ تم حفظ تحديثات (${updatedSub.name}) وتاريخ الصلاحية (${updatedSub.robotExpiryDate || updatedSub.expiryDate || '-'}) في السحابة بنجاح.`
+      });
+      setTimeout(() => setMemberUpdateToast(null), 4000);
+    } else {
+      setMemberUpdateToast({
+        type: 'error',
+        message: '❌ تعذر حفظ التحديثات — تأكد من تسجيل الدخول كمشرف عبر Google'
+      });
     }
   };
 
@@ -600,113 +732,170 @@ export default function QuotexRobotAdminPage({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  const handleDownloadUserscript = async () => {
-    try {
-      let code = canonicalUserscript;
-      if (!code) {
-        const key = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
-        const res = await fetch(`/api/quotex-robot/zad-broker-robot.user.js?apiKey=${encodeURIComponent(key)}`);
-        code = await res.text();
-        setCanonicalUserscript(code);
-      }
-      const blob = new Blob([code], { type: 'text/javascript;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'zad-broker-robot.user.js';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch(e) {
-      console.error('Download error:', e);
+  // Current App Origin — default directly to https://fx.zadtoo.com (no Publish / Share needed)
+  const toPublicOrigin = (url: string) => {
+    const cleaned = String(url || '').trim().replace(/\/+$/, '');
+    if (!cleaned || /(?:zadtoo\.com|\.web\.app|\.firebaseapp\.com)(?:$|[:/])/i.test(cleaned)) {
+      return 'https://fx.zadtoo.com';
     }
+    return cleaned.replace(/^(https?:\/\/)ais-dev-/i, '$1ais-pre-');
   };
-
-  const [isRestoringGolden, setIsRestoringGolden] = useState<boolean>(false);
-  const [goldenRestoreMessage, setGoldenRestoreMessage] = useState<string | null>(null);
-
-  const handleDownloadGoldenScript = async () => {
-    try {
-      const key = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
-      const res = await fetch(`/api/quotex-robot/golden-reference.user.js?apiKey=${encodeURIComponent(key)}`);
-      const code = await res.text();
-      const blob = new Blob([code], { type: 'text/javascript;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'zad-broker-robot.golden-v4.0.user.js';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch(e) {
-      console.error('Download golden error:', e);
-    }
-  };
-
-  const handleRestoreGoldenBaseline = async () => {
-    if (!window.confirm('🔒 هل أنت متأكد من رغبتك في استعادة وتثبيت النسخة المرجعية الذهبية (v4.0 Golden Baseline)؟\nسيتم تثبيت كود محرك التبديل والتداول المعتمد بنسبة 100% كمرجع أساسي.')) {
-      return;
-    }
-    setIsRestoringGolden(true);
-    setGoldenRestoreMessage(null);
-    try {
-      const res = await fetch('/api/quotex-robot/restore-golden-baseline', { method: 'POST' });
-      const data = await res.json();
-      if (data.ok) {
-        setGoldenRestoreMessage(data.message || '✅ تم تثبيت واستعادة النسخة المرجعية الذهبية بنجاح!');
-        const key = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
-        const txt = await fetch(`/api/quotex-robot/zad-broker-robot.user.js?apiKey=${encodeURIComponent(key)}`).then(r => r.text());
-        setCanonicalUserscript(txt);
-      } else {
-        setGoldenRestoreMessage('❌ فشل: ' + (data.error || 'تعذر الاستعادة'));
-      }
-    } catch (err: any) {
-      setGoldenRestoreMessage('❌ خطأ: ' + err.message);
-    } finally {
-      setIsRestoringGolden(false);
-      setTimeout(() => setGoldenRestoreMessage(null), 7000);
-    }
-  };
-
-  // Primary Official Domain & Current App Origin
-  const officialDomain = 'https://fx.zadtoo.com';
   const appOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://fx.zadtoo.com';
+  const publicRobotOrigin = toPublicOrigin(appOrigin);
 
-  // Canonical Userscript loaded dynamically from server endpoint (single source of truth)
-  const [canonicalUserscript, setCanonicalUserscript] = useState<string>('');
+  // Admin-Only Floating Quotex Robot v5.0 Tampermonkey Script Generator State
+  const [scriptServerOrigin, setScriptServerOrigin] = useState<string>(() => publicRobotOrigin);
+  const [scriptApiKey, setScriptApiKey] = useState<string>('');
+  const [generatedScript, setGeneratedScript] = useState<string>('');
+  const [scriptMeta, setScriptMeta] = useState<{
+    version?: string;
+    serverOrigin?: string;
+    embeddedApiKey?: string;
+  } | null>(null);
+  const [isLoadingScript, setIsLoadingScript] = useState<boolean>(false);
+  const [scriptError, setScriptError] = useState<string | null>(null);
+  const [showScriptPreview, setShowScriptPreview] = useState<boolean>(false);
+  const [isQuickCreatingAdminKey, setIsQuickCreatingAdminKey] = useState<boolean>(false);
+
+  const activeMemberKeys = useMemo(
+    () => safeSubscribers.filter(s => s.status === 'ACTIVE' && s.robotEnabled !== false && s.robotApiKey),
+    [safeSubscribers]
+  );
 
   useEffect(() => {
-    const key = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
-    fetch(`/api/quotex-robot/zad-broker-robot.user.js?apiKey=${encodeURIComponent(key)}`)
-      .then(res => res.text())
-      .then(txt => {
-        if (txt && txt.length > 500) {
-          setCanonicalUserscript(txt);
-        }
-      })
-      .catch((err) => {
-        console.warn('Failed to load canonical userscript from endpoint:', err);
-      });
-  }, [selectedTestApiKey]);
-
-  const handleCopyUserscript = async () => {
-    try {
-      let code = canonicalUserscript;
-      if (!code) {
-        const key = selectedTestApiKey || 'QX-ADMIN-MASTER-TEST';
-        const res = await fetch(`/api/quotex-robot/zad-broker-robot.user.js?apiKey=${encodeURIComponent(key)}`);
-        code = await res.text();
-        setCanonicalUserscript(code);
-      }
-      handleCopy(code, 'userscript-code');
-    } catch(e) {
-      console.error('Copy error:', e);
+    if (!scriptApiKey && activeMemberKeys.length > 0) {
+      setScriptApiKey(activeMemberKeys[0].robotApiKey || '');
     }
+  }, [activeMemberKeys, scriptApiKey]);
+
+  const fetchAdminFloatingScript = async (overrideKey?: string, overrideOrigin?: string) => {
+    if (!isAdmin) return;
+    setIsLoadingScript(true);
+    setScriptError(null);
+    const targetKey = (overrideKey ?? scriptApiKey).trim() || (activeMemberKeys[0]?.robotApiKey || '');
+    const targetOrigin = toPublicOrigin(overrideOrigin ?? scriptServerOrigin ?? publicRobotOrigin);
+
+    try {
+      if (adminToken) {
+        const params = new URLSearchParams();
+        if (targetKey) params.set('apiKey', targetKey);
+        if (targetOrigin) params.set('serverOrigin', targetOrigin);
+
+        const res = await fetch(`/api/quotex-robot/admin-script?${params.toString()}`, {
+          headers: getAuthHeaders(false)
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data?.ok && data.script) {
+            setGeneratedScript(data.script);
+            setScriptMeta({
+              version: data.version,
+              serverOrigin: data.serverOrigin,
+              embeddedApiKey: data.embeddedApiKey
+            });
+            if (!targetKey && data.embeddedApiKey) {
+              setScriptApiKey(data.embeddedApiKey);
+            }
+            setIsLoadingScript(false);
+            return;
+          }
+        }
+      }
+    } catch (_err) {
+      // Fall back to direct client-side v5.0 template builder (works on fx.zadtoo.com!)
+    }
+
+    const clientScript = buildFloatingQuotexRobotScript({
+      serverOrigin: targetOrigin,
+      apiKey: targetKey,
+      defaultStake: robotSettings.defaultStakeUsd || 5,
+      defaultMode: robotSettings.defaultMode || 'MANUAL',
+      soundDefault: robotSettings.soundAlertsEnabled !== false,
+      autoPairDefault: robotSettings.autoSelectPair !== false,
+      autoM1Default: robotSettings.autoSetExpiryM1 !== false,
+      strategyDefault: 'VIP_WITH_MPB'
+    });
+    setGeneratedScript(clientScript);
+    setScriptMeta({
+      version: 'v5.0.2 (fx.zadtoo.com + Cloud)',
+      serverOrigin: targetOrigin,
+      embeddedApiKey: targetKey || 'غير مضمّن'
+    });
+    if (!overrideKey && targetKey) setScriptApiKey(targetKey);
+    setIsLoadingScript(false);
   };
 
-  const generatedQuotexUserscript = canonicalUserscript;
+  useEffect(() => {
+    if (isAdmin && !generatedScript) {
+      fetchAdminFloatingScript();
+    }
+  }, [isAdmin, adminToken, activeMemberKeys.length]);
+
+  const handleCreateAndEmbedAdminKey = async () => {
+    if (!isAdmin) return;
+    setIsQuickCreatingAdminKey(true);
+    setScriptError(null);
+    const expFuture = '2099-12-25';
+    let createdSub: VipSubscriber | null = null;
+    try {
+      if (adminToken) {
+        const res = await fetch('/api/quotex-robot/create-key', {
+          method: 'POST',
+          headers: getAuthHeaders(),
+          body: JSON.stringify({
+            name: 'المشرف — الروبوت العائم',
+            brokerAccountId: `QX-ADMIN-${Math.floor(1000 + Math.random() * 9000)}`,
+            expiryDate: expFuture,
+            tradeStake: robotSettings.defaultStakeUsd || 5,
+            defaultMode: robotSettings.defaultMode || 'AUTO'
+          })
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json();
+          if (data?.ok && data.subscriber) createdSub = data.subscriber;
+        }
+      }
+    } catch (_err) {}
+
+    if (!createdSub && canWriteFirestoreAsAdmin()) {
+      createdSub = {
+        id: `sub_${Date.now()}`,
+        name: 'المشرف — الروبوت العائم',
+        email: '',
+        phone: '',
+        broker: 'Quotex (كوتيكس)',
+        brokerAccountId: `QX-ADMIN-${Math.floor(1000 + Math.random() * 9000)}`,
+        subscriptionType: 'paid_plan',
+        planDuration: '1_year',
+        status: 'ACTIVE',
+        expiryDate: expFuture,
+        robotExpiryDate: expFuture,
+        robotEnabled: true,
+        robotApiKey: generateMemberApiKeyStr(),
+        robotDefaultMode: robotSettings.defaultMode || 'AUTO',
+        robotTradeStake: robotSettings.defaultStakeUsd || 5,
+        createdAt: new Date().toISOString()
+      };
+    }
+
+    if (createdSub) {
+      if (canWriteFirestoreAsAdmin()) {
+        await saveSubscriberToFirestore(createdSub).catch(() => false);
+      }
+      const newKey = createdSub.robotApiKey || '';
+      setSubscribers(prev => [createdSub!, ...prev.filter(s => s.id !== createdSub!.id)]);
+      if (newKey) {
+        setSelectedTestApiKey(newKey);
+        setScriptApiKey(newKey);
+        await fetchAdminFloatingScript(newKey, scriptServerOrigin);
+      }
+    } else {
+      setScriptError('تعذر إنشاء مفتاح المشرف — سجل الدخول بحساب Google أولاً');
+    }
+    setIsQuickCreatingAdminKey(false);
+  };
 
   const filteredSubscribers = useMemo(() => {
     const list = safeSubscribers;
@@ -955,23 +1144,10 @@ export default function QuotexRobotAdminPage({
               <span>{isTriggeringMomentumPause ? '⏳ جاري الإرسال...' : '⚡ إرسال إشارة VIP وروبوت تجريبية الآن (5 ثوانٍ)'}</span>
             </button>
 
-            <a
-              href="/api/strategy/download-mq4"
-              download="NB_FX_Momentum_Pause_Breakout.mq4"
-              className="px-3.5 py-2.5 text-xs font-black bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 shadow-md shadow-emerald-500/20"
-            >
-              <Download className="w-3.5 h-3.5" />
-              <span>تحميل مؤشر MT4 (.mq4)</span>
-            </a>
-
-            <button
-              type="button"
-              onClick={handleOpenMq4CodeModal}
-              className="px-3.5 py-2.5 text-xs font-bold bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
-            >
-              <Code className="w-3.5 h-3.5" />
-              <span>عرض ونسخ كود MQL4</span>
-            </button>
+            <span className="px-3.5 py-2.5 text-xs font-bold bg-slate-800 text-emerald-300 border border-emerald-500/30 rounded-xl flex items-center gap-1.5">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+              <span>خوارزمية MPB محمية بالكامل على الخادم</span>
+            </span>
           </div>
         </div>
 
@@ -1233,62 +1409,6 @@ export default function QuotexRobotAdminPage({
           </div>
         </div>
       </div>
-
-      {/* MQ4 Code Viewer Modal */}
-      {showMq4CodeModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-[#0b1220] border-2 border-amber-500/50 rounded-2xl max-w-4xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
-            <div className="p-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Code className="w-5 h-5 text-amber-400" />
-                <h3 className="font-black text-white text-base">
-                  كود مؤشر MT4 الرسمي (NB_FX_Momentum_Pause_Breakout.mq4)
-                </h3>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleCopy(mq4SourceCode, 'mq4-code-modal')}
-                  className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-black rounded-lg text-xs cursor-pointer flex items-center gap-1 shadow"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>{copiedId === 'mq4-code-modal' ? '✓ تم النسخ!' : 'نسخ الكود بالكامل'}</span>
-                </button>
-                <a
-                  href="/api/strategy/download-mq4"
-                  download="NB_FX_Momentum_Pause_Breakout.mq4"
-                  className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black rounded-lg text-xs cursor-pointer flex items-center gap-1 shadow"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>تحميل ملف .mq4</span>
-                </a>
-                <button
-                  type="button"
-                  onClick={() => setShowMq4CodeModal(false)}
-                  className="p-1.5 text-slate-400 hover:text-white rounded-lg cursor-pointer"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-
-            <div className="p-4 overflow-y-auto flex-1 font-mono text-xs text-emerald-300 bg-[#050914] leading-relaxed select-all" dir="ltr">
-              <pre>{mq4SourceCode || '// جاري تحميل كود المؤشر من السيرفر...'}</pre>
-            </div>
-
-            <div className="p-3 bg-slate-900 border-t border-slate-800 text-xs text-slate-400 flex items-center justify-between">
-              <span>💡 طريقة التثبيت: افتح MetaTrader 4 &gt; File &gt; Open Data Folder &gt; MQL4 &gt; Indicators والصق الملف ثم أعد تشغيل المنصة.</span>
-              <button
-                type="button"
-                onClick={() => setShowMq4CodeModal(false)}
-                className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs cursor-pointer"
-              >
-                إغلاق
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* =====================================================================
           SECTION 1: LIVE INTERACTIVE FLOATING ROBOT OVER QUOTEX CHART PREVIEW
@@ -1703,33 +1823,15 @@ export default function QuotexRobotAdminPage({
                         </button>
                       </div>
 
-                      {/* 3-Option Strategy Dropdown Selector (تعمل في الخلفية ومخفية عن الواجهة لتقليل المساحة) */}
-                      <div className="hidden space-y-1 bg-[#09121f] p-1.5 rounded-lg border border-slate-800">
-                        <div className="flex items-center justify-between text-[9px]">
-                          <span className="text-slate-300 font-bold flex items-center gap-1">
-                            <span>🎯</span>
-                            <span>استراتيجية المؤشرات:</span>
-                          </span>
-                          <span className="text-[8px] px-1 py-0.2 rounded font-mono font-bold bg-slate-800 text-amber-300">
-                            {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'PUBLIC_CLASSIC' ? '1 دقيقة ⏳' : '5 ثوانٍ ⚡'}
-                          </span>
-                        </div>
-                        <select
-                          value={robotSettings.strategyEngineMode === 'PUBLIC_CLASSIC' ? 'PUBLIC_CLASSIC' : 'VIP_WITH_MPB'}
-                          onChange={e => {
-                            const newMode = e.target.value as RobotStrategyEngineMode;
-                            setRobotSettings(prev => ({ ...prev, strategyEngineMode: newMode }));
-                            fetch('/api/robot-settings', {
-                              method: 'POST',
-                              headers: { 'Content-Type': 'application/json' },
-                              body: JSON.stringify({ strategyEngineMode: newMode })
-                            }).catch(() => {});
-                          }}
-                          className="w-full px-1.5 py-1 text-[9px] bg-[#070D18] border border-emerald-500/60 rounded text-white font-extrabold cursor-pointer focus:outline-none focus:border-emerald-400"
-                        >
-                          <option value="PUBLIC_CLASSIC">📢 استراتيجية القناة العامة (التزام بالقوانين ⏳)</option>
-                          <option value="VIP_WITH_MPB">💎 استراتيجية MPB (09:00 ص - 09:00 م | 5 ثوانٍ ⚡)</option>
-                        </select>
+                      {/* Locked Latest Strategy Indicator (VIP_WITH_MPB — no strategy switching) */}
+                      <div className="flex items-center justify-between px-2 py-1 bg-[#09121f] border border-emerald-500/40 rounded-lg text-[9.5px]">
+                        <span className="text-slate-300 font-bold flex items-center gap-1">
+                          <span>🎯</span>
+                          <span>استراتيجية MPB الموحدة:</span>
+                        </span>
+                        <span className="text-[8.5px] px-1.5 py-0.5 rounded font-mono font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                          VIP_WITH_MPB (مثبتة ⚡)
+                        </span>
                       </div>
 
                       {/* مزامنة سحابية حصرية مع الإشارات المعتمدة */}
@@ -2018,62 +2120,28 @@ export default function QuotexRobotAdminPage({
                 />
               </div>
 
-              {/* Single Dropdown for the 3 Strategy Options (قائمة منسدلة حصرية لمنع دمج الخيارات) */}
+              {/* Locked Strategy Card (Latest Unified VIP_WITH_MPB Strategy — Strategy Switching Disabled) */}
               <div className="p-3 bg-gradient-to-r from-emerald-950/40 via-slate-900 to-slate-900 border border-emerald-500/40 rounded-xl space-y-2">
                 <div className="flex items-center justify-between">
-                  <label className="text-emerald-300 font-extrabold text-xs flex items-center gap-1.5">
+                  <div className="text-emerald-300 font-extrabold text-xs flex items-center gap-1.5">
                     <Zap className="w-3.5 h-3.5 text-amber-400" />
-                    <span>استراتيجية مؤشرات الروبوت وقناة VIP (قائمة منسدلة حصرية):</span>
-                  </label>
+                    <span>الاستراتيجية المعتمدة للروبوت (مثبتة على آخر تحديث):</span>
+                  </div>
                   <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-mono">
-                    {(robotSettings.strategyEngineMode || 'VIP_WITH_MPB') === 'PUBLIC_CLASSIC' ? 'انتظار 1 دقيقة' : 'تنفيذ فوري 5 ثوانٍ ⚡'}
+                    VIP_WITH_MPB | تنفيذ فوري 5 ثوانٍ ⚡
                   </span>
                 </div>
 
-                <select
-                  value={robotSettings.strategyEngineMode || 'VIP_WITH_MPB'}
-                  onChange={e =>
-                    setRobotSettings(prev => ({
-                      ...prev,
-                      strategyEngineMode: e.target.value as RobotStrategyEngineMode
-                    }))
-                  }
-                  className="w-full px-3 py-2 bg-[#0B0F17] border-2 border-emerald-500/60 rounded-xl text-white font-extrabold text-xs sm:text-sm focus:outline-none focus:border-emerald-400 cursor-pointer shadow-inner"
-                >
-                  <option value="PUBLIC_CLASSIC">
-                    1️⃣ الخيار الأول: استراتيجية القناة العامة (انتظار 1 دقيقة ⏳ — الجلسة الصباحية وتلتزم بقوانين التوقف)
-                  </option>
-                  <option value="VIP_WITH_MPB">
-                    2️⃣ الخيار الثاني: استراتيجية MPB (تنفيذ 5 ثوانٍ ⚡ — تعمل من 09:00 ص حتى 09:00 م دون قوانين توقف)
-                  </option>
-                </select>
-
-                {/* Dynamic Explanatory Banner for the Selected Option */}
-                <div className="p-2.5 rounded-lg text-[11px] leading-relaxed border transition-all">
-                  {robotSettings.strategyEngineMode === 'PUBLIC_CLASSIC' ? (
-                    <div className="bg-amber-950/30 border border-amber-500/40 text-amber-200 p-2.5 rounded-lg space-y-1.5">
-                      <div className="font-extrabold flex items-center gap-1.5 text-amber-300">
-                        <span>📢 الخيار الأول نشط: استراتيجية القناة العامة (تلتزم بالقوانين ومواعيد العمل)</span>
-                      </div>
-                      <div className="text-[10.5px] text-slate-300 space-y-1">
-                        <div>• <b>مواعيد وقوانين العمل:</b> تعمل في <b>الجلسة الصباحية (10:30 ص حتى 01:00 ظهراً)</b> وتلتزم بالإيقاف التلقائي فور تحقيق نسبة 60%+ أو عند الساعة 01:00 ظهراً.</div>
-                        <div>• <b>رسالة الافتتاح والاستعداد:</b> تبدأ الساعة 10:30 ص برسالة صباحية وفترة مسح للأزواج الستة (8 دقائق) قبل صدور أول إشارة.</div>
-                        <div>• <b>وقت الدخول:</b> استلام الإشارة قبل الشمعة وتنفيذ آلي عند ثانية :00.00.</div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="bg-emerald-950/30 border border-emerald-500/40 text-emerald-200 p-2.5 rounded-lg space-y-1.5">
-                      <div className="font-extrabold flex items-center gap-1.5 text-emerald-300">
-                        <span>💎 استراتيجية MPB الموحدة نشطة (10:30 ص - 01:00 م | والبث المباشر 04:30 م - 08:00 م)</span>
-                      </div>
-                      <div className="text-[10.5px] text-slate-300 space-y-1">
-                        <div>• <b>ساعات العمل الموحدة:</b> الجلسة الصباحية (<b>10:30 ص - 01:00 م</b>) وجلسة البث المباشر (<b>04:30 م - 08:00 م</b>) بتوقيت مصر، مع التوقف التلقائي عند تحقيق <b>60%+</b>.</div>
-                        <div>• <b>تنفيذ متزامن ومباشر:</b> تصل الإشارة في اللحظة نفسها للقنوات والروبوت وتنفذ على الأزواج الستة المفتوحة دون الضغط على زر +.</div>
-                        <div>• <b>شروط تلقي الإشارات:</b> توافر <b>3 مؤشرات فنية متوافقة</b> على الأقل من أصل 4 مؤشرات مع تأكيد الدقة.</div>
-                        <div>• <b>سرعة التنفيذ:</b> انطلاق الإشارة وتنفيذها على المنصة <b>قبل 5 ثوانٍ من افتتاح الشمعة</b> بدقة فائقة.</div>
-                      </div>
-                    </div>
-                  )}
+                <div className="bg-emerald-950/30 border border-emerald-500/40 text-emerald-200 p-2.5 rounded-lg space-y-1.5">
+                  <div className="font-extrabold flex items-center gap-1.5 text-emerald-300">
+                    <span>💎 استراتيجية MPB الموحدة نشطة ومثبتة تلقائياً للجميع</span>
+                  </div>
+                  <div className="text-[10.5px] text-slate-300 space-y-1">
+                    <div>• <b>ساعات العمل الموحدة:</b> الجلسة الصباحية (<b>10:30 ص - 01:00 م</b>) وجلسة البث المباشر (<b>04:30 م - 08:00 م</b>) بتوقيت مصر، مع التوقف التلقائي عند تحقيق <b>60%+</b>.</div>
+                    <div>• <b>تثبيت آخر تحديث:</b> تم إيقاف تبديل الاستراتيجيات لضمان عمل الروبوت العائم والقنوات على آخر تحديث موحد لاستراتيجية MPB فقط.</div>
+                    <div>• <b>شروط تلقي الإشارات:</b> توافر <b>3 مؤشرات فنية متوافقة</b> على الأقل من أصل 4 مؤشرات مع تأكيد الدقة.</div>
+                    <div>• <b>سرعة التنفيذ:</b> انطلاق الإشارة وتنفيذها على المنصة <b>قبل 5 ثوانٍ من افتتاح الشمعة</b> بدقة فائقة بدون مضاعفات.</div>
+                  </div>
                 </div>
               </div>
 
@@ -2216,30 +2284,34 @@ export default function QuotexRobotAdminPage({
               {/* Direct Secure Server API Endpoint Link */}
               <div className="space-y-1 bg-[#0B0F17] p-2.5 rounded-xl border border-slate-800">
                 <div className="text-[10.5px] text-sky-400 font-bold flex items-center justify-between">
-                  <span>رابط فحص API المشفر للمفتاح المختار ({selectedTestApiKey}):</span>
-                  <span className="text-[9.5px] bg-sky-500/20 px-1.5 py-0.5 rounded text-sky-300">آمن ومشفر</span>
+                  <span>رابط فحص API المشفر للمفتاح المختار ({selectedTestApiKey || 'بدون مفتاح'}):</span>
+                  <span className="text-[9.5px] bg-sky-500/20 px-1.5 py-0.5 rounded text-sky-300">تحقق خادم فقط</span>
                 </div>
+                {safeSubscribers.length === 0 && (
+                  <div className="p-2 rounded-lg bg-amber-500/15 border border-amber-500/40 text-[10px] text-amber-200 leading-relaxed">
+                    ⚠️ <strong>تنبيه الترخيص:</strong> يعمل الروبوت العائم حصرياً لمشترك مسجل وحالته <code className="font-mono-num text-emerald-300">ACTIVE</code> وصلاحيته سارية من قسم <strong>"إدارة مفاتيح الأعضاء"</strong> أدناه.
+                  </div>
+                )}
                 <div className="flex items-center gap-1.5">
                   <input
                     type="text"
                     readOnly
                     dir="ltr"
-                    value={`${appOrigin}/api/quotex-robot/feed?apiKey=${selectedTestApiKey}`}
+                    value={`${publicRobotOrigin}/api/quotex-robot/feed?apiKey=${encodeURIComponent(selectedTestApiKey || '')}`}
                     className="flex-1 px-2 py-1 bg-slate-900 border border-slate-800 rounded-lg text-[10px] font-mono-num text-sky-300"
                   />
-                  <a
-                    href={`${appOrigin}/api/quotex-robot/feed?apiKey=${selectedTestApiKey}`}
-                    target="_blank"
-                    rel="noreferrer"
+                  <button
+                    type="button"
+                    onClick={() => fetchLiveRobotApiFeed(selectedTestApiKey)}
                     className="px-2.5 py-1 bg-sky-500 hover:bg-sky-400 text-slate-950 rounded-lg text-[10.5px] font-extrabold cursor-pointer shrink-0"
                   >
-                    فتح الفحص ↗
-                  </a>
+                    فحص مباشر ⚡
+                  </button>
                   <button
                     type="button"
                     onClick={() =>
                       handleCopy(
-                        `${appOrigin}/api/quotex-robot/feed?apiKey=${selectedTestApiKey}`,
+                        `${publicRobotOrigin}/api/quotex-robot/feed?apiKey=${encodeURIComponent(selectedTestApiKey || '')}`,
                         'api-url'
                       )
                     }
@@ -2269,111 +2341,205 @@ export default function QuotexRobotAdminPage({
 
             <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5 text-[11px] text-emerald-200">
               <div className="font-bold flex items-center gap-1.5 text-emerald-300">
-                <span>🚀 تحديث الروبوت المستقل بالكامل (الإصدار v4.5 Cloud Edition):</span>
+                <span>🟢 متصل مباشرة بـ fx.zadtoo.com والسحابة (الإصدار v5.0):</span>
               </div>
               <ul className="list-disc list-inside space-y-1 text-slate-300">
-                <li><strong className="text-white">استقلالية كاملة 100%:</strong> يعمل الروبوت مباشرة على منصة كيوتكس (Quotex) دون الحاجة لفتح موقعك أو أي تبويب إضافي على الإطلاق.</li>
-                <li><strong className="text-amber-300">محرك سيرفر أبوسليم السحابي:</strong> يتصل مباشرة بسيرفر أبوسليم بالثانية دون أي قيود حظر أو ملفات تعريف ارتباط.</li>
-                <li><strong className="text-sky-300">زر إدخال وتعديل رقم الحساب (🔑 ID):</strong> يمكن للعضو إدخال رقم حسابه في كيوتكس أو مفتاحه مباشرة من النافذة العائمة.</li>
-                <li><strong className="text-emerald-300">نغمة صوتية عالية النقاء:</strong> تنبيه صوتي فوري مع وميض الصندوق باللون الأخضر أو الأحمر.</li>
+                <li><strong className="text-white">اتصال سحابي مباشر ومجاني:</strong> يعمل الروبوت مباشرة عبر <code className="font-mono-num text-sky-300">fx.zadtoo.com</code> وسحابة Firestore الفورية دون الحاجة لاشتراك مدفوع أو تفعيل جلسة.</li>
+                <li><strong className="text-amber-300">زر إدخال وتعديل المفتاح (🔑 ID):</strong> يكتفي العضو بإدخال مفتاح العضو فقط داخل الروبوت العائم بينما يظل الربط السحابي مضمّناً تلقائياً.</li>
+                <li><strong className="text-emerald-300">مرور الصفقة + تداول آلي/يدوي + قرآن واختبار الأزرار:</strong> يعرض مراحل الإشارة والعد التنازلي أثناء الصفقة (60 ثانية) مع أزرار التثبيت اليدوي والشراء/البيع.</li>
               </ul>
-              <div className="text-[10px] text-slate-400 pt-1 border-t border-emerald-500/20">
-                💡 <strong>لتحديث الروبوت الآن:</strong> اضغط الزر الأصفر أدناه لنسخ الكود المحدث، ثم افتح Tampermonkey واستبدل الكود القديم واحفظه (Ctrl + S).
-              </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-              <button
-                type="button"
-                onClick={handleCopyUserscript}
-                className="py-2.5 px-3 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-lg shadow-amber-500/20 active:scale-95"
-              >
-                <Copy className="w-4 h-4" />
-                <span>
-                  {copiedId === 'userscript-code'
-                    ? '✓ تم نسخ كود السكريبت (v4.5) بنجاح!'
-                    : 'نسخ كود السكريبت المحدث v4.5'}
-                </span>
-              </button>
+            {/* ADMIN-ONLY FLOATING QUOTEX ROBOT SCRIPT GENERATOR */}
+            {isAdmin ? (
+              <div className="p-4 bg-gradient-to-br from-emerald-950/50 via-slate-950 to-slate-900 border-2 border-emerald-500/50 rounded-xl space-y-3 shadow-lg">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-7 h-7 rounded-lg bg-emerald-500/20 border border-emerald-400/50 flex items-center justify-center text-emerald-300 font-bold text-sm">
+                      <Code className="w-4 h-4" />
+                    </span>
+                    <div>
+                      <h4 className="text-xs font-extrabold text-emerald-300 flex flex-wrap items-center gap-1.5">
+                        <span>نسخ وتثبيت كود الروبوت العائم للمشرف (Tampermonkey v5.0)</span>
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 border border-emerald-500/40 text-[9px] font-bold">
+                          متاح للمشرف فقط 🔒
+                        </span>
+                      </h4>
+                      <p className="text-[10.5px] text-slate-400 mt-0.5">
+                        توليد فوري لأحدث نسخة مثبتة من الروبوت العائم متصلة بسيرفرك ومضبوطة بمفتاح عضو فعال.
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => fetchAdminFloatingScript()}
+                    disabled={isLoadingScript}
+                    className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-[10.5px] font-bold cursor-pointer flex items-center gap-1"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${isLoadingScript ? 'animate-spin' : ''}`} />
+                    <span>تحديث الكود</span>
+                  </button>
+                </div>
 
-              <button
-                type="button"
-                onClick={handleDownloadUserscript}
-                className="py-2.5 px-3 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-lg shadow-emerald-500/20 active:scale-95"
-              >
-                <span>📥</span>
-                <span>تحميل ملف (zad-broker-robot.user.js)</span>
-              </button>
-            </div>
+                {activeMemberKeys.length === 0 && (
+                  <div className="p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/40 text-[10.5px] text-amber-200 space-y-2">
+                    <div>
+                      ⚠️ <strong>تنبيه مهم:</strong> لا يوجد أي مفتاح عضو فعال حالياً في النظام، ولذلك لن يستقبل الروبوت العائم على كيوتكس الإشارات حتى تُنشئ مفتاحاً وتُضمّنه في الكود.
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleCreateAndEmbedAdminKey}
+                      disabled={isQuickCreatingAdminKey}
+                      className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold rounded-lg text-[11px] cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Key className="w-3.5 h-3.5" />
+                      <span>{isQuickCreatingAdminKey ? 'جاري إنشاء المفتاح...' : '🔑 إنشاء مفتاح مشرف فعال وتضمينه في الكود الآن'}</span>
+                    </button>
+                  </div>
+                )}
 
-            <div className="flex items-center justify-between p-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-xs">
-              <span className="text-slate-400">⚡ رابط التثبيت / التحديث التلقائي المباشر:</span>
-              <a
-                href={`${appOrigin}/api/quotex-robot/zad-broker-robot.user.js?apiKey=${selectedTestApiKey}`}
-                target="_blank"
-                rel="noreferrer"
-                className="px-3 py-1 bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold rounded-lg text-xs flex items-center gap-1 transition-all"
-                title="اضغط لفتح شاشة التثبيت التلقائي المباشرة في تامبرمونكي بنقرة واحدة"
-              >
-                <span>تثبيت مباشر بنقرة واحدة (v4.5) ↗</span>
-              </a>
-            </div>
-
-            {/* GOLDEN REFERENCE BASELINE LOCK CARD (النسخة المرجعية الذهبية المعتمدة والمقفولة) */}
-            <div className="p-4 bg-gradient-to-r from-amber-950/40 via-slate-950 to-amber-950/30 border-2 border-amber-500/60 rounded-xl space-y-3 shadow-lg">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <span className="w-7 h-7 rounded-lg bg-amber-500/20 border border-amber-400/50 flex items-center justify-center text-amber-300 font-bold text-sm">
-                    🔒
-                  </span>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <div>
-                    <h4 className="text-xs font-extrabold text-amber-300 flex items-center gap-1.5">
-                      <span>النسخة المرجعية الذهبية المعتمدة (v4.5 Golden Baseline)</span>
-                      <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[9px] font-bold">
-                        محمية ومقفولة
-                      </span>
-                    </h4>
-                    <p className="text-[10.5px] text-slate-400 mt-0.5">
-                      تم حفظ وتجميد محرك النقر والتبديل واختيار الشارت المعتمد كمرجع دائم لا يتأثر بأي تعديلات في العضويات أو المؤشرات.
-                    </p>
+                    <label className="block text-[10px] font-bold text-slate-300 mb-1">
+                      مفتاح العضو المضمّن داخل الكود:
+                    </label>
+                    <select
+                      value={scriptApiKey}
+                      onChange={e => {
+                        const val = e.target.value;
+                        setScriptApiKey(val);
+                        fetchAdminFloatingScript(val, scriptServerOrigin);
+                      }}
+                      className="w-full px-2.5 py-1.5 bg-[#070A10] border border-slate-700 rounded-lg text-[11px] font-mono-num text-amber-300 focus:outline-none focus:border-emerald-500"
+                    >
+                      <option value="">-- بدون مفتاح افتراضي (يُدخل من الروبوت) --</option>
+                      {activeMemberKeys.map(sub => (
+                        <option key={sub.id} value={sub.robotApiKey || ''}>
+                          {sub.name} — {sub.robotApiKey}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-300 mb-1">
+                      رابط الموقع الرسمي المتصل بالسحابة (Site Origin):
+                    </label>
+                    <input
+                      type="text"
+                      dir="ltr"
+                      value={scriptServerOrigin}
+                      onChange={e => setScriptServerOrigin(e.target.value)}
+                      placeholder="https://fx.zadtoo.com"
+                      className="w-full px-2.5 py-1.5 bg-[#070A10] border border-slate-700 rounded-lg text-[10.5px] font-mono-num text-sky-300 focus:outline-none focus:border-emerald-500"
+                    />
                   </div>
                 </div>
-              </div>
 
-              {goldenRestoreMessage && (
-                <div className="p-2.5 rounded-lg bg-emerald-950/90 border border-emerald-500/50 text-emerald-200 text-xs font-bold flex items-center gap-2 animate-fade-in">
-                  <span>{goldenRestoreMessage}</span>
+                <div className="p-2.5 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-[10.5px] text-emerald-200 leading-relaxed">
+                  🟢 <strong>متصل مباشرة بـ fx.zadtoo.com والسحابة:</strong> يعمل السكربت تلقائياً على جميع المتصفحات عند المشتركين والمشرف دون الحاجة لـ Publish المدفوع أو تنشيط جلسة.
                 </div>
-              )}
 
-              <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-amber-500/20">
-                <button
-                  type="button"
-                  onClick={handleRestoreGoldenBaseline}
-                  disabled={isRestoringGolden}
-                  className="px-3 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs transition-all cursor-pointer flex items-center gap-1.5 shadow"
-                >
-                  <span>{isRestoringGolden ? '⏳ جاري الاستعادة...' : '🔄 استعادة وتثبيت النسخة الذهبية بنقرة واحدة'}</span>
-                </button>
+                {scriptError && (
+                  <div className="p-2 rounded-lg bg-rose-950/80 border border-rose-500/50 text-rose-200 text-[11px] font-bold">
+                    ❌ {scriptError}
+                  </div>
+                )}
 
-                <button
-                  type="button"
-                  onClick={handleDownloadGoldenScript}
-                  className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/40 font-bold rounded-lg text-xs transition-all cursor-pointer flex items-center gap-1.5"
-                >
-                  <span>📥 تحميل نسخة الاحتياط الذهبية (.user.js)</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    disabled={!generatedScript || isLoadingScript}
+                    onClick={() => handleCopy(generatedScript, 'admin-robot-script')}
+                    className="flex-1 min-w-[180px] py-2 px-3 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow"
+                  >
+                    {copiedId === 'admin-robot-script' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    <span>
+                      {copiedId === 'admin-robot-script'
+                        ? '✅ تم نسخ كود الروبوت العائم v5.0!'
+                        : '📋 نسخ كود الروبوت (Tampermonkey v5.0)'}
+                    </span>
+                  </button>
 
-                <a
-                  href="/api/quotex-robot/golden-reference.user.js"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="px-2.5 py-2 text-[11px] text-slate-400 hover:text-white underline underline-offset-4"
-                >
-                  عرض الكود المرجعي الخام ↗
-                </a>
+                  <button
+                    type="button"
+                    disabled={!generatedScript || isLoadingScript}
+                    onClick={() => {
+                      if (!generatedScript) return;
+                      const blob = new Blob([generatedScript], { type: 'text/javascript;charset=utf-8' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = 'zad-fx-floating-robot.user.js';
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      URL.revokeObjectURL(url);
+                    }}
+                    className="px-3 py-2 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs cursor-pointer flex items-center gap-1.5 shadow"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>تحميل (.user.js)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowScriptPreview(prev => !prev)}
+                    className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-lg text-xs cursor-pointer flex items-center gap-1.5"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>{showScriptPreview ? 'إخفاء الكود' : 'معاينة الكود'}</span>
+                  </button>
+                </div>
+
+                {scriptMeta && (
+                  <div className="flex flex-wrap items-center gap-3 text-[10px] text-slate-400">
+                    <span>الإصدار: <strong className="text-emerald-300">{scriptMeta.version}</strong></span>
+                    <span>السيرفر: <code dir="ltr" className="text-sky-300 font-mono-num">{scriptMeta.serverOrigin}</code></span>
+                    <span>المفتاح المضمّن: <code dir="ltr" className="text-amber-300 font-mono-num">{scriptMeta.embeddedApiKey || 'غير مضمّن'}</code></span>
+                  </div>
+                )}
+
+                {showScriptPreview && generatedScript && (
+                  <pre
+                    dir="ltr"
+                    className="p-3 bg-[#05080E] border border-slate-800 rounded-xl text-[10px] font-mono-num text-emerald-200 max-h-60 overflow-auto leading-relaxed select-all"
+                  >
+                    {generatedScript}
+                  </pre>
+                )}
+
+                <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-lg text-[10px] text-slate-300 space-y-1">
+                  <div className="font-bold text-sky-300">📌 خطوات التثبيت الصحيحة في Tampermonkey (الربط المباشر عبر fx.zadtoo.com):</div>
+                  <ol className="list-decimal list-inside space-y-0.5 text-slate-400">
+                    <li>اختر مفتاح العضو من القائمة أعلاه (أو أنشئ مفتاحاً جديداً) ثم اضغط زر <strong>تحميل (.user.js)</strong>.</li>
+                    <li>احذف أي نسخة قديمة للروبوت في Tampermonkey، ثم استورد الملف من <strong>Dashboard ← Utilities ← Import from file</strong>.</li>
+                    <li>افتح منصة <strong>Quotex</strong> — سيعمل الروبوت العائم مباشرة ويتصل بالسحابة عبر مفتاح العضو (ويمكنك تغييره من زر <strong>🔑 ID</strong>).</li>
+                  </ol>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="p-4 bg-slate-950/90 border border-slate-800 rounded-xl flex items-center justify-between gap-3">
+                <div className="space-y-0.5">
+                  <div className="text-xs font-extrabold text-amber-300 flex items-center gap-1.5">
+                    <Lock className="w-4 h-4" />
+                    <span>كود الروبوت العائم متاح للمشرف المصادق عليه فقط</span>
+                  </div>
+                  <p className="text-[10.5px] text-slate-400">
+                    سجل دخولك كمشرف لعرض ونسخ كود Tampermonkey المحدث والمربوط بسيرفرك.
+                  </p>
+                </div>
+                {onOpenLoginModal && (
+                  <button
+                    type="button"
+                    onClick={onOpenLoginModal}
+                    className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold rounded-lg text-xs cursor-pointer shrink-0"
+                  >
+                    تسجيل دخول المشرف
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -2486,6 +2652,18 @@ export default function QuotexRobotAdminPage({
             </button>
           </div>
         </form>
+
+        {memberUpdateToast && (
+          <div
+            className={`p-3 rounded-xl border text-xs font-bold ${
+              memberUpdateToast.type === 'success'
+                ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
+                : 'bg-rose-950/60 border-rose-500/40 text-rose-300'
+            }`}
+          >
+            {memberUpdateToast.message}
+          </div>
+        )}
 
         {/* Table of Members with their Unique API Keys, Validity Duration, and Controls */}
         <div className="overflow-x-auto">

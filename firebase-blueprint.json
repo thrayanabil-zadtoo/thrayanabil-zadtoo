@@ -2,26 +2,91 @@
   "entities": {
     "AppState": {
       "title": "AppState",
-      "description": "Stores persistent Auto-Pilot configuration, Bot Token, formatting templates, and published global forex signals.",
+      "description": "Stores persistent Auto-Pilot configuration, platform plans, contact links, telegram bot state, and published global forex signals.",
       "type": "object",
       "properties": {
         "updatedAt": {
           "type": "string",
+          "maxLength": 64,
           "description": "ISO timestamp of last state save"
         },
         "payload": {
           "type": "string",
           "maxLength": 500000,
-          "description": "Serialized application state including autopilot credentials, template settings, and signals list"
+          "description": "Serialized application state payload"
         }
       },
       "required": ["updatedAt", "payload"]
+    },
+    "RobotFeed": {
+      "title": "RobotFeed",
+      "description": "Live Quotex robot broadcast stream document.",
+      "type": "object",
+      "properties": {
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "ISO timestamp of last feed update"
+        },
+        "payload": {
+          "type": "string",
+          "maxLength": 500000,
+          "description": "Serialized live feed JSON payload"
+        },
+        "signal": {
+          "type": "object",
+          "description": "Current active signal metadata or null"
+        }
+      },
+      "required": ["updatedAt"]
+    },
+    "ConnectionTest": {
+      "title": "ConnectionTest",
+      "description": "Read-only health check document for verifying Firestore connectivity.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Verified platform administrator record.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin"]
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": ["email", "role"]
     }
   },
   "firestore": {
     "/system_state/{docId}": {
       "schema": "AppState",
-      "description": "Singleton state storage for the 24/7 background signal worker"
+      "description": "Platform state storage (public plans/links vs admin-restricted bot tokens, user PII, and system state)"
+    },
+    "/robot_feed/{docId}": {
+      "schema": "RobotFeed",
+      "description": "Live Quotex robot signal stream document (live)"
+    },
+    "/test/{docId}": {
+      "schema": "ConnectionTest",
+      "description": "Startup Firestore connectivity check document (connection)"
+    },
+    "/admins/{userId}": {
+      "schema": "AdminUser",
+      "description": "Verified administrator role lookup documents"
     }
   }
 }

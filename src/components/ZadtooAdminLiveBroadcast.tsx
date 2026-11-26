@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { db, SYSTEM_STATE_DOC_PATH, SYSTEM_STATE_DOC_ID } from '../firebase';
+import { db, isFirebaseAdminSignedIn, SYSTEM_STATE_DOC_PATH, SYSTEM_STATE_DOC_ID } from '../firebase';
 import {
   Radio,
   Send,
@@ -59,6 +59,7 @@ async function sendTelegramDirect(token: string, chatId: string, text: string) {
 }
 
 interface ZadtooAdminLiveBroadcastProps {
+  adminToken?: string;
   autoPilot?: AutoPilotConfig;
   onRefreshSignals?: () => void;
   onNavigateHome?: () => void;
@@ -75,11 +76,16 @@ export const MAJOR_6_PAIRS = [
 ];
 
 export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> = ({
+  adminToken,
   autoPilot,
   onRefreshSignals,
   onNavigateHome,
   onSignalCreated
 }) => {
+  const getAuthHeaders = (includeJson = true): Record<string, string> => ({
+    ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
+    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
+  });
   // --- Section 1: Signal Broadcast Form State ---
   const [selectedPair, setSelectedPair] = useState<string>('EUR/USD');
   const [direction, setDirection] = useState<'CALL' | 'PUT'>('CALL');
@@ -158,7 +164,10 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
 
   const fetchSessionStatus = async () => {
     try {
-      const res = await fetch('/api/admin/live-broadcast-session');
+      const res = await fetch('/api/admin/live-broadcast-session', {
+        credentials: 'include',
+        headers: getAuthHeaders(false)
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.ok && data.session) {
@@ -176,7 +185,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     fetchSessionStatus();
     const interval = setInterval(fetchSessionStatus, 8000);
     return () => clearInterval(interval);
-  }, []);
+  }, [adminToken]);
 
   const handleToggleSessionEnabled = async () => {
     if (!sessionData) return;
@@ -185,7 +194,8 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     try {
       const res = await fetch('/api/admin/live-broadcast-session/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: getAuthHeaders(),
         body: JSON.stringify({ enabled: !sessionData.enabled })
       });
       const data = await res.json();
@@ -211,7 +221,8 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     try {
       const res = await fetch('/api/admin/live-broadcast-session/config', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: getAuthHeaders(),
         body: JSON.stringify({ action: 'reset' })
       });
       const data = await res.json();
@@ -236,7 +247,8 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
     try {
       const res = await fetch('/api/admin/live-broadcast-session/trigger-now', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: getAuthHeaders(),
         body: JSON.stringify({ mode })
       });
       const data = await res.json();
@@ -361,7 +373,8 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
       const timeoutId = setTimeout(() => controller.abort(), 9000);
       const res = await fetch('/api/admin/live-broadcast', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: getAuthHeaders(),
         signal: controller.signal,
         body: JSON.stringify({
           type: 'signal',
@@ -456,6 +469,7 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
           destParts.push('الروبوت العائم');
           sendTasks.push(
             (async () => {
+              if (!isFirebaseAdminSignedIn()) return;
               // 1. Write to robot_feed/live for instant visitor robot HUD
               try {
                 await setDoc(doc(db, 'robot_feed', 'live'), {
@@ -474,10 +488,13 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
                     const existingSigs = Array.isArray(parsed.signals) ? parsed.signals : [];
                     parsed.signals = [newSignal, ...existingSigs.filter((s: any) => s.id !== newSignal.id)].slice(0, 50);
                     parsed.stateUpdatedAt = new Date().toISOString();
-                    await setDoc(doc(db, SYSTEM_STATE_DOC_PATH, SYSTEM_STATE_DOC_ID), {
-                      updatedAt: new Date().toISOString(),
-                      payload: JSON.stringify(parsed)
-                    });
+                    const serialized = JSON.stringify(parsed);
+                    if (serialized.length <= 495000) {
+                      await setDoc(doc(db, SYSTEM_STATE_DOC_PATH, SYSTEM_STATE_DOC_ID), {
+                        updatedAt: new Date().toISOString(),
+                        payload: serialized
+                      });
+                    }
                   }
                 }
               } catch (_e) {}
@@ -562,7 +579,8 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
       const timeoutId = setTimeout(() => controller.abort(), 9000);
       const res = await fetch('/api/admin/live-broadcast', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        headers: getAuthHeaders(),
         signal: controller.signal,
         body: JSON.stringify({
           type: 'announcement',

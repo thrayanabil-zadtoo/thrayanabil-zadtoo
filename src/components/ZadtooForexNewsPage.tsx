@@ -30,19 +30,26 @@ import {
   DEFAULT_VIP_BOT_TOKEN,
   DEFAULT_VIP_CHAT_ID
 } from './ZadtooAdminLiveBroadcast';
-import { db } from '../firebase';
+import { db, isFirebaseAdminSignedIn } from '../firebase';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 
 interface ZadtooForexNewsPageProps {
   isAdmin: boolean;
+  adminToken?: string;
   onNavigateSignals?: () => void;
   onNavigateHome?: () => void;
 }
 
 export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
   isAdmin,
+  adminToken,
   onNavigateSignals
 }) => {
+  const getAuthHeaders = (includeJson = true): Record<string, string> => ({
+    Accept: 'application/json',
+    ...(includeJson ? { 'Content-Type': 'application/json' } : {}),
+    ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {})
+  });
   const [news, setNews] = useState<ForexNewsItem[]>(() => filterActiveForexNews(INITIAL_WEEKLY_FOREX_NEWS, 0));
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isAutoFetching, setIsAutoFetching] = useState<boolean>(false);
@@ -118,8 +125,8 @@ export const ZadtooForexNewsPage: React.FC<ZadtooForexNewsPageProps> = ({
       // fallback
     }
 
-    // 2. Fallback to persistent Firestore if server is unreachable
-    if (!loaded) {
+    // 2. Fallback to persistent Firestore if server is unreachable and admin is signed in
+    if (!loaded && isFirebaseAdminSignedIn()) {
       try {
         const docRef = doc(db, 'system_state', 'zad_main_state_v1');
         const snap = await getDoc(docRef);
@@ -302,7 +309,8 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
       const timeoutId = setTimeout(() => controller.abort(), 9000);
       const res = await fetch(`/api/forex-news/${encodeURIComponent(item.id)}/broadcast`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        credentials: 'include',
+        headers: getAuthHeaders(),
         signal: controller.signal,
         body: JSON.stringify({
           item,
@@ -386,24 +394,29 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
         return next;
       });
 
-      // Persist broadcast status to Firestore
-      try {
-        const docRef = doc(db, 'system_state', 'zad_main_state_v1');
-        const snap = await getDoc(docRef);
-        const d = snap.exists() ? snap.data() : null;
-        const parsed = d?.payload ? JSON.parse(d.payload) : {};
-        const currentList = Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0
-          ? parsed.forexNews
-          : [...INITIAL_WEEKLY_FOREX_NEWS];
-        const exists = currentList.some((n: any) => n.id === item.id);
-        parsed.forexNews = exists
-          ? currentList.map((n: any) => (n.id === item.id ? updatedItem : n))
-          : [updatedItem, ...currentList];
-        await setDoc(docRef, {
-          updatedAt: new Date().toISOString(),
-          payload: JSON.stringify(parsed)
-        }, { merge: true });
-      } catch (_e) {}
+      // Persist broadcast status to Firestore when signed in as admin
+      if (isFirebaseAdminSignedIn()) {
+        try {
+          const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+          const snap = await getDoc(docRef);
+          const d = snap.exists() ? snap.data() : null;
+          const parsed = d?.payload ? JSON.parse(d.payload) : {};
+          const currentList = Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0
+            ? parsed.forexNews
+            : [...INITIAL_WEEKLY_FOREX_NEWS];
+          const exists = currentList.some((n: any) => n.id === item.id);
+          parsed.forexNews = exists
+            ? currentList.map((n: any) => (n.id === item.id ? updatedItem : n))
+            : [updatedItem, ...currentList];
+          const serialized = JSON.stringify(parsed);
+          if (serialized.length <= 495000) {
+            await setDoc(docRef, {
+              updatedAt: new Date().toISOString(),
+              payload: serialized
+            });
+          }
+        } catch (_e) {}
+      }
 
       setBroadcastFeedback({
         id: item.id,
@@ -464,7 +477,8 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
         const method = editingItem ? 'PUT' : 'POST';
         const sRes = await fetch(url, {
           method,
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          credentials: 'include',
+          headers: getAuthHeaders(),
           body: JSON.stringify(payload)
         });
         if (sRes.ok) {
@@ -507,25 +521,30 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
         return nextList;
       });
 
-      // 3. Sync to persistent Firestore (doc: zad_main_state_v1)
-      try {
-        const docRef = doc(db, 'system_state', 'zad_main_state_v1');
-        const snap = await getDoc(docRef);
-        const d = snap.exists() ? snap.data() : null;
-        const parsed = d?.payload ? JSON.parse(d.payload) : {};
-        const currentList: any[] = Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0
-          ? parsed.forexNews
-          : [...INITIAL_WEEKLY_FOREX_NEWS];
-        const existsInDb = currentList.some((n: any) => n.id === savedItem!.id);
-        const updatedList = existsInDb
-          ? currentList.map((n: any) => (n.id === savedItem!.id ? savedItem : n))
-          : [savedItem, ...currentList.filter((n: any) => n.id !== savedItem!.id)];
-        parsed.forexNews = updatedList;
-        await setDoc(docRef, {
-          updatedAt: new Date().toISOString(),
-          payload: JSON.stringify(parsed)
-        }, { merge: true });
-      } catch (_e) {}
+      // 3. Sync to persistent Firestore (doc: zad_main_state_v1) when signed in as admin
+      if (isFirebaseAdminSignedIn()) {
+        try {
+          const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+          const snap = await getDoc(docRef);
+          const d = snap.exists() ? snap.data() : null;
+          const parsed = d?.payload ? JSON.parse(d.payload) : {};
+          const currentList: any[] = Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0
+            ? parsed.forexNews
+            : [...INITIAL_WEEKLY_FOREX_NEWS];
+          const existsInDb = currentList.some((n: any) => n.id === savedItem!.id);
+          const updatedList = existsInDb
+            ? currentList.map((n: any) => (n.id === savedItem!.id ? savedItem : n))
+            : [savedItem, ...currentList.filter((n: any) => n.id !== savedItem!.id)];
+          parsed.forexNews = updatedList;
+          const serialized = JSON.stringify(parsed);
+          if (serialized.length <= 495000) {
+            await setDoc(docRef, {
+              updatedAt: new Date().toISOString(),
+              payload: serialized
+            });
+          }
+        } catch (_e) {}
+      }
 
       setIsModalOpen(false);
       setEditingItem(null);
@@ -566,25 +585,31 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
     try {
       fetch(`/api/forex-news/${encodeURIComponent(id)}`, {
         method: 'DELETE',
-        headers: { 'Accept': 'application/json' }
+        credentials: 'include',
+        headers: getAuthHeaders(false)
       }).catch(() => {});
     } catch (_e) {}
 
-    // 3. Sync to persistent Firestore
-    try {
-      const docRef = doc(db, 'system_state', 'zad_main_state_v1');
-      const snap = await getDoc(docRef);
-      const d = snap.exists() ? snap.data() : null;
-      const parsed = d?.payload ? JSON.parse(d.payload) : {};
-      const currentList: any[] = Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0
-        ? parsed.forexNews
-        : [...INITIAL_WEEKLY_FOREX_NEWS];
-      parsed.forexNews = currentList.filter((n: any) => n.id !== id);
-      await setDoc(docRef, {
-        updatedAt: new Date().toISOString(),
-        payload: JSON.stringify(parsed)
-      }, { merge: true });
-    } catch (_e) {}
+    // 3. Sync to persistent Firestore when signed in as admin
+    if (isFirebaseAdminSignedIn()) {
+      try {
+        const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+        const snap = await getDoc(docRef);
+        const d = snap.exists() ? snap.data() : null;
+        const parsed = d?.payload ? JSON.parse(d.payload) : {};
+        const currentList: any[] = Array.isArray(parsed.forexNews) && parsed.forexNews.length > 0
+          ? parsed.forexNews
+          : [...INITIAL_WEEKLY_FOREX_NEWS];
+        parsed.forexNews = currentList.filter((n: any) => n.id !== id);
+        const serialized = JSON.stringify(parsed);
+        if (serialized.length <= 495000) {
+          await setDoc(docRef, {
+            updatedAt: new Date().toISOString(),
+            payload: serialized
+          });
+        }
+      } catch (_e) {}
+    }
 
     setBroadcastFeedback({
       id,
@@ -607,21 +632,27 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
     try {
       fetch('/api/forex-news/seed-weekly', {
         method: 'POST',
-        headers: { 'Accept': 'application/json' }
+        credentials: 'include',
+        headers: getAuthHeaders(false)
       }).catch(() => {});
     } catch (_e) {}
 
-    try {
-      const docRef = doc(db, 'system_state', 'zad_main_state_v1');
-      const snap = await getDoc(docRef);
-      const d = snap.exists() ? snap.data() : null;
-      const parsed = d?.payload ? JSON.parse(d.payload) : {};
-      parsed.forexNews = INITIAL_WEEKLY_FOREX_NEWS;
-      await setDoc(docRef, {
-        updatedAt: new Date().toISOString(),
-        payload: JSON.stringify(parsed)
-      }, { merge: true });
-    } catch (_e) {}
+    if (isFirebaseAdminSignedIn()) {
+      try {
+        const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+        const snap = await getDoc(docRef);
+        const d = snap.exists() ? snap.data() : null;
+        const parsed = d?.payload ? JSON.parse(d.payload) : {};
+        parsed.forexNews = INITIAL_WEEKLY_FOREX_NEWS;
+        const serialized = JSON.stringify(parsed);
+        if (serialized.length <= 495000) {
+          await setDoc(docRef, {
+            updatedAt: new Date().toISOString(),
+            payload: serialized
+          });
+        }
+      } catch (_e) {}
+    }
 
     setBroadcastFeedback({
       id: 'seed',
@@ -637,10 +668,8 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
     try {
       const res = await fetch('/api/forex-news/auto-fetch', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
+        credentials: 'include',
+        headers: getAuthHeaders(),
         body: JSON.stringify({ forceRefresh: true })
       });
       const data = await res.json();
@@ -648,18 +677,23 @@ function buildNewsTelegramMessage(item: ForexNewsItem): string {
         setNews(data.news);
         localStorage.setItem('cached_forex_news', JSON.stringify(data.news));
 
-        // Sync directly to Firestore for all users in real-time
-        try {
-          const docRef = doc(db, 'system_state', 'zad_main_state_v1');
-          const snap = await getDoc(docRef);
-          const d = snap.exists() ? snap.data() : null;
-          const parsed = d?.payload ? JSON.parse(d.payload) : {};
-          parsed.forexNews = data.news;
-          await setDoc(docRef, {
-            updatedAt: new Date().toISOString(),
-            payload: JSON.stringify(parsed)
-          }, { merge: true });
-        } catch (_fErr) {}
+        // Sync directly to Firestore when signed in as admin
+        if (isFirebaseAdminSignedIn()) {
+          try {
+            const docRef = doc(db, 'system_state', 'zad_main_state_v1');
+            const snap = await getDoc(docRef);
+            const d = snap.exists() ? snap.data() : null;
+            const parsed = d?.payload ? JSON.parse(d.payload) : {};
+            parsed.forexNews = data.news;
+            const serialized = JSON.stringify(parsed);
+            if (serialized.length <= 495000) {
+              await setDoc(docRef, {
+                updatedAt: new Date().toISOString(),
+                payload: serialized
+              });
+            }
+          } catch (_fErr) {}
+        }
 
         if (!silent) {
           setBroadcastFeedback({
