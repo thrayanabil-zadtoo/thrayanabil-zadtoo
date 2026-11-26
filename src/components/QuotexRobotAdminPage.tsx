@@ -832,7 +832,7 @@ export default function QuotexRobotAdminPage({
     });
     setGeneratedScript(clientScript);
     setScriptMeta({
-      version: 'v5.2.0 (متعدد المسارات + جسر المتصفح)',
+      version: 'v5.2.1 (متعدد المسارات + جسر المتصفح)',
       serverOrigin: targetOrigin,
       embeddedApiKey: targetKey || 'غير مضمّن'
     });
@@ -2450,8 +2450,8 @@ export default function QuotexRobotAdminPage({
                   </div>
                 </div>
 
-                <div className="p-2.5 rounded-lg bg-emerald-500/15 border border-emerald-500/40 text-[10.5px] text-emerald-200 leading-relaxed">
-                  🟢 <strong>متصل مباشرة بـ fx.zadtoo.com والسحابة:</strong> يعمل السكربت تلقائياً على جميع المتصفحات عند المشتركين والمشرف دون الحاجة لـ Publish المدفوع أو تنشيط جلسة.
+                <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/40 text-[10.5px] text-amber-200 leading-relaxed">
+                  ⚠️ <strong>مهم جداً:</strong> يجب تثبيت السكربت داخل إضافة <strong>Tampermonkey</strong> (ولا تلصقه في DevTools Console F12 لأن المتصفح يمنع الاتصال من هناك). وعند التثبيت عبر رابط <code>ais-dev</code> أبقِ تبويب المنصة مفتوحاً في نفس المتصفح.
                 </div>
 
                 {scriptError && (
@@ -2461,20 +2461,6 @@ export default function QuotexRobotAdminPage({
                 )}
 
                 <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    disabled={!generatedScript || isLoadingScript}
-                    onClick={() => handleCopy(generatedScript, 'admin-robot-script')}
-                    className="flex-1 min-w-[180px] py-2 px-3 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow"
-                  >
-                    {copiedId === 'admin-robot-script' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
-                    <span>
-                      {copiedId === 'admin-robot-script'
-                        ? '✅ تم نسخ كود الروبوت العائم v5.2!'
-                        : '📋 نسخ كود الروبوت (Tampermonkey v5.2)'}
-                    </span>
-                  </button>
-
                   <button
                     type="button"
                     disabled={!generatedScript || isLoadingScript}
@@ -2490,10 +2476,24 @@ export default function QuotexRobotAdminPage({
                       document.body.removeChild(a);
                       URL.revokeObjectURL(url);
                     }}
-                    className="px-3 py-2 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs cursor-pointer flex items-center gap-1.5 shadow"
+                    className="flex-1 min-w-[180px] py-2 px-3 bg-emerald-400 hover:bg-emerald-300 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs cursor-pointer flex items-center justify-center gap-1.5 shadow"
                   >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>تحميل (.user.js)</span>
+                    <Download className="w-4 h-4" />
+                    <span>⬇️ تحميل ملف Tampermonkey (.user.js)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={!generatedScript || isLoadingScript}
+                    onClick={() => handleCopy(generatedScript, 'admin-robot-script')}
+                    className="px-3 py-2 bg-sky-500 hover:bg-sky-400 disabled:opacity-50 text-slate-950 font-extrabold rounded-lg text-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow"
+                  >
+                    {copiedId === 'admin-robot-script' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                    <span>
+                      {copiedId === 'admin-robot-script'
+                        ? '✅ تم نسخ الكود لـ Tampermonkey!'
+                        : '📋 نسخ كود Tampermonkey v5.2.1'}
+                    </span>
                   </button>
 
                   <button
@@ -2524,11 +2524,11 @@ export default function QuotexRobotAdminPage({
                 )}
 
                 <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-lg text-[10px] text-slate-300 space-y-1">
-                  <div className="font-bold text-sky-300">📌 خطوات التثبيت الصحيحة في Tampermonkey (الربط المباشر عبر fx.zadtoo.com):</div>
+                  <div className="font-bold text-sky-300">📌 خطوات التثبيت الصحيحة في Tampermonkey (إلزامي لكي يعمل الاتصال):</div>
                   <ol className="list-decimal list-inside space-y-0.5 text-slate-400">
-                    <li>اختر مفتاح العضو من القائمة أعلاه (أو أنشئ مفتاحاً جديداً) ثم اضغط زر <strong>تحميل (.user.js)</strong>.</li>
-                    <li>احذف أي نسخة قديمة للروبوت في Tampermonkey، ثم استورد الملف من <strong>Dashboard ← Utilities ← Import from file</strong>.</li>
-                    <li>افتح منصة <strong>Quotex</strong> — سيعمل الروبوت العائم مباشرة ويتصل بالسحابة عبر مفتاح العضو (ويمكنك تغييره من زر <strong>🔑 ID</strong>).</li>
+                    <li>اختر مفتاح العضو من القائمة أعلاه ثم اضغط <strong>⬇️ تحميل ملف Tampermonkey (.user.js)</strong> (أو انسخ الكود لـ Create a new script داخل Tampermonkey).</li>
+                    <li>احذف أي نسخة قديمة للروبوت في Tampermonkey (مثل v5.0)، ثم استورد الملف الجديد من <strong>Dashboard ← Utilities ← Import from file</strong> وفعّل السكربت.</li>
+                    <li>أبقِ تبويب لوحة ZAD FX مفتوحاً في نفس المتصفح، ثم افتح منصة <strong>Quotex</strong> وأعد تحميلها — سيتصل الروبوت فوراً بالسحابة.</li>
                   </ol>
                 </div>
               </div>

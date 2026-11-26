@@ -82,6 +82,7 @@ import {
   signInAdminWithGoogle,
   signOutFirebaseAdmin,
   canWriteFirestoreAsAdmin,
+  getCurrentFirebaseIdToken,
   loadCloudPlans,
   loadCloudContactLinks,
   loadCloudRobotSettings,
@@ -403,9 +404,64 @@ export default function App() {
     setActiveView('visitor');
   };
 
+  const ensureExpressAdminToken = async (): Promise<string> => {
+    if (adminToken) return adminToken;
+    const idToken = await getCurrentFirebaseIdToken();
+    if (!idToken) return '';
+    try {
+      const res = await fetch('/api/admin/firebase-login', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idToken })
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json().catch(() => ({}));
+        if (data?.ok && data.token) {
+          setAdminToken(data.token);
+          setIsAdminAuthenticated(true);
+          return data.token;
+        }
+      }
+    } catch (_e) {}
+    return '';
+  };
+
+  const syncCloudSubscribersToServer = async (tokOverride?: string) => {
+    const activeTok = tokOverride || adminToken || (await ensureExpressAdminToken());
+    if (!activeTok || !canWriteFirestoreAsAdmin()) return;
+    try {
+      const fbSubs = await loadSubscribersFromFirestore<VipSubscriber[]>();
+      if (Array.isArray(fbSubs) && fbSubs.length > 0) {
+        const res = await fetch('/api/subscribers/sync-from-cloud', {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${activeTok}`
+          },
+          body: JSON.stringify({ subscribers: fbSubs })
+        });
+        const ct = res.headers.get('content-type') || '';
+        if (res.ok && ct.includes('application/json')) {
+          const data = await res.json().catch(() => ({}));
+          if (data?.ok && Array.isArray(data.subscribers)) {
+            setSubscribers(data.subscribers);
+          }
+        }
+      }
+    } catch (_e) {}
+  };
+
   useEffect(() => {
     return subscribeFirebaseAdminAuth((isFbAdmin) => {
       setIsFirebaseAdmin(isFbAdmin);
+      if (isFbAdmin) {
+        ensureExpressAdminToken().then((tok) => {
+          if (tok) syncCloudSubscribersToServer(tok);
+        });
+      }
     });
   }, []);
 
@@ -1069,17 +1125,12 @@ export default function App() {
       setIsFirebaseAdmin(true);
       setShowLoginModal(false);
       setActiveView('admin');
+      const exchangedTok = await ensureExpressAdminToken();
       await loadFromCloudFirestoreFallback();
-      if (subscribers.length > 0 || signals.length > 0) {
-        await syncAllAdminStateToFirestore({
-          subscribers: subscribers.length > 0 ? subscribers : undefined,
-          signals: signals.length > 0 ? signals : undefined,
-          plans: platformPlans,
-          contactLinks: platformContactLinks,
-          robotSettings
-        });
+      if (exchangedTok) {
+        await syncCloudSubscribersToServer(exchangedTok);
       }
-      await fetchSignals();
+      await fetchSignals(exchangedTok || undefined);
     } catch (err: any) {
       setLoginError(err?.message || 'حدث خطأ أثناء تسجيل الدخول عبر Google.');
     } finally {
@@ -1433,9 +1484,14 @@ export default function App() {
     };
 
     try {
+      const activeTok = adminToken || (canWriteFirestoreAsAdmin() ? await ensureExpressAdminToken() : '');
+      const hdrs = activeTok
+        ? { ...getAdminHeaders(), Authorization: `Bearer ${activeTok}` }
+        : getAdminHeaders();
       const res = await fetch(`/api/subscribers/${subId}`, {
         method: 'PATCH',
-        headers: getAdminHeaders(),
+        credentials: 'include',
+        headers: hdrs,
         body: JSON.stringify(payload)
       });
       const contentType = res.headers.get('content-type') || '';
@@ -1521,10 +1577,15 @@ export default function App() {
 
     let createdSub: VipSubscriber | null = null;
     try {
-      if (adminToken) {
+      const activeTok = adminToken || (canWriteFirestoreAsAdmin() ? await ensureExpressAdminToken() : '');
+      if (activeTok) {
         const res = await fetch('/api/subscribers', {
           method: 'POST',
-          headers: getAdminHeaders(),
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${activeTok}`
+          },
           body: JSON.stringify({
             ...adminAddForm,
             robotExpiryDate: adminAddForm.expiryDate

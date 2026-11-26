@@ -46,6 +46,15 @@ export function canWriteFirestoreAsAdmin(): boolean {
   return isFirebaseAdminSignedIn();
 }
 
+export async function getCurrentFirebaseIdToken(): Promise<string | null> {
+  if (!auth.currentUser || !isVerifiedAdminUser(auth.currentUser)) return null;
+  try {
+    return await auth.currentUser.getIdToken();
+  } catch (_e) {
+    return null;
+  }
+}
+
 export function subscribeFirebaseAdminAuth(callback: (isFbAdmin: boolean) => void): () => void {
   return onAuthStateChanged(auth, (user) => {
     callback(isVerifiedAdminUser(user));
@@ -350,14 +359,27 @@ export async function saveSubscriberToFirestore(subscriber: any): Promise<boolea
   mainState.subscribers = next.map((s: any) => ({
     id: s.id,
     name: s.name,
+    telegramUsername: s.telegramUsername || '',
+    country: s.country || '',
+    email: s.email || '',
+    phone: s.phone || '',
+    broker: s.broker || 'Quotex (كوتيكس)',
     brokerAccountId: s.brokerAccountId || '',
-    robotApiKey: s.robotApiKey || '',
-    status: s.status,
+    subscriptionType: s.subscriptionType || 'paid_plan',
+    quotexDepositConfirmed: Boolean(s.quotexDepositConfirmed),
+    planDuration: s.planDuration || '1_month',
+    amountPaid: typeof s.amountPaid === 'number' ? s.amountPaid : 0,
+    paymentMethod: s.paymentMethod || '',
+    activationLink: s.activationLink || '',
+    robotApiKey: String(s.robotApiKey || '').trim().toUpperCase(),
+    status: s.status || 'ACTIVE',
     robotExpiryDate: s.robotExpiryDate || s.expiryDate || '',
-    expiryDate: s.expiryDate || '',
+    expiryDate: s.expiryDate || s.robotExpiryDate || '',
     robotEnabled: s.robotEnabled !== false,
-    robotDefaultMode: s.robotDefaultMode || 'AUTO',
-    robotTradeStake: s.robotTradeStake || 5,
+    robotDefaultMode: s.robotDefaultMode || s.defaultMode || 'AUTO',
+    robotTradeStake: s.robotTradeStake || s.tradeStakeUsd || 5,
+    robotWins: s.robotWins || 0,
+    robotLosses: s.robotLosses || 0,
     createdAt: s.createdAt || new Date().toISOString()
   }));
   return await writeMainStateDoc(mainState);
@@ -449,6 +471,13 @@ export async function syncAllAdminStateToFirestore(state: {
 }): Promise<boolean> {
   if (!isFirebaseAdminSignedIn()) return false;
   const existing = (await readMainStateDoc()) || {};
+  const existingSubs: any[] = Array.isArray(existing.subscribers) ? existing.subscribers : [];
+  let mergedSubscribers = existingSubs;
+  if (Array.isArray(state.subscribers)) {
+    const incomingIds = new Set(state.subscribers.map((s: any) => s?.id).filter(Boolean));
+    const cloudOnlySubs = existingSubs.filter((s: any) => s?.id && !incomingIds.has(s.id));
+    mergedSubscribers = [...state.subscribers, ...cloudOnlySubs];
+  }
   const merged = {
     ...existing,
     ...(Array.isArray(state.signals) ? { signals: state.signals.slice(0, 50) } : {}),
@@ -463,7 +492,7 @@ export async function syncAllAdminStateToFirestore(state: {
           }
         }
       : {}),
-    ...(Array.isArray(state.subscribers) ? { subscribers: state.subscribers } : {})
+    ...(Array.isArray(state.subscribers) ? { subscribers: mergedSubscribers } : {})
   };
 
   const ok = await saveCloudSystemState(merged);

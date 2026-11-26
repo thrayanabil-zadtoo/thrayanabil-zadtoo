@@ -37,9 +37,9 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
   const strategyDefault = 'VIP_WITH_MPB';
 
   return `// ==UserScript==
-// @name         ZAD FX Floating Quotex Robot v5.2 (Server Verified)
+// @name         ZAD FX Floating Quotex Robot v5.2.1 (Server Verified)
 // @namespace    https://fx.zadtoo.com
-// @version      5.2.0
+// @version      5.2.1
 // @description  روبوت ZAD FX العائم المتصل بالسيرفر — التحقق من العضوية يتم داخل السيرفر فقط وبدون مضاعفات
 // @author       ZAD FX
 // @match        *://qxbroker.com/*
@@ -157,6 +157,7 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
   let serverOffsetMs = 0;
   let lastFeed = null;
   let lastConnError = '';
+  let connErrorMode = '';
   let lastAlertedId = null;
   const executedSignals = new Set();
   const reportedOutcomes = new Set();
@@ -166,6 +167,9 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
   let isQuranPlaying = false;
   let quranAudio = null;
   let testFeedback = '';
+  const hasGmTransport =
+    typeof GM_xmlhttpRequest === 'function' ||
+    (typeof GM !== 'undefined' && typeof GM.xmlHttpRequest === 'function');
 
   // ZAD FX Hub Bridge: when this userscript is also active inside the open ZAD FX tab,
   // it silently polls same-origin /api/quotex-robot/feed (with browser cookies) and relays it via GM storage
@@ -179,15 +183,51 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
           cache: 'no-store'
         });
         const ct = res.headers.get('content-type') || '';
-        if (!ct.includes('application/json')) return;
-        const data = await res.json().catch(() => null);
-        if (data && typeof data.authorized === 'boolean' && typeof GM_setValue === 'function') {
-          GM_setValue('zad_robot_live_payload_v5', JSON.stringify({ origin: window.location.origin, ts: Date.now(), data }));
+        if (ct.includes('application/json')) {
+          const data = await res.json().catch(() => null);
+          if (data && typeof data.authorized === 'boolean' && typeof GM_setValue === 'function') {
+            GM_setValue('zad_robot_live_payload_v5', JSON.stringify({ origin: window.location.origin, ts: Date.now(), data }));
+            return;
+          }
         }
       } catch (_) {}
+
+      if (typeof GM_xmlhttpRequest === 'function') {
+        for (const origin of CANDIDATE_ORIGINS) {
+          if (!origin || origin === window.location.origin) continue;
+          const ok = await new Promise((resolve) => {
+            GM_xmlhttpRequest({
+              method: 'GET',
+              url: origin + '/api/quotex-robot/feed?apiKey=' + encodeURIComponent(k),
+              headers: { Accept: 'application/json' },
+              timeout: 5000,
+              onload: (r) => {
+                const txt = String(r.responseText || '').trim();
+                if (!txt || txt.startsWith('<')) return resolve(false);
+                try {
+                  const data = JSON.parse(txt);
+                  if (data && typeof data.authorized === 'boolean' && typeof GM_setValue === 'function') {
+                    GM_setValue('zad_robot_live_payload_v5', JSON.stringify({ origin, ts: Date.now(), data }));
+                    return resolve(true);
+                  }
+                } catch (_) {}
+                resolve(false);
+              },
+              onerror: () => resolve(false),
+              ontimeout: () => resolve(false)
+            });
+          });
+          if (ok) break;
+        }
+      }
     };
     bridgeSync();
     setInterval(bridgeSync, 1500);
+    if (typeof GM_addValueChangeListener === 'function') {
+      try {
+        GM_addValueChangeListener('apiKey', () => { bridgeSync(); });
+      } catch (_) {}
+    }
     return;
   }
 
@@ -470,6 +510,7 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
     if (!data || typeof data.authorized !== 'boolean') return;
     if (originUsed) activeServerOrigin = originUsed;
     lastFeed = data;
+    connErrorMode = '';
     lastConnError = data.authorized ? '' : (data.error || 'الحساب غير مصرح له بتشغيل الروبوت');
 
     if (typeof data.serverEpochMs === 'number') {
@@ -544,10 +585,14 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
     if (!apiKey) {
       signalHtml = '<div style="padding:10px;background:#09121d;border:1px solid #6366f1;border-radius:10px;text-align:center;color:#c7d2fe;font-size:10.5px;">🔑 اضغط زر <b>🔑 ID</b> وأدخل مفتاح العضو (API Key) للبدء</div>';
     } else if (!feed && lastConnError) {
+      const hubActivateUrl = 'https://ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app';
       signalHtml = \`
         <div style="padding:9px;background:#450a0a;border:1px solid #ef4444;border-radius:10px;text-align:center;color:#fecaca;font-size:10px;line-height:1.5;">
           <div>❌ \${esc(lastConnError)}</div>
-          <div style="margin-top:4px;color:#fde68a;font-size:9px;">نصيحة: ثبّت السكربت عبر Tampermonkey وأبقِ تبويب المنصة مفتوحاً للمزامنة الفورية.</div>
+          \${connErrorMode === 'NEEDS_HUB_TAB'
+            ? \`<a href="\${hubActivateUrl}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:6px;padding:5px 10px;background:#10b981;color:#020617;border-radius:6px;font-weight:800;font-size:9.5px;text-decoration:none;">🔗 افتح السيرفر مرة واحدة لتنشيط الاتصال</a>
+               <div style="margin-top:4px;color:#fde68a;font-size:8.5px;">أبقِ تبويب المنصة مفتوحاً في نفس المتصفح ليتم الربط الفوري تلقائياً.</div>\`
+            : \`<div style="margin-top:4px;color:#fde68a;font-size:9px;">ملاحظة: يجب تشغيل السكربت كـ Userscript داخل إضافة Tampermonkey (وليس في DevTools Console).</div>\`}
         </div>\`;
     } else if (!feed) {
       signalHtml = '<div style="padding:10px;background:#09121d;border:1px solid #334155;border-radius:10px;text-align:center;color:#94a3b8;font-size:10.5px;">📡 جاري الاتصال والمزامنة مع السيرفر...</div>';
@@ -830,6 +875,7 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
     let resolvedData = null;
     let resolvedOrigin = activeServerOrigin;
     let lastErrorSeen = '';
+    let sawHtmlRedirect = false;
 
     for (const origin of orderedOrigins) {
       const feedUrl = \`\${origin}/api/quotex-robot/feed?apiKey=\${encodeURIComponent(apiKey)}\`;
@@ -838,6 +884,9 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
         resolvedData = resp.data;
         resolvedOrigin = origin;
         break;
+      }
+      if (resp && resp.isHtmlRedirect) {
+        sawHtmlRedirect = true;
       }
       if (resp && resp.error && resp.error !== 'HTML_REDIRECT') {
         lastErrorSeen = resp.error;
@@ -862,7 +911,16 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
         }
       } catch (_) {}
       if (!usedBridge) {
-        lastConnError = lastErrorSeen || 'تعذر الاتصال بالسيرفر للتحقق من الصلاحية';
+        if (!hasGmTransport) {
+          connErrorMode = 'NO_GM';
+          lastConnError = 'تم تشغيل الكود خارج إضافة Tampermonkey (مثل Console) — يجب التثبيت داخل Tampermonkey';
+        } else if (sawHtmlRedirect) {
+          connErrorMode = 'NEEDS_HUB_TAB';
+          lastConnError = 'السيرفر ينتظر تنشيط الجلسة في نفس المتصفح';
+        } else {
+          connErrorMode = 'NET';
+          lastConnError = lastErrorSeen || 'تعذر الاتصال بالسيرفر للتحقق من الصلاحية';
+        }
       }
     }
 

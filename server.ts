@@ -102,6 +102,19 @@ const ADMIN_EMAILS: string[] = (() => {
   return ['thrayanabil2026@gmail.com', 'thrayanabil@gmail.com'];
 })();
 
+const FIREBASE_WEB_API_KEY: string = (() => {
+  const fromEnv = (process.env.FIREBASE_WEB_API_KEY || '').trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const cfgPath = path.join(process.cwd(), 'firebase-applet-config.json');
+    if (fs.existsSync(cfgPath)) {
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+      if (cfg && typeof cfg.apiKey === 'string') return cfg.apiKey.trim();
+    }
+  } catch (_e) {}
+  return '';
+})();
+
 const ADMIN_SESSION_SECRET: string = (() => {
   const fromEnv = (process.env.ADMIN_SESSION_SECRET || '').trim();
   if (fromEnv && fromEnv.length >= 16) return fromEnv;
@@ -9083,6 +9096,91 @@ async function startServer() {
     res.json({ ok: true, subscriber: newSub });
   });
 
+  // Admin Only: Merge cloud/Firestore subscribers into Express backend state without deleting existing server entries
+  app.post('/api/subscribers/sync-from-cloud', requireAdminAuth, async (req, res) => {
+    const incomingList = Array.isArray(req.body?.subscribers) ? req.body.subscribers : null;
+    if (!incomingList) {
+      return res.status(400).json({ ok: false, error: 'قائمة المشتركين مطلوبة للمزامنة' });
+    }
+
+    let added = 0;
+    let updated = 0;
+
+    for (const raw of incomingList) {
+      if (!raw || typeof raw !== 'object') continue;
+      const cleanId = String(raw.id || '').trim().slice(0, 120);
+      const cleanName = String(raw.name || '').trim().slice(0, 120);
+      if (!cleanId || !cleanName) continue;
+
+      const cleanKey = String(raw.robotApiKey || '').replace(/[^A-Za-z0-9_-]/g, '').trim().toUpperCase();
+      const cleanStatus: 'PENDING' | 'ACTIVE' | 'BANNED' =
+        raw.status === 'PENDING' || raw.status === 'BANNED' ? raw.status : 'ACTIVE';
+      const cleanExp = String(raw.robotExpiryDate || raw.expiryDate || '').trim();
+
+      const existing = subscribersStore.find(
+        s => s.id === cleanId || (cleanKey && (s.robotApiKey || '').trim().toUpperCase() === cleanKey)
+      );
+
+      if (!existing) {
+        const mergedNew: VipSubscriber = {
+          id: cleanId,
+          name: cleanName,
+          telegramUsername: String(raw.telegramUsername || '').trim().slice(0, 100),
+          country: String(raw.country || 'مصر 🇪🇬').trim().slice(0, 80),
+          email: String(raw.email || '').trim().slice(0, 150),
+          phone: String(raw.phone || '').trim().slice(0, 50),
+          broker: String(raw.broker || 'Quotex (كوتيكس)').trim().slice(0, 80),
+          brokerAccountId: String(raw.brokerAccountId || '').trim().slice(0, 80),
+          subscriptionType: raw.subscriptionType === 'quotex_referral' ? 'quotex_referral' : 'paid_plan',
+          quotexDepositConfirmed: Boolean(raw.quotexDepositConfirmed),
+          planDuration: String(raw.planDuration || '1_month').trim(),
+          amountPaid: Math.max(0, Number(raw.amountPaid) || 0),
+          paymentMethod: String(raw.paymentMethod || 'مزامنة السحابة').trim().slice(0, 120),
+          status: cleanStatus,
+          activationLink: String(raw.activationLink || '').trim().slice(0, 300),
+          expiryDate: String(raw.expiryDate || cleanExp).trim(),
+          robotApiKey: cleanKey,
+          robotExpiryDate: cleanExp,
+          robotEnabled: raw.robotEnabled !== false,
+          robotDefaultMode: raw.robotDefaultMode === 'MANUAL' || raw.defaultMode === 'MANUAL' ? 'MANUAL' : 'AUTO',
+          robotTradeStake: Math.max(1, Number(raw.robotTradeStake || raw.tradeStakeUsd) || 5),
+          robotWins: Math.max(0, Number(raw.robotWins) || 0),
+          robotLosses: Math.max(0, Number(raw.robotLosses) || 0),
+          messages: Array.isArray(raw.messages) ? raw.messages.slice(-50) : [],
+          createdAt: String(raw.createdAt || new Date().toISOString())
+        };
+        subscribersStore.unshift(mergedNew);
+        added++;
+      } else {
+        let changed = false;
+        if (cleanKey && !existing.robotApiKey) {
+          existing.robotApiKey = cleanKey;
+          changed = true;
+        }
+        if (cleanExp && !existing.robotExpiryDate) {
+          existing.robotExpiryDate = cleanExp;
+          if (!existing.expiryDate) existing.expiryDate = cleanExp;
+          changed = true;
+        }
+        if (raw.robotEnabled !== undefined && existing.robotEnabled === undefined) {
+          existing.robotEnabled = Boolean(raw.robotEnabled);
+          changed = true;
+        }
+        if (changed) updated++;
+      }
+    }
+
+    if (subscribersStore.length > 250) {
+      subscribersStore.length = 250;
+    }
+
+    if (added > 0 || updated > 0) {
+      await saveState();
+    }
+
+    res.json({ ok: true, added, updated, subscribers: subscribersStore });
+  });
+
   // Admin: Edit subscriber details, status (ACTIVE / PENDING / BANNED), expiryDate, activationLink, brokerAccountId, planDuration, amountPaid, paymentMethod, and Quotex Robot fields
   app.patch('/api/subscribers/:id', requireAdminAuth, async (req, res) => {
     const sub = subscribersStore.find(s => s.id === req.params.id);
@@ -9320,6 +9418,41 @@ async function startServer() {
     return res.status(401).json({ ok: false, error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' });
   });
 
+  // Verify Google Firebase ID token server-side and exchange for Express Admin session token
+  app.post('/api/admin/firebase-login', async (req, res) => {
+    const idToken = String(req.body?.idToken || '').trim();
+    if (!idToken || idToken.length < 40) {
+      return res.status(400).json({ ok: false, error: 'رمز تحقق Google غير صالح.' });
+    }
+    if (!FIREBASE_WEB_API_KEY) {
+      return res.status(503).json({ ok: false, error: 'إعدادات التحقق من Firebase غير مكتملة على الخادم.' });
+    }
+    try {
+      const verifyResp = await fetch(
+        `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(FIREBASE_WEB_API_KEY)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idToken })
+        }
+      );
+      const verifyData: any = await verifyResp.json().catch(() => ({}));
+      const userObj = Array.isArray(verifyData?.users) ? verifyData.users[0] : null;
+      const email = String(userObj?.email || '').trim().toLowerCase();
+      const emailVerified = Boolean(userObj?.emailVerified);
+
+      if (!verifyResp.ok || !email || !emailVerified || !ADMIN_EMAILS.includes(email)) {
+        return res.status(403).json({ ok: false, error: 'حساب Google غير مصرح له بصلاحيات المشرف.' });
+      }
+
+      const token = issueAdminSessionToken(email);
+      setAdminSessionCookie(req, res, token);
+      return res.json({ ok: true, token, email });
+    } catch (_err) {
+      return res.status(502).json({ ok: false, error: 'تعذر التحقق من جلسة Google عبر الخادم.' });
+    }
+  });
+
   app.post('/api/admin/logout', (req, res) => {
     clearAdminSessionCookie(req, res);
     res.json({ ok: true });
@@ -9489,7 +9622,7 @@ async function startServer() {
     res.json({
       ok: true,
       script,
-      version: 'v5.2.0',
+      version: 'v5.2.1',
       serverOrigin,
       fallbackOrigins,
       embeddedApiKey: embeddedApiKey || 'غير مضمّن'
@@ -9516,11 +9649,11 @@ async function startServer() {
     }
 
     // Strict Registered ACTIVE Member Verification ONLY (No demo/master test keys allowed)
-    const cleanKeyUpper = apiKey.toUpperCase();
+    const cleanKeyUpper = apiKey.replace(/\s+/g, '').toUpperCase();
     const member = subscribersStore.find(
       s =>
-        (s.robotApiKey || '').trim().toUpperCase() === cleanKeyUpper ||
-        (s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === cleanKeyUpper)
+        (s.robotApiKey || '').replace(/\s+/g, '').toUpperCase() === cleanKeyUpper ||
+        (s.brokerAccountId && s.brokerAccountId.replace(/\s+/g, '').toUpperCase() === cleanKeyUpper)
     );
 
     if (!member) {
