@@ -762,10 +762,10 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
             </div>
             <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2.5">
               <Crown className="w-6 h-6 text-amber-400" />
-              <span>جلسة البث الحي للسوق العالمي (04:30 عصراً - 08:00 مساءً بتوقيت مصر)</span>
+              <span>جلسة القناة الخاصة VIP المسائية (04:30 عصراً - 07:00 مساءً بتوقيت مصر)</span>
             </h2>
             <p className="text-slate-300 text-xs sm:text-sm max-w-3xl leading-relaxed">
-              بث حي آلي مباشر للسوق العالمي يبدأ يومياً الساعة <b>04:30 عصراً</b> (ذروة تداخل لندن ونيويورك) بإرسال تنبيه: <i>«نقول بسم الله ونبدأ بعد 10 دقائق استعدوا يا أبطال 🚀»</i> مع مسح فني مدته <b>10 دقائق (16:30 - 16:40)</b>. تُرسل الإشارات <b>لقناة VIP الخاصة والروبوت</b> وتستمر حتى الساعة <b>08:00 مساءً</b> أو تتوقف تلقائياً فور تحقيق <b>60%+</b>، مع إيقاف طوارئ فوري عند <b>3 خسائر متتالية</b> لحماية رأس المال.
+              بث حي آلي مباشر للسوق العالمي يبدأ يومياً الساعة <b>04:30 عصراً</b> (ذروة تداخل لندن ونيويورك) بإرسال تنبيه: <i>«نقول بسم الله ونبدأ بعد 10 دقائق استعدوا يا أبطال 🚀»</i> مع مسح فني مدته <b>10 دقائق (16:30 - 16:40)</b>. تُرسل الإشارات <b>لقناة VIP الخاصة والروبوت</b> وتستمر حتى الساعة <b>07:00 مساءً</b> أو تكتفي وتنتهي تلقائياً فور تحقيق <b>60%+</b> وإرسال التقرير الختامي دون إعادة البث.
             </p>
           </div>
 
@@ -988,9 +988,9 @@ export const ZadtooAdminLiveBroadcast: React.FC<ZadtooAdminLiveBroadcastProps> =
           <div className="flex items-start gap-2.5">
             <Clock className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
             <div>
-              <div className="font-bold text-white">10 دقائق مسح + نافذة 3.5 ساعات</div>
+              <div className="font-bold text-white">10 دقائق مسح + الفترة المسائية (16:30 - 19:00)</div>
               <div className="text-slate-400 text-[11px]">
-                تنبيه البداية عند 16:30، ومسح 10 دقائق، وتنتهي عند تحقيق 60%+ أو الساعة 20:00.
+                تنبيه البداية عند 16:30، ومسح 10 دقائق، وتكتفي عند تحقيق 60%+ أو الساعة 19:00 مع إرسال التقرير.
               </div>
             </div>
           </div>

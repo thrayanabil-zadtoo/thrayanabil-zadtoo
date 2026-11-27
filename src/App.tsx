@@ -405,8 +405,8 @@ export default function App() {
     setActiveView('visitor');
   };
 
-  const ensureExpressAdminToken = async (): Promise<string> => {
-    if (adminToken) return adminToken;
+  const ensureExpressAdminToken = async (forceRefresh = false): Promise<string> => {
+    if (!forceRefresh && adminToken) return adminToken;
     const idToken = await getCurrentFirebaseIdToken();
     if (!idToken) return '';
     try {
@@ -557,6 +557,10 @@ export default function App() {
   const [signals, setSignals] = useState<SignalItem[]>([]);
   const [liveMarket, setLiveMarket] = useState<LivePairSnapshot[]>([]);
   const [subscribers, setSubscribers] = useState<VipSubscriber[]>([]);
+  const subscribersRef = React.useRef<VipSubscriber[]>([]);
+  useEffect(() => {
+    subscribersRef.current = subscribers;
+  }, [subscribers]);
   const [quickNotes, setQuickNotes] = useState<QuickNote[]>([]);
   const [dailyStats, setDailyStats] = useState<DailyStatRecord[]>([]);
   // Admin Statistics Page (A4 Weekly / Monthly & Archive) state
@@ -928,9 +932,13 @@ export default function App() {
         return;
       }
       const data = await res.json();
-      if (activeToken && data.isAdmin === false) {
-        setAdminToken('');
-        setIsAdminAuthenticated(false);
+      if (data.isAdmin === false) {
+        if (canWriteFirestoreAsAdmin()) {
+          ensureExpressAdminToken(true).catch(() => '');
+        } else if (activeToken) {
+          setAdminToken('');
+          setIsAdminAuthenticated(false);
+        }
       }
       if (data.signals) {
         setSignals(data.signals);
@@ -1051,7 +1059,10 @@ export default function App() {
       if (canWriteFirestoreAsAdmin() && Date.now() - lastFirestoreMirrorRef.current > 25000) {
         lastFirestoreMirrorRef.current = Date.now();
         syncAllAdminStateToFirestore({
-          subscribers: data.isAdmin && subscribers.length > 0 ? subscribers : undefined,
+          subscribers:
+            data.isAdmin && subscribersRef.current.length > 0
+              ? subscribersRef.current
+              : undefined,
           signals: Array.isArray(data.signals) ? data.signals : undefined,
           plans: Array.isArray(data.plans) ? data.plans : undefined,
           contactLinks: data.contactLinks || undefined,
@@ -1519,16 +1530,27 @@ export default function App() {
     };
 
     try {
-      const activeTok = adminToken || (canWriteFirestoreAsAdmin() ? await ensureExpressAdminToken() : '');
-      const hdrs = activeTok
-        ? { ...getAdminHeaders(), Authorization: `Bearer ${activeTok}` }
-        : getAdminHeaders();
-      const res = await fetch(`/api/subscribers/${subId}`, {
+      let activeTok = adminToken || (canWriteFirestoreAsAdmin() ? await ensureExpressAdminToken() : '');
+      const buildPatchHeaders = (tok: string) =>
+        tok ? { ...getAdminHeaders(), Authorization: `Bearer ${tok}` } : getAdminHeaders();
+      let res = await fetch(`/api/subscribers/${subId}`, {
         method: 'PATCH',
         credentials: 'include',
-        headers: hdrs,
+        headers: buildPatchHeaders(activeTok),
         body: JSON.stringify(payload)
       });
+      if (res.status === 401 && canWriteFirestoreAsAdmin()) {
+        const refreshedTok = await ensureExpressAdminToken(true);
+        if (refreshedTok) {
+          activeTok = refreshedTok;
+          res = await fetch(`/api/subscribers/${subId}`, {
+            method: 'PATCH',
+            credentials: 'include',
+            headers: buildPatchHeaders(refreshedTok),
+            body: JSON.stringify(payload)
+          });
+        }
+      }
       const contentType = res.headers.get('content-type') || '';
       const rawText = await res.text();
       let data: any = {};
@@ -1616,28 +1638,42 @@ export default function App() {
     let serverErrorMsg = '';
 
     try {
-      const activeTok = adminToken || (canWriteFirestoreAsAdmin() ? await ensureExpressAdminToken() : '');
-      if (activeTok) {
-        const res = await fetch('/api/subscribers', {
-          method: 'POST',
-          credentials: 'include',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${activeTok}`
-          },
-          body: JSON.stringify({
-            ...adminAddForm,
-            robotExpiryDate: adminAddForm.expiryDate
-          })
-        });
-        const ct = res.headers.get('content-type') || '';
-        const data = ct.includes('application/json') ? await res.json().catch(() => ({})) : {};
-        if (res.ok && data?.ok && data?.subscriber) {
-          createdSub = data.subscriber;
-          savedToServer = true;
-        } else {
-          serverErrorMsg = data?.error || '';
+      let activeTok = adminToken || (canWriteFirestoreAsAdmin() ? await ensureExpressAdminToken() : '');
+      const buildPostHeaders = (tok: string): Record<string, string> =>
+        tok
+          ? { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` }
+          : { 'Content-Type': 'application/json' };
+      const bodyPayload = JSON.stringify({
+        ...adminAddForm,
+        robotExpiryDate: adminAddForm.expiryDate
+      });
+      let res = await fetch('/api/subscribers', {
+        method: 'POST',
+        credentials: 'include',
+        headers: buildPostHeaders(activeTok),
+        body: bodyPayload
+      });
+      if (res.status === 401 && canWriteFirestoreAsAdmin()) {
+        const refreshedTok = await ensureExpressAdminToken(true);
+        if (refreshedTok) {
+          activeTok = refreshedTok;
+          res = await fetch('/api/subscribers', {
+            method: 'POST',
+            credentials: 'include',
+            headers: buildPostHeaders(refreshedTok),
+            body: bodyPayload
+          });
         }
+      }
+      const ct = res.headers.get('content-type') || '';
+      const data = ct.includes('application/json') ? await res.json().catch(() => ({})) : {};
+      if (res.ok && data?.ok && data?.subscriber) {
+        createdSub = data.subscriber;
+        savedToServer = true;
+      } else {
+        serverErrorMsg =
+          data?.error ||
+          (!ct.includes('application/json') ? `خطأ من الخادم (${res.status})` : '');
       }
     } catch (_err) {
       // Fall back to Firestore admin write if available
@@ -1976,11 +2012,21 @@ export default function App() {
     deletedSubscriberIdsRef.current.add(id);
     try {
       const activeTok = adminToken || (canWriteFirestoreAsAdmin() ? await ensureExpressAdminToken() : '');
-      await fetch(`/api/subscribers/${id}`, {
+      let delRes = await fetch(`/api/subscribers/${id}`, {
         method: 'DELETE',
         credentials: 'include',
         headers: activeTok ? { Authorization: `Bearer ${activeTok}` } : getAdminHeaders(undefined, false)
-      }).catch(() => {});
+      }).catch(() => null);
+      if (delRes && delRes.status === 401 && canWriteFirestoreAsAdmin()) {
+        const refreshedTok = await ensureExpressAdminToken(true);
+        if (refreshedTok) {
+          await fetch(`/api/subscribers/${id}`, {
+            method: 'DELETE',
+            credentials: 'include',
+            headers: { Authorization: `Bearer ${refreshedTok}` }
+          }).catch(() => {});
+        }
+      }
       if (canWriteFirestoreAsAdmin()) {
         await deleteSubscriberFromFirestore(id, target?.robotApiKey).catch(() => false);
       }
@@ -3517,9 +3563,12 @@ export default function App() {
       {/* Screen 4: صفحة العضويات والاشتراكات */}
       {zadtooTab === 'memberships' && (
         <ZadtooMembershipsPage
-          onSelectPlan={(planId, _planName, _price) => {
-            setRegPlanDuration(planId);
-            setShowRegisterModal(true);
+          onSelectPlan={() => {}}
+          onSubscriberRegistered={(sub) => {
+            if (sub?.id) {
+              deletedSubscriberIdsRef.current.delete(sub.id);
+              setSubscribers(prev => [sub, ...prev.filter(s => s.id !== sub.id)]);
+            }
           }}
           plans={platformPlans}
           contactLinks={platformContactLinks}
@@ -3996,7 +4045,7 @@ export default function App() {
                         </div>
 
                         <div className="p-2 bg-emerald-950/30 border border-emerald-500/30 rounded text-[11px] text-emerald-200 leading-relaxed">
-                          ⏰ <strong>الجدول الموحّد النشط على السيرفر:</strong> الصباحية <strong>10:30 ص – 01:00 ظهراً</strong> | المسائية المباشرة <strong>04:30 عصراً – 08:00 مساءً</strong> بتوقيت مصر (توقف ذكي عند 60%+).
+                          ⏰ <strong>الجدول المعتمد على السيرفر:</strong> القناة العامة صباحاً <strong>10:30 ص – 01:00 ظهراً</strong> (دون تقيد بنسبة ربح + تقرير ختامي 01:00 م) | القناة الخاصة VIP مساءً <strong>04:30 عصراً – 07:00 مساءً</strong> (الاكتفاء بـ 60%+ وتقرير ختامي).
                         </div>
 
                         {/* Visual 24-Hour Egypt Schedule Timeline Bar */}
@@ -4004,7 +4053,7 @@ export default function App() {
                           <div className="flex items-center justify-between text-[10px] text-slate-400">
                             <span>المخطط البصري لساعات عمل البوت المجاني (24 ساعة - توقيت القاهرة):</span>
                             <span className="font-mono-num text-emerald-400 font-bold">
-                              10:30 ص ← 01:00 م (والمسائي 04:30 م ← 08:00 م)
+                              العامة: 10:30 ص ← 01:00 م | الخاصة: 04:30 م ← 07:00 م
                             </span>
                           </div>
                           <div className="grid grid-cols-24 gap-0.5 h-3 rounded overflow-hidden bg-slate-900 p-0.5">
@@ -4037,7 +4086,7 @@ export default function App() {
                             <span>10:30</span>
                             <span>13:00</span>
                             <span>16:30</span>
-                            <span>20:00</span>
+                            <span>19:00</span>
                             <span>23:00</span>
                           </div>
                         </div>
@@ -4054,13 +4103,13 @@ export default function App() {
                               className="accent-emerald-500 w-4 h-4 rounded"
                             />
                             <span>
-                              📊 إرسال <strong>التقرير النهائي لليوم</strong> تلقائياً للقناة عند حلول ساعة الإغلاق ({String(autoPilot.freeEndHourEgypt ?? 13).padStart(2, '0')}:00 / 20:00)
+                              📊 إرسال <strong>التقرير النهائي لليوم</strong> تلقائياً للقناة عند حلول ساعة الإغلاق ({String(autoPilot.freeEndHourEgypt ?? 13).padStart(2, '0')}:00 / 19:00)
                             </span>
                           </label>
                           <span className="text-[10px] font-mono-num px-2 py-0.5 rounded bg-slate-900 text-emerald-300 border border-emerald-500/30">
                             {autoPilot.lastDailyReportSentDate === endOfDayReportData.todayEgypt
                               ? '✅ أُرسل تقرير اليوم'
-                              : `⏰ مجدول للختام عند الإغلاق (13:00 / 20:00)`}
+                              : `⏰ مجدول للختام عند الإغلاق (13:00 / 19:00)`}
                           </span>
                         </div>
                       </div>
@@ -4509,7 +4558,7 @@ export default function App() {
                   )}
 
                   <div className="p-3 bg-amber-950/20 border border-amber-500/20 rounded-lg text-[11px] text-amber-200/90 leading-relaxed">
-                    👑 <strong>ميزة البوت المزدوج:</strong> عندما تقتنص الخوارزمية فرصة قوية، يتم إرسالها فوراً إلى <strong>الفترة الصباحية (10:30 ص - 01:00 ظهراً) وجلسة البث المباشر المسائية (04:30 م - 08:00 م) بتوقيت مصر</strong>، وتتوقف الجلسة تلقائياً فور تحقيق شرط الهدف (60%+).
+                    👑 <strong>فصل القنوات المعتمد:</strong> تعمل <strong>القناة العامة</strong> صباحاً فقط (<strong>10:30 ص - 01:00 ظهراً</strong>) دون تقيد بنسبة ربح حتى إرسال التقرير الختامي، بينما تعمل <strong>القناة الخاصة VIP</strong> مساءً (<strong>04:30 م - 07:00 م</strong> بتوقيت مصر) وتكتفي بنسبة <strong>60%+</strong> مع إرسال التقرير وعدم تكرار الإشارات.
                   </div>
 
                   {/* Custom Win & Loss Icons + Image Upload for Bot 2 (VIP 24/7 Bot) */}

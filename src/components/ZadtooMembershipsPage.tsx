@@ -23,6 +23,7 @@ import { loadCloudPlans, loadCloudContactLinks } from '../firebase';
 
 interface ZadtooMembershipsPageProps {
   onSelectPlan: (planId: string, planName: string, price: number) => void;
+  onSubscriberRegistered?: (subscriber: any) => void;
   telegramLink?: string;
   plans?: SubscriptionPlan[];
   contactLinks?: PlatformContactLinks;
@@ -30,6 +31,7 @@ interface ZadtooMembershipsPageProps {
 
 export const ZadtooMembershipsPage: React.FC<ZadtooMembershipsPageProps> = ({
   onSelectPlan,
+  onSubscriberRegistered,
   telegramLink = 'https://t.me/ZadNBFX',
   plans: propPlans,
   contactLinks: propContactLinks
@@ -72,6 +74,8 @@ export const ZadtooMembershipsPage: React.FC<ZadtooMembershipsPageProps> = ({
   const [quotexId, setQuotexId] = useState('');
   const [paymentMethod, setPaymentMethod] = useState<'wallets' | 'bank' | 'usdt' | 'free_referral'>('wallets');
   const [userCountry, setUserCountry] = useState('مصر 🇪🇬');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [submittedSuccess, setSubmittedSuccess] = useState(false);
   const [copiedText, setCopiedText] = useState(false);
 
@@ -144,6 +148,7 @@ export const ZadtooMembershipsPage: React.FC<ZadtooMembershipsPageProps> = ({
   ) => {
     setSelectedPlanModal({ id, name, price, badge, isReferralFree });
     setSubmittedSuccess(false);
+    setSubmitError(null);
     if (isReferralFree) {
       setPaymentMethod('free_referral');
     } else {
@@ -151,11 +156,74 @@ export const ZadtooMembershipsPage: React.FC<ZadtooMembershipsPageProps> = ({
     }
   };
 
-  const handleSubmitSubscription = (e: React.FormEvent) => {
+  const handleSubmitSubscription = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedPlanModal) return;
-    onSelectPlan(selectedPlanModal.id, selectedPlanModal.name, selectedPlanModal.price);
-    setSubmittedSuccess(true);
+    if (!selectedPlanModal || isSubmitting) return;
+    setSubmitError(null);
+
+    const cleanName = subscriberName.trim();
+    const cleanEmail = subscriberEmail.trim();
+    const cleanPhone = subscriberPhone.trim();
+    const cleanExtra = quotexId.trim();
+
+    if (!cleanName || !cleanEmail || !cleanPhone) {
+      setSubmitError('يرجى إدخال الاسم الكامل والبريد الإلكتروني ورقم الواتساب/الموبايل.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const isReferral = Boolean(selectedPlanModal.isReferralFree) || paymentMethod === 'free_referral';
+      const telegramUser = cleanExtra.startsWith('@') ? cleanExtra : cleanName;
+      const brokerAccId = cleanExtra && !cleanExtra.startsWith('@') ? cleanExtra : '';
+      const paymentLabel =
+        paymentMethod === 'usdt'
+          ? 'USDT (TRC20)'
+          : paymentMethod === 'free_referral'
+          ? '🎁 إحالة كيوتكس مجاناً (التسجيل بالرابط + إيداع 100$ في حسابك)'
+          : 'محافظ إلكترونية / إنستاباي';
+
+      const res = await fetch('/api/register-trader', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: cleanName,
+          telegramUsername: telegramUser,
+          country: userCountry,
+          email: cleanEmail,
+          phone: cleanPhone,
+          broker: isReferral ? 'Quotex (كوتيكس)' : 'بدون منصة محددة',
+          brokerAccountId: brokerAccId,
+          subscriptionType: isReferral ? 'quotex_referral' : 'paid_plan',
+          planDuration: selectedPlanModal.id,
+          paymentMethod: paymentLabel
+        })
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (!ct.includes('application/json')) {
+        setSubmitError('الخادم الخلفي (/api) غير متصل على هذا الرابط الثابت — يرجى التسجيل عبر رابط المنصة الكامل أو مراسلة المشرف.');
+        return;
+      }
+      const data = await res.json();
+      if (res.ok && data?.ok && data?.subscriber) {
+        try {
+          localStorage.setItem('zad_vip_member_id', data.subscriber.id);
+        } catch (_e) {}
+        onSubscriberRegistered?.(data.subscriber);
+        onSelectPlan(selectedPlanModal.id, selectedPlanModal.name, selectedPlanModal.price);
+        setSubmittedSuccess(true);
+        setSubscriberName('');
+        setSubscriberEmail('');
+        setSubscriberPhone('');
+        setQuotexId('');
+      } else {
+        setSubmitError(data?.error || 'تعذر حفظ التسجيل في قاعدة البيانات، حاول مرة أخرى.');
+      }
+    } catch (_err) {
+      setSubmitError('تعذر الاتصال بالخادم لإتمام التسجيل.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleCopyPaymentInfo = (text: string) => {
@@ -534,11 +602,18 @@ export const ZadtooMembershipsPage: React.FC<ZadtooMembershipsPageProps> = ({
                   />
                 </div>
 
+                {submitError && (
+                  <div className="p-2.5 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg text-[11px] font-bold">
+                    ❌ {submitError}
+                  </div>
+                )}
+
                 <button
                   type="submit"
-                  className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-extrabold rounded-xl transition-all cursor-pointer shadow-md shadow-emerald-600/20 mt-2"
+                  disabled={isSubmitting}
+                  className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 disabled:opacity-50 text-white font-extrabold rounded-xl transition-all cursor-pointer shadow-md shadow-emerald-600/20 mt-2"
                 >
-                  تأكيد الاشتراك وتفعيل الحساب
+                  {isSubmitting ? 'جاري حفظ التسجيل...' : 'تأكيد الاشتراك وتفعيل الحساب'}
                 </button>
               </form>
             )}

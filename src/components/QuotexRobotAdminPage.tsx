@@ -56,7 +56,7 @@ export interface QuotexRobotSettings {
 
 interface QuotexRobotAdminPageProps {
   adminToken?: string;
-  ensureExpressAdminToken?: () => Promise<string>;
+  ensureExpressAdminToken?: (forceRefresh?: boolean) => Promise<string>;
   robotSettings: QuotexRobotSettings;
   setRobotSettings: React.Dispatch<React.SetStateAction<QuotexRobotSettings>>;
   subscribers?: VipSubscriber[];
@@ -543,19 +543,31 @@ export default function QuotexRobotAdminPage({
     setIsSavingSettings(true);
     let savedOk = false;
     try {
-      if (adminToken) {
-        const res = await fetch('/api/robot-settings', {
+      let activeTok = adminToken || (ensureExpressAdminToken ? await ensureExpressAdminToken() : '');
+      const attemptSave = (tok: string) =>
+        fetch('/api/robot-settings', {
           method: 'POST',
-          headers: getAuthHeaders(),
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(tok ? { Authorization: `Bearer ${tok}` } : {})
+          },
           body: JSON.stringify(updated)
         });
-        const ct = res.headers.get('content-type') || '';
-        if (res.ok && ct.includes('application/json')) {
-          const data = await res.json();
-          if (data.ok && data.robotSettings) {
-            setRobotSettings(data.robotSettings);
-            savedOk = true;
-          }
+      let res = await attemptSave(activeTok);
+      if (res.status === 401 && ensureExpressAdminToken) {
+        const refreshed = await ensureExpressAdminToken(true);
+        if (refreshed) {
+          activeTok = refreshed;
+          res = await attemptSave(refreshed);
+        }
+      }
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (data.ok && data.robotSettings) {
+          setRobotSettings(data.robotSettings);
+          savedOk = true;
         }
       }
     } catch (_e) {}
@@ -580,20 +592,25 @@ export default function QuotexRobotAdminPage({
   const handleCreateMemberKey = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isAdmin) return;
-    if (!newKeyMemberName.trim()) return;
+    if (!newKeyMemberName.trim()) {
+      setMemberUpdateToast({ type: 'error', message: '⚠️ يرجى إدخال اسم العضو أولاً.' });
+      return;
+    }
     setIsCreatingKey(true);
+    setMemberUpdateToast(null);
     let createdSub: VipSubscriber | null = null;
     let savedToServer = false;
     let savedToCloud = false;
+    let serverErrorMsg = '';
     try {
-      const activeTok = adminToken || (ensureExpressAdminToken ? await ensureExpressAdminToken() : '');
-      if (activeTok) {
-        const res = await fetch('/api/quotex-robot/create-key', {
+      let activeTok = adminToken || (ensureExpressAdminToken ? await ensureExpressAdminToken() : '');
+      const attemptCreate = (tok: string) =>
+        fetch('/api/quotex-robot/create-key', {
           method: 'POST',
           credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${activeTok}`
+            ...(tok ? { Authorization: `Bearer ${tok}` } : {})
           },
           body: JSON.stringify({
             name: newKeyMemberName.trim(),
@@ -603,14 +620,25 @@ export default function QuotexRobotAdminPage({
             defaultMode: newKeyMode
           })
         });
-        const ct = res.headers.get('content-type') || '';
-        if (res.ok && ct.includes('application/json')) {
-          const data = await res.json();
-          if (data.ok && data.subscriber) {
-            createdSub = data.subscriber;
-            savedToServer = true;
-          }
+      let res = await attemptCreate(activeTok);
+      if (res.status === 401 && ensureExpressAdminToken) {
+        const refreshed = await ensureExpressAdminToken(true);
+        if (refreshed) {
+          activeTok = refreshed;
+          res = await attemptCreate(refreshed);
         }
+      }
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok && data.subscriber) {
+          createdSub = data.subscriber;
+          savedToServer = true;
+        } else if (data?.error) {
+          serverErrorMsg = data.error;
+        }
+      } else if (!res.ok) {
+        serverErrorMsg = `خطأ من الخادم (${res.status})`;
       }
     } catch (_e) {}
 
@@ -655,7 +683,10 @@ export default function QuotexRobotAdminPage({
     } else {
       setMemberUpdateToast({
         type: 'error',
-        message: '❌ تعذر حفظ المفتاح في قاعدة البيانات — تأكد من تسجيل الدخول بحساب المشرف'
+        message:
+          serverErrorMsg
+            ? `❌ ${serverErrorMsg}`
+            : '❌ تعذر حفظ المفتاح في قاعدة البيانات — تأكد من تسجيل الدخول بحساب المشرف'
       });
     }
     setIsCreatingKey(false);
@@ -676,25 +707,35 @@ export default function QuotexRobotAdminPage({
     let updatedSub: VipSubscriber | null = null;
     let savedToServer = false;
     let savedToCloud = false;
+    let serverErrorMsg = '';
     try {
-      const activeTok = adminToken || (ensureExpressAdminToken ? await ensureExpressAdminToken() : '');
-      if (activeTok) {
-        const res = await fetch(`/api/subscribers/${subId}`, {
+      let activeTok = adminToken || (ensureExpressAdminToken ? await ensureExpressAdminToken() : '');
+      const attemptPatch = (tok: string) =>
+        fetch(`/api/subscribers/${subId}`, {
           method: 'PATCH',
           credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${activeTok}`
+            ...(tok ? { Authorization: `Bearer ${tok}` } : {})
           },
           body: JSON.stringify(payload)
         });
-        const ct = res.headers.get('content-type') || '';
-        if (res.ok && ct.includes('application/json')) {
-          const data = await res.json();
-          if (data.ok && data.subscriber) {
-            updatedSub = data.subscriber;
-            savedToServer = true;
-          }
+      let res = await attemptPatch(activeTok);
+      if (res.status === 401 && ensureExpressAdminToken) {
+        const refreshed = await ensureExpressAdminToken(true);
+        if (refreshed) {
+          activeTok = refreshed;
+          res = await attemptPatch(refreshed);
+        }
+      }
+      const ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) {
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok && data.subscriber) {
+          updatedSub = data.subscriber;
+          savedToServer = true;
+        } else if (data?.error) {
+          serverErrorMsg = data.error;
         }
       }
     } catch (_e) {}
@@ -730,7 +771,10 @@ export default function QuotexRobotAdminPage({
     } else {
       setMemberUpdateToast({
         type: 'error',
-        message: '❌ تعذر حفظ التحديثات — تأكد من تسجيل الدخول كمشرف عبر Google'
+        message:
+          serverErrorMsg
+            ? `❌ ${serverErrorMsg}`
+            : '❌ تعذر حفظ التحديثات — تأكد من تسجيل الدخول بحساب المشرف'
       });
     }
   };
@@ -801,30 +845,29 @@ export default function QuotexRobotAdminPage({
     const targetOrigin = toPublicOrigin(overrideOrigin ?? scriptServerOrigin ?? publicRobotOrigin);
 
     try {
-      if (adminToken) {
-        const params = new URLSearchParams();
-        if (targetKey) params.set('apiKey', targetKey);
-        if (targetOrigin) params.set('serverOrigin', targetOrigin);
+      const params = new URLSearchParams();
+      if (targetKey) params.set('apiKey', targetKey);
+      if (targetOrigin) params.set('serverOrigin', targetOrigin);
 
-        const res = await fetch(`/api/quotex-robot/admin-script?${params.toString()}`, {
-          headers: getAuthHeaders(false)
-        });
-        const ct = res.headers.get('content-type') || '';
-        if (res.ok && ct.includes('application/json')) {
-          const data = await res.json();
-          if (data?.ok && data.script) {
-            setGeneratedScript(data.script);
-            setScriptMeta({
-              version: data.version,
-              serverOrigin: data.serverOrigin,
-              embeddedApiKey: data.embeddedApiKey
-            });
-            if (!targetKey && data.embeddedApiKey) {
-              setScriptApiKey(data.embeddedApiKey);
-            }
-            setIsLoadingScript(false);
-            return;
+      const res = await fetch(`/api/quotex-robot/admin-script?${params.toString()}`, {
+        credentials: 'include',
+        headers: getAuthHeaders(false)
+      });
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (data?.ok && data.script) {
+          setGeneratedScript(data.script);
+          setScriptMeta({
+            version: data.version,
+            serverOrigin: data.serverOrigin,
+            embeddedApiKey: data.embeddedApiKey
+          });
+          if (!targetKey && data.embeddedApiKey) {
+            setScriptApiKey(data.embeddedApiKey);
           }
+          setIsLoadingScript(false);
+          return;
         }
       }
     } catch (_err) {
@@ -875,14 +918,14 @@ export default function QuotexRobotAdminPage({
     let savedToServer = false;
     let savedToCloud = false;
     try {
-      const activeTok = adminToken || (ensureExpressAdminToken ? await ensureExpressAdminToken() : '');
-      if (activeTok) {
-        const res = await fetch('/api/quotex-robot/create-key', {
+      let activeTok = adminToken || (ensureExpressAdminToken ? await ensureExpressAdminToken() : '');
+      const attemptQuickCreate = (tok: string) =>
+        fetch('/api/quotex-robot/create-key', {
           method: 'POST',
           credentials: 'include',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${activeTok}`
+            ...(tok ? { Authorization: `Bearer ${tok}` } : {})
           },
           body: JSON.stringify({
             name: 'المشرف — الروبوت العائم',
@@ -892,13 +935,20 @@ export default function QuotexRobotAdminPage({
             defaultMode: robotSettings.defaultMode || 'AUTO'
           })
         });
-        const ct = res.headers.get('content-type') || '';
-        if (res.ok && ct.includes('application/json')) {
-          const data = await res.json();
-          if (data?.ok && data.subscriber) {
-            createdSub = data.subscriber;
-            savedToServer = true;
-          }
+      let res = await attemptQuickCreate(activeTok);
+      if (res.status === 401 && ensureExpressAdminToken) {
+        const refreshed = await ensureExpressAdminToken(true);
+        if (refreshed) {
+          activeTok = refreshed;
+          res = await attemptQuickCreate(refreshed);
+        }
+      }
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        if (data?.ok && data.subscriber) {
+          createdSub = data.subscriber;
+          savedToServer = true;
         }
       }
     } catch (_err) {}
@@ -1210,8 +1260,8 @@ export default function QuotexRobotAdminPage({
             <div>
               <span className="font-black text-amber-300">عزل تام للمسارات وتخصيص البث:</span>
               <p className="text-slate-300 text-[11px] mt-0.5">
-                • <strong>الجلسة الصباحية الموحدة (العامة + VIP + الروبوت):</strong> تعمل من الساعة 10:30 صباحاً حتى 01:00 ظهراً بتوقيت مصر مع فترة مسح واستعداد 8 دقائق وإيقاف تلقائي عند تحقيق 60%+.<br />
-                • <strong>البث المباشر المسائي:</strong> من الساعة 04:30 عصراً حتى 08:00 مساءً (ذروة السيولة) باستراتيجية MPB والفلاتر المؤسسية وتنفيذ فوري بالثانية :00.00.
+                • <strong>الجلسة الصباحية (القناة العامة فقط):</strong> من الساعة 10:30 صباحاً حتى 01:00 ظهراً بتوقيت مصر دون تقيد بعدد ربح أو نسبة، وفي النهاية يُرسل التقرير وتتوقف جميع الإشارات والتحليلات.<br />
+                • <strong>الجلسة المسائية (القناة الخاصة VIP والروبوت):</strong> من الساعة 04:30 عصراً حتى 07:00 مساءً باستراتيجية MPB، وتكتفي بنسبة 60%+ مع إرسال التقرير وعدم إعادة البث.
               </p>
             </div>
           </div>
@@ -2182,7 +2232,7 @@ export default function QuotexRobotAdminPage({
                     <span>💎 استراتيجية MPB الموحدة نشطة ومثبتة تلقائياً للجميع</span>
                   </div>
                   <div className="text-[10.5px] text-slate-300 space-y-1">
-                    <div>• <b>ساعات العمل الموحدة:</b> الجلسة الصباحية (<b>10:30 ص - 01:00 م</b>) وجلسة البث المباشر (<b>04:30 م - 08:00 م</b>) بتوقيت مصر، مع التوقف التلقائي عند تحقيق <b>60%+</b>.</div>
+                    <div>• <b>مواعيد القنوات المعتمدة:</b> القناة العامة صباحاً (<b>10:30 ص - 01:00 م</b> دون تقيد بنسبة ربح) والقناة الخاصة VIP مساءً (<b>04:30 م - 07:00 م</b> بالاكتفاء بـ <b>60%+</b> + تقرير ختامي).</div>
                     <div>• <b>تثبيت آخر تحديث:</b> تم إيقاف تبديل الاستراتيجيات لضمان عمل الروبوت العائم والقنوات على آخر تحديث موحد لاستراتيجية MPB فقط.</div>
                     <div>• <b>شروط تلقي الإشارات:</b> توافر <b>3 مؤشرات فنية متوافقة</b> على الأقل من أصل 4 مؤشرات مع تأكيد الدقة.</div>
                     <div>• <b>سرعة التنفيذ:</b> انطلاق الإشارة وتنفيذها على المنصة <b>قبل 5 ثوانٍ من افتتاح الشمعة</b> بدقة فائقة بدون مضاعفات.</div>
@@ -2405,13 +2455,13 @@ export default function QuotexRobotAdminPage({
                     </span>
                     <div>
                       <h4 className="text-xs font-extrabold text-emerald-300 flex flex-wrap items-center gap-1.5">
-                        <span>نسخ وتثبيت كود الروبوت العائم للمشرف (Tampermonkey v5.2)</span>
+                        <span>نسخ وتثبيت كود الروبوت العائم للمشرف (v5.4 — رادار مسح ضوئي)</span>
                         <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 border border-emerald-500/40 text-[9px] font-bold">
                           متاح للمشرف فقط 🔒
                         </span>
                       </h4>
                       <p className="text-[10.5px] text-slate-400 mt-0.5">
-                        توليد فوري لأحدث نسخة مثبتة من الروبوت العائم متصلة بسيرفرك ومضبوطة بمفتاح عضو فعال.
+                        توليد فوري لأحدث نسخة من الروبوت العائم — يعمل على أي موقع أو منصة (Tampermonkey أو Console)، ولا يفتح الصفقات إلا عند وجود أزرار المنصة.
                       </p>
                     </div>
                   </div>
@@ -2468,21 +2518,57 @@ export default function QuotexRobotAdminPage({
 
                   <div>
                     <label className="block text-[10px] font-bold text-slate-300 mb-1">
-                      رابط الموقع الرسمي المتصل بالسحابة (Site Origin):
+                      رابط سيرفر الإشارات (API Server / Site Origin):
                     </label>
                     <input
                       type="text"
                       dir="ltr"
                       value={scriptServerOrigin}
                       onChange={e => setScriptServerOrigin(e.target.value)}
+                      onBlur={() => fetchAdminFloatingScript(scriptApiKey, scriptServerOrigin)}
                       placeholder="https://fx.zadtoo.com"
                       className="w-full px-2.5 py-1.5 bg-[#070A10] border border-slate-700 rounded-lg text-[10.5px] font-mono-num text-sky-300 focus:outline-none focus:border-emerald-500"
                     />
+                    <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setScriptServerOrigin(publicRobotOrigin);
+                          fetchAdminFloatingScript(scriptApiKey, publicRobotOrigin);
+                        }}
+                        className={`px-2 py-0.5 rounded text-[9.5px] font-bold cursor-pointer border ${
+                          scriptServerOrigin === publicRobotOrigin
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
+                            : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                        }`}
+                      >
+                        🟢 السيرفر الحي (API)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const fxOrigin = 'https://fx.zadtoo.com';
+                          setScriptServerOrigin(fxOrigin);
+                          fetchAdminFloatingScript(scriptApiKey, fxOrigin);
+                        }}
+                        className={`px-2 py-0.5 rounded text-[9.5px] font-bold cursor-pointer border ${
+                          scriptServerOrigin === 'https://fx.zadtoo.com'
+                            ? 'bg-sky-500/20 text-sky-300 border-sky-500/50'
+                            : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                        }`}
+                      >
+                        🌐 الدومين الرسمي fx.zadtoo.com
+                      </button>
+                    </div>
                   </div>
                 </div>
 
-                <div className="p-2.5 rounded-lg bg-amber-500/10 border border-amber-500/40 text-[10.5px] text-amber-200 leading-relaxed">
-                  ⚠️ <strong>مهم جداً:</strong> يجب تثبيت السكربت داخل إضافة <strong>Tampermonkey</strong> (ولا تلصقه في DevTools Console F12 لأن المتصفح يمنع الاتصال من هناك). وعند التثبيت عبر رابط <code>ais-dev</code> أبقِ تبويب المنصة مفتوحاً في نفس المتصفح.
+                <div className="p-2.5 rounded-lg bg-sky-950/40 border border-sky-500/35 text-[10px] text-sky-200 leading-relaxed">
+                  💡 <strong>توضيح حول <code dir="ltr">fx.zadtoo.com</code> والسيرفر السحابي:</strong> دومين <code dir="ltr" className="text-emerald-300">fx.zadtoo.com</code> يستضيف الواجهة السحابية الثابتة، بينما خادم الإشارات الحي (<code dir="ltr">/api/quotex-robot/feed</code>) يعمل على سيرفر التطبيق السحابي (<code dir="ltr">ais-dev</code> / <code dir="ltr">ais-pre</code>). السكربت <strong>v5.4</strong> يضمّن كافة المسارات الاحتياطية معاً تلقائياً حتى لو اخترت <code dir="ltr">fx.zadtoo.com</code>.
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/40 text-[10.5px] text-emerald-200 leading-relaxed">
+                  ✅ <strong>مرونة التشغيل:</strong> تم إلغاء حصر الكود على نطاقات المنصة فقط — يمكنك تشغيله في <strong>أي موقع</strong> عبر إضافة <strong>Tampermonkey</strong> أو لصقه مباشرة في <strong>DevTools Console (F12)</strong> دون تعارض، ولن ينفذ فتح الصفقات إلا داخل منصة التداول عند اكتشاف أزرار الشراء والبيع.
                 </div>
 
                 {scriptError && (
@@ -2522,8 +2608,8 @@ export default function QuotexRobotAdminPage({
                     {copiedId === 'admin-robot-script' ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                     <span>
                       {copiedId === 'admin-robot-script'
-                        ? '✅ تم نسخ الكود لـ Tampermonkey!'
-                        : '📋 نسخ كود Tampermonkey v5.2.1'}
+                        ? '✅ تم نسخ الكود بنجاح!'
+                        : '📋 نسخ كود الروبوت v5.4'}
                     </span>
                   </button>
 
@@ -2555,11 +2641,11 @@ export default function QuotexRobotAdminPage({
                 )}
 
                 <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-lg text-[10px] text-slate-300 space-y-1">
-                  <div className="font-bold text-sky-300">📌 خطوات التثبيت الصحيحة في Tampermonkey (إلزامي لكي يعمل الاتصال):</div>
+                  <div className="font-bold text-sky-300">📌 طرق التشغيل المرنة (Tampermonkey أو Console في أي موقع):</div>
                   <ol className="list-decimal list-inside space-y-0.5 text-slate-400">
-                    <li>اختر مفتاح العضو من القائمة أعلاه ثم اضغط <strong>⬇️ تحميل ملف Tampermonkey (.user.js)</strong> (أو انسخ الكود لـ Create a new script داخل Tampermonkey).</li>
-                    <li>احذف أي نسخة قديمة للروبوت في Tampermonkey (مثل v5.0)، ثم استورد الملف الجديد من <strong>Dashboard ← Utilities ← Import from file</strong> وفعّل السكربت.</li>
-                    <li>أبقِ تبويب لوحة ZAD FX مفتوحاً في نفس المتصفح، ثم افتح منصة <strong>Quotex</strong> وأعد تحميلها — سيتصل الروبوت فوراً بالسحابة.</li>
+                    <li>اختر مفتاح العضو من القائمة أعلاه ثم حمّل ملف <strong>(.user.js)</strong> لإضافته إلى Tampermonkey (يعمل تلقائياً على جميع المواقع والمنصات <code>*://*/*</code>).</li>
+                    <li>أو انسخ الكود مباشرة والصقه في أي موقع أو في <strong>DevTools Console</strong> — سيتصل بالسيرفر ويعرض الإشارات فوراً دون قيود نطاقات.</li>
+                    <li>لن يضغط الروبوت على أي صفقة إلا عند فتح منصة التداول واكتشاف أزرار الشراء والبيع (CALL / PUT).</li>
                   </ol>
                 </div>
               </div>

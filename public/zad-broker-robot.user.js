@@ -1,59 +1,33 @@
 // ==UserScript==
-// @name         ZAD FX Floating Quotex Robot v5.2.1 (Server Verified)
+// @name         ZAD FX Floating Quotex Robot v5.4 (Universal / Any Site)
 // @namespace    https://fx.zadtoo.com
-// @version      5.2.1
-// @description  روبوت ZAD FX العائم المتصل بالسيرفر — التحقق من العضوية يتم داخل السيرفر فقط وبدون مضاعفات
+// @version      5.4
+// @description  روبوت ZAD FX العائم المتصل بالسيرفر — رادار مسح ضوئي، يعمل على جميع المواقع والمنصات
 // @author       ZAD FX
-// @match        *://qxbroker.com/*
-// @match        *://*.qxbroker.com/*
-// @match        *://quotex.io/*
-// @match        *://*.quotex.io/*
-// @match        *://quotex.com/*
-// @match        *://*.quotex.com/*
-// @match        *://quotex.trade/*
-// @match        *://*.quotex.trade/*
-// @match        *://quotex.site/*
-// @match        *://*.quotex.site/*
-// @match        *://broker-qx.pro/*
-// @match        *://*.broker-qx.pro/*
-// @match        *://broker-qx.site/*
-// @match        *://*.broker-qx.site/*
-// @match        *://market-qx.pro/*
-// @match        *://*.market-qx.pro/*
-// @match        *://market-qx.com/*
-// @match        *://*.market-qx.com/*
-// @match        *://market-qx.site/*
-// @match        *://*.market-qx.site/*
-// @match        *://qx-broker.com/*
-// @match        *://*.qx-broker.com/*
-// @match        *://quotex-broker.com/*
-// @match        *://*.quotex-broker.com/*
-// @match        *://quotex-market.com/*
-// @match        *://*.quotex-market.com/*
-// @match        *://*.zadtoo.com/*
-// @match        *://zadtoo.com/*
-// @match        *://*.run.app/*
-// @match        *://localhost:*/*
-// @match        *://127.0.0.1:*/*
+// @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM.xmlHttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
-// @connect      fx.zadtoo.com
-// @connect      *.zadtoo.com
-// @connect      zadtoo.com
-// @connect      *.run.app
-// @connect      ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app
-// @connect      ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app
-// @connect      localhost
-// @connect      127.0.0.1
+// @connect      *
 // @run-at       document-idle
 // ==/UserScript==
 
 (function () {
   'use strict';
-  if (window.__ZAD_FX_ROBOT_LOADED__) return;
+  const currentHostInit = String(window.location.hostname || '').toLowerCase();
+  const isHubHostInit =
+    currentHostInit.includes('zadtoo.com') ||
+    currentHostInit.includes('run.app') ||
+    currentHostInit === 'localhost' ||
+    currentHostInit === '127.0.0.1';
+  const hasGmInit =
+    typeof GM_xmlhttpRequest === 'function' ||
+    (typeof GM !== 'undefined' && typeof GM.xmlHttpRequest === 'function');
+  if (window.__ZAD_FX_ROBOT_LOADED__) {
+    if (document.getElementById('zad-fx-floating-hud') || (isHubHostInit && hasGmInit)) return;
+  }
   window.__ZAD_FX_ROBOT_LOADED__ = true;
 
   const SERVER_URL = 'https://ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app';
@@ -133,10 +107,9 @@
     typeof GM_xmlhttpRequest === 'function' ||
     (typeof GM !== 'undefined' && typeof GM.xmlHttpRequest === 'function');
 
-  // ZAD FX Hub Bridge: when this userscript is also active inside the open ZAD FX tab,
-  // it silently polls same-origin /api/quotex-robot/feed (with browser cookies) and relays it via GM storage
-  // to the Quotex tab without cluttering the ZAD FX admin/dashboard UI.
-  if (isWebPlatformHub) {
+  // ZAD FX Hub Bridge: when running via Tampermonkey inside an open ZAD FX tab,
+  // it silently polls same-origin /api/quotex-robot/feed and relays it via GM storage to other tabs.
+  if (isWebPlatformHub && hasGmTransport) {
     const bridgeSync = async () => {
       const k = String(readStore('apiKey', DEFAULT_MEMBER_KEY) || '').trim();
       if (!k) return;
@@ -285,8 +258,9 @@
         fetch(url, {
           method: method || 'GET',
           mode: 'cors',
+          credentials: 'omit',
           cache: 'no-store',
-          headers: body ? { 'Content-Type': 'application/json' } : undefined,
+          headers: Object.assign({ Accept: 'application/json' }, body ? { 'Content-Type': 'application/json' } : {}),
           body: body ? JSON.stringify(body) : undefined
         })
           .then(async (r) => parseSafe(r.status, await r.text()))
@@ -297,7 +271,7 @@
               status: 0,
               isFetchCorsOrNetwork: true,
               data: null,
-              error: 'تعذر الاتصال: تأكد من تشغيل السكربت داخل إضافة Tampermonkey'
+              error: 'تعذر الوصول للخادم — تحقق من الاتصال أو رابط السيرفر'
             })
           );
       }
@@ -365,6 +339,7 @@
 
   function clickPairOnQuotex(assetName) {
     if (!AUTO_SELECT_PAIR || !assetName) return;
+    if (!findTradeButton('CALL') && !findTradeButton('PUT')) return;
     const cleanPair = assetName.replace(/\s*\(OTC\)/gi, '').trim().toUpperCase();
     const compactPair = cleanPair.replace('/', '');
     const tabs = Array.from(document.querySelectorAll('.asset-select__button, .tab, .pairs-list__item, [class*="asset"], [class*="pair"]'));
@@ -383,6 +358,7 @@
 
   function ensureM1ExpiryOnQuotex() {
     if (!AUTO_SET_EXPIRY_M1) return;
+    if (!findTradeButton('CALL') && !findTradeButton('PUT')) return;
     const timeCandidates = Array.from(document.querySelectorAll('[class*="expiration"], [class*="time-select"], .input-control__dropdown button'));
     for (const el of timeCandidates) {
       if (el.closest('#zad-fx-floating-hud')) continue;
@@ -425,6 +401,35 @@
     }
     renderHud();
   }, true);
+
+  if (!document.getElementById('zad-fx-radar-styles')) {
+    const styleEl = document.createElement('style');
+    styleEl.id = 'zad-fx-radar-styles';
+    styleEl.textContent = `
+      @keyframes zadRadarPulse {
+        0%, 100% { transform: scale(1); border-color: #ef4444; box-shadow: 0 0 16px rgba(239,68,68,0.92), inset 0 0 12px rgba(239,68,68,0.42); opacity: 0.94; }
+        50% { transform: scale(1.07); border-color: #38bdf8; box-shadow: 0 0 24px rgba(56,189,248,0.98), inset 0 0 16px rgba(56,189,248,0.48); opacity: 1; }
+      }
+      @keyframes zadRadarHalo {
+        0% { transform: scale(0.75); opacity: 0.92; border-color: rgba(239,68,68,0.88); }
+        45% { border-color: rgba(56,189,248,0.85); }
+        100% { transform: scale(1.36); opacity: 0; border-color: rgba(239,68,68,0); }
+      }
+      @keyframes zadRadarIconGlow {
+        0%, 100% { filter: drop-shadow(0 0 5px rgba(239,68,68,0.95)); }
+        50% { filter: drop-shadow(0 0 7px rgba(56,189,248,0.95)); }
+      }
+      @keyframes zadRadarSpin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+      @keyframes zadRadarSweep {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(220%); }
+      }
+    `;
+    (document.head || document.documentElement).appendChild(styleEl);
+  }
 
   const root = document.createElement('div');
   root.id = 'zad-fx-floating-hud';
@@ -554,7 +559,7 @@
           ${connErrorMode === 'NEEDS_HUB_TAB'
             ? `<a href="${hubActivateUrl}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:6px;padding:5px 10px;background:#10b981;color:#020617;border-radius:6px;font-weight:800;font-size:9.5px;text-decoration:none;">🔗 افتح السيرفر مرة واحدة لتنشيط الاتصال</a>
                <div style="margin-top:4px;color:#fde68a;font-size:8.5px;">أبقِ تبويب المنصة مفتوحاً في نفس المتصفح ليتم الربط الفوري تلقائياً.</div>`
-            : `<div style="margin-top:4px;color:#fde68a;font-size:9px;">ملاحظة: يجب تشغيل السكربت كـ Userscript داخل إضافة Tampermonkey (وليس في DevTools Console).</div>`}
+            : `<div style="margin-top:4px;color:#fde68a;font-size:9px;">تحقق من الاتصال بالإنترنت أو اضغط 🔑 ID للتأكد من مفتاح العضو.</div>`}
         </div>`;
     } else if (!feed) {
       signalHtml = '<div style="padding:10px;background:#09121d;border:1px solid #334155;border-radius:10px;text-align:center;color:#94a3b8;font-size:10.5px;">📡 جاري الاتصال والمزامنة مع السيرفر...</div>';
@@ -639,15 +644,30 @@
         </div>`;
     } else {
       const candleLeft = 60 - new Date(Date.now() + serverOffsetMs).getSeconds();
+      const scanPct = Math.min(100, Math.max(8, Math.round(((60 - candleLeft) / 60) * 100)));
       signalHtml = `
-        <div style="padding:9px;background:#09121d;border:1px solid rgba(245,158,11,0.48);border-radius:10px;text-align:center;">
-          <div style="color:#fbbf24;font-weight:900;font-size:11px;">⏸️ وضع الانتظار (WAIT)</div>
-          <div style="color:#cbd5e1;font-size:9.5px;margin-top:3px;">جاري مسح السوق في الأزواج الستة المفتوحة — لن يتم التكرار</div>
-          <div style="display:inline-flex;align-items:center;gap:4px;margin-top:6px;padding:3px 9px;background:#061b2d;border:1px solid rgba(56,189,248,0.45);border-radius:6px;font-size:10px;color:#7dd3fc;">
-            <span>⏳ اكتمال الشمعة:</span>
-            <b style="color:#38bdf8;font-family:monospace;">${candleLeft} ثانية</b>
+        <div id="zad-radar-card" style="position:relative;padding:12px 10px 10px;background:linear-gradient(155deg,#05070c 0%,#0b0f17 58%,#1a060b 100%);border:1.5px solid rgba(239,68,68,0.58);border-radius:12px;text-align:center;overflow:hidden;box-shadow:0 6px 22px rgba(0,0,0,0.65),inset 0 0 18px rgba(239,68,68,0.12);">
+          <div style="position:relative;width:72px;height:72px;margin:0 auto 8px;display:flex;align-items:center;justify-content:center;">
+            <div style="position:absolute;inset:2px;border-radius:50%;border:1.5px solid rgba(239,68,68,0.85);animation:zadRadarHalo 2.2s ease-out infinite;pointer-events:none;"></div>
+            <div style="position:absolute;inset:0;border-radius:50%;border:1px solid rgba(239,68,68,0.25);pointer-events:none;"></div>
+            <div style="position:absolute;inset:6px;border-radius:50%;border:1.5px dashed rgba(239,68,68,0.78);animation:zadRadarSpin 10s linear infinite;pointer-events:none;"></div>
+            <div style="position:relative;width:44px;height:44px;border-radius:50%;border:2.5px solid #ef4444;background:radial-gradient(circle,#16060b 0%,#05070c 85%);display:flex;align-items:center;justify-content:center;animation:zadRadarPulse 2.2s ease-in-out infinite;">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" style="animation:zadRadarIconGlow 2.2s ease-in-out infinite;">
+                <polyline points="4 16 9 11 13 14 20 7"></polyline>
+                <polyline points="16 7 20 7 20 11"></polyline>
+              </svg>
+            </div>
           </div>
-          <div style="color:#64748b;font-size:9px;margin-top:5px;">جاهز لاستقبال الإشارة القادمة وتنفيذها بالثانية (${tradeMode === 'AUTO' ? 'آلياً' : 'يدوياً'})</div>
+          <div style="color:#ffffff;font-weight:900;font-size:13.5px;line-height:1.25;text-shadow:0 1px 6px rgba(0,0,0,0.65);">جاري المسح</div>
+          <div style="color:#fca5a5;font-weight:700;font-size:10px;margin-top:2px;opacity:0.95;">سيتم بث الإشارة قريبا</div>
+          <div style="position:relative;width:100%;height:5px;background:rgba(5,7,12,0.92);border-radius:999px;overflow:hidden;border:1px solid rgba(239,68,68,0.38);margin:8px 0 6px;">
+            <div id="zad-radar-bar-fill" style="width:${scanPct}%;height:100%;background:linear-gradient(90deg,#ef4444,#38bdf8,#ef4444);border-radius:999px;transition:width 0.45s linear;box-shadow:0 0 8px rgba(239,68,68,0.75);"></div>
+            <div style="position:absolute;top:0;bottom:0;width:36%;background:linear-gradient(90deg,transparent,rgba(255,255,255,0.5),transparent);animation:zadRadarSweep 1.7s linear infinite;"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;font-size:9.5px;color:#cbd5e1;padding:0 2px;">
+            <span>⏳ الشمعة: <b id="zad-radar-countdown" style="color:#ffffff;font-family:monospace;">${candleLeft}ث</b></span>
+            <span style="color:#fca5a5;font-weight:700;">التنفيذ: ${tradeMode === 'AUTO' ? '🤖 آلياً' : '🖐️ يدوياً'}</span>
+          </div>
         </div>`;
     }
 
@@ -663,8 +683,8 @@
         <div style="display:flex;align-items:center;gap:5px;min-width:0;">
           <span style="width:7px;height:7px;border-radius:999px;background:${isAuth ? '#10b981' : (lastConnError ? '#ef4444' : '#f59e0b')};flex-shrink:0;box-shadow:0 0 6px ${isAuth ? '#10b981' : '#f59e0b'};"></span>
           <strong style="font-size:11px;color:#fff;white-space:nowrap;">روبوت ZAD FX</strong>
-          <span style="padding:1px 4px;border-radius:4px;background:#78350f;border:1px solid #b45309;color:#fde68a;font-size:8.5px;font-weight:800;">v5.2</span>
-          <span style="padding:1px 4px;border-radius:4px;background:#0c4a6e;border:1px solid #0369a1;color:#7dd3fc;font-size:8.5px;font-weight:700;">Quotex</span>
+          <span style="padding:1px 4px;border-radius:4px;background:#78350f;border:1px solid #b45309;color:#fde68a;font-size:8.5px;font-weight:800;">v5.4</span>
+          <span style="padding:1px 4px;border-radius:4px;background:#0c4a6e;border:1px solid #0369a1;color:#7dd3fc;font-size:8.5px;font-weight:700;">عام + المنصات</span>
         </div>
         <div style="display:flex;align-items:center;gap:3px;flex-shrink:0;">
           <button id="zad-btn-info" title="معلومات" style="padding:2px 5px;border-radius:4px;border:1px solid #334155;background:${showInfoPanel ? '#0ea5e9' : '#1e293b'};color:${showInfoPanel ? '#020617' : '#7dd3fc'};font-size:9px;font-weight:700;cursor:pointer;">ℹ️ info</button>
@@ -873,10 +893,7 @@
         }
       } catch (_) {}
       if (!usedBridge) {
-        if (!hasGmTransport) {
-          connErrorMode = 'NO_GM';
-          lastConnError = 'تم تشغيل الكود خارج إضافة Tampermonkey (مثل Console) — يجب التثبيت داخل Tampermonkey';
-        } else if (sawHtmlRedirect) {
+        if (sawHtmlRedirect && !lastErrorSeen) {
           connErrorMode = 'NEEDS_HUB_TAB';
           lastConnError = 'السيرفر ينتظر تنشيط الجلسة في نفس المتصفح';
         } else {
@@ -914,6 +931,28 @@
   setInterval(() => {
     const activeEl = document.activeElement;
     const isTypingKey = showKeyPanel && activeEl && activeEl.id === 'zad-inp-key';
-    if (!hidden && !isTypingKey) renderHud();
+    if (hidden || isTypingKey) return;
+    const isRadarState = Boolean(
+      !minimized &&
+      apiKey &&
+      lastFeed &&
+      lastFeed.ok &&
+      lastFeed.authorized &&
+      lastFeed.marketOpen &&
+      !lastFeed.isLockedOutsideHours &&
+      !lastFeed.isWarmup &&
+      !lastFeed.activeSignal
+    );
+    const radarCard = root.querySelector('#zad-radar-card');
+    if (isRadarState && radarCard) {
+      const cdEl = root.querySelector('#zad-radar-countdown');
+      const barEl = root.querySelector('#zad-radar-bar-fill');
+      const candleLeft = 60 - new Date(Date.now() + serverOffsetMs).getSeconds();
+      const scanPct = Math.min(100, Math.max(8, Math.round(((60 - candleLeft) / 60) * 100)));
+      if (cdEl) cdEl.textContent = candleLeft + 'ث';
+      if (barEl) barEl.style.width = scanPct + '%';
+      return;
+    }
+    renderHud();
   }, 1000);
 })();

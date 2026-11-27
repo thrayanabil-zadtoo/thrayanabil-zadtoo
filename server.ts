@@ -954,6 +954,7 @@ function enforceDailySignalReset(): boolean {
     autoPilot.freeBotStoppedForToday = false;
     autoPilot.freeBot12ReportSentDate = '';
     autoPilot.vipMorningReportSentDate = '';
+    autoPilot.vipClosingReportSentDate = '';
     autoPilot.morningGreetingSentDate = '';
     changed = true;
   }
@@ -991,7 +992,7 @@ const MORNING_ACTIVE_MIN = 10 * 60 + 38; // 10:38 AM (8-min warmup)
 const MORNING_END_MIN = 13 * 60; // 01:00 PM (13:00) Cairo
 const EVENING_START_MIN = 16 * 60 + 30; // 04:30 PM (16:30) Cairo
 const EVENING_ACTIVE_MIN = 16 * 60 + 40; // 04:40 PM (10-min warmup)
-const EVENING_END_MIN = 20 * 60; // 08:00 PM (20:00) Cairo
+const EVENING_END_MIN = 19 * 60; // 07:00 PM (19:00) Cairo
 
 function isCairoInMorningSession(dateObj: Date = new Date()): boolean {
   const m = getCairoMinutesOfDay(dateObj);
@@ -1040,8 +1041,9 @@ function getWarmupStatus(): { isWarmup: boolean; minutesRemaining: number; reaso
 }
 
 /**
- * Free Channel & Morning Session Target Status (Win Rate 60%+ Target)
- * Reaching 60%+ win rate with at least 2 completed trades triggers immediate shutdown of signals for the morning session and sends the closing report!
+ * Public / Free Channel Morning Session Status (10:30 AM to 01:00 PM Cairo Time):
+ * - Runs the FULL morning window (10:30 AM - 01:00 PM) WITHOUT stopping for win count or win rate!
+ * - At 01:00 PM (13:00), sends the closing report and stops completely for the day (no further signals or analysis).
  */
 function getFreeBotTargetStatus(): {
   todayWins: number;
@@ -1056,7 +1058,7 @@ function getFreeBotTargetStatus(): {
   const todaySignals = signalsStore.filter(s => {
     if (!s.createdAt || s.status === 'PENDING') return false;
     if (s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'))) return false;
-    if (!s.telegramMessageId && !s.vipTelegramMessageId) return false;
+    if (!s.telegramMessageId) return false;
     const d = new Date(s.createdAt);
     if (isNaN(d.getTime())) return false;
     if (getCurrentEgyptDateString(d) !== todayEgypt) return false;
@@ -1071,57 +1073,32 @@ function getFreeBotTargetStatus(): {
 
   const currentCairoMins = getCairoMinutesOfDay();
 
-  // Guard against stale stop latches before morning session ends (13:00):
-  // If ZERO trades have completed in the 10:30-13:00 window, the morning session CANNOT be finished yet.
-  if (currentCairoMins < MORNING_END_MIN && totalCompleted === 0) {
+  // Before 01:00 PM (13:00), reset any legacy/stale early win-rate stop latches so the Public Channel runs full morning hours
+  if (currentCairoMins < MORNING_END_MIN && autoPilot.freeBot12ReportSentDate !== todayEgypt) {
     autoPilot.freeBotDailyTargetReached = false;
     autoPilot.freeBotStoppedForToday = false;
     if (autoPilot.freeBotCelebrationSentDate === todayEgypt) autoPilot.freeBotCelebrationSentDate = '';
-    if (autoPilot.freeBot12ReportSentDate === todayEgypt) autoPilot.freeBot12ReportSentDate = '';
-    if (autoPilot.vipMorningReportSentDate === todayEgypt) autoPilot.vipMorningReportSentDate = '';
-  }
-
-  const isAlreadyStoppedToday =
-    (totalCompleted > 0 || currentCairoMins >= MORNING_END_MIN) && (
-      autoPilot.freeBotCelebrationSentDate === todayEgypt ||
-      autoPilot.freeBot12ReportSentDate === todayEgypt ||
-      autoPilot.freeBotDailyTargetReached === true ||
-      Boolean(autoPilot.freeBotStoppedForToday)
-    );
-
-  // Target Criteria per user specification: "اذا حققت 60% نتوقف"
-  // Stops cleanly upon achieving >= 60% win rate with at least 2 decisive trades (e.g. 2-0=100%, 2-1=67%, 3-2=60%, 3-1=75%)
-  const isFirstTwoWins =
-    todaySignals.length >= 2 &&
-    (todaySignals[0].status === 'WIN' || (!is0Gale && todaySignals[0].status === 'WIN_GALE1')) &&
-    (todaySignals[1].status === 'WIN' || (!is0Gale && todaySignals[1].status === 'WIN_GALE1'));
-
-  const isTargetRatioAchieved =
-    (wins >= 2 && losses === 0) ||
-    (totalCompleted >= 2 && winRate >= 60 && wins > losses);
-
-  const isTargetReached = isAlreadyStoppedToday || isFirstTwoWins || isTargetRatioAchieved;
-
-  if (isTargetReached && (!autoPilot.freeBotDailyTargetReached || !autoPilot.freeBotStoppedForToday)) {
-    autoPilot.freeBotDailyTargetReached = true;
-    autoPilot.freeBotStoppedForToday = true;
   }
 
   const isSessionClosed = currentCairoMins >= MORNING_END_MIN;
+  const isReportAlreadySent =
+    autoPilot.freeBot12ReportSentDate === todayEgypt ||
+    autoPilot.freeBotStoppedForToday === true;
+
+  const isTargetReached = isSessionClosed || isReportAlreadySent;
+
   const isCooldownActive = Boolean(autoPilot.freeBotCooldownUntil && Date.now() < autoPilot.freeBotCooldownUntil);
   const cooldownMinsRemaining = isCooldownActive
     ? Math.max(1, Math.ceil(((autoPilot.freeBotCooldownUntil || 0) - Date.now()) / 60000))
     : 0;
 
   const statusDescription = isTargetReached
-    ? `تم تحقيق الهدف بنجاح (${winRate}% - ${wins} ربح / ${losses} خسارة) — تم إيقاف بث الجلسة الصباحية لليوم 🎯🛑`
-    : isSessionClosed
-    ? `انتهت جلسة التداول الصباحية الرسمية (01:00 ظهراً) — تم إيقاف البوت`
+    ? `انتهت جلسة القناة العامة الصباحية (01:00 ظهراً) وتم إرسال التقرير الختامي — متوقفة لبقية اليوم 🛑`
     : isCooldownActive
     ? `توقف مؤقت لإعادة قراءة السوق (متبقي ${cooldownMinsRemaining} دقيقة)`
     : currentCairoMins < MORNING_START_MIN
-    ? `قبل موعد انطلاق الجلسة الصباحية (تبدأ الساعة 10:30 صباحاً بتوقيت مصر)`
-    : `جاري العمل للوصول لنسبة 60%+ قبل 01:00 ظهراً (الحالي: ${winRate}% | ${wins} ربح : ${losses} خسارة)`;
+    ? `قبل موعد انطلاق القناة العامة (تبدأ الساعة 10:30 صباحاً بتوقيت مصر)`
+    : `القناة العامة نشطة (10:30 ص - 01:00 ظهراً) دون تقيد بعدد ربح أو نسبة (${wins} ربح | ${losses} خسارة | ${winRate}%)`;
 
   return {
     todayWins: wins,
@@ -1135,10 +1112,10 @@ function getFreeBotTargetStatus(): {
 }
 
 /**
- * Evaluates the 6:00 PM (18:00 Egypt time) Live Broadcast evening session status.
+ * Evaluates the Evening Private VIP Channel session (04:30 PM / 16:30 to 07:00 PM / 19:00 Cairo time).
  * Stopping condition:
- * - 2 consecutive wins (2-0): Stop session and thank followers!
- * - Or net +2 wins (liveWins - liveLosses >= 2, e.g. 3-1, 4-2).
+ * - Reaching 60%+ win rate (with at least 2 decisive trades), OR at 07:00 PM (19:00).
+ * - Immediately sends closing report and prevents sending any signal or analysis again for the day.
  */
 export function getEveningLiveSessionStatus(): {
   isSessionFinished: boolean;
@@ -1152,6 +1129,8 @@ export function getEveningLiveSessionStatus(): {
   const todayEgypt = getCurrentEgyptDateString(new Date());
 
   if (
+    liveBroadcastSession.closingReportSentDate === todayEgypt ||
+    autoPilot.vipClosingReportSentDate === todayEgypt ||
     liveBroadcastSession.status === 'STOPPED_TARGET_REACHED' ||
     liveBroadcastSession.status === 'STOPPED_SESSION_COMPLETED' ||
     liveBroadcastSession.status === 'STOPPED_BAD_MARKET'
@@ -1169,11 +1148,11 @@ export function getEveningLiveSessionStatus(): {
 
   const liveSignals = signalsStore.filter(s => {
     if (!s.createdAt || s.status === 'PENDING') return false;
-    const isLive = s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'));
-    if (!isLive) return false;
     const d = new Date(s.createdAt);
     if (isNaN(d.getTime())) return false;
-    return getCurrentEgyptDateString(d) === todayEgypt;
+    if (getCurrentEgyptDateString(d) !== todayEgypt) return false;
+    const isLive = s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي')) || (Boolean(s.vipTelegramMessageId) && isCairoInEveningSession(d));
+    return isLive;
   }).sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
   const wins = liveSignals.filter(s => s.status === 'WIN').length;
@@ -1181,18 +1160,9 @@ export function getEveningLiveSessionStatus(): {
   const total = wins + losses;
   const winRate = total > 0 ? Math.round((wins / total) * 100) : 0;
 
-  // Stopping Condition:
-  // 1. Two consecutive wins (e.g. 2-0 from start or last 2 trades were wins)
-  const lastTwo = liveSignals.slice(-2);
-  const isTwoConsecutiveWins = liveSignals.length >= 2 && lastTwo.length === 2 && lastTwo.every(s => s.status === 'WIN');
-
-  // 2. Net +2 wins (wins - losses >= 2)
-  const isNetTwoWins = (wins - losses) >= 2;
-
-  // 3. Win rate reached 60%+ (minimum 2 decisive trades)
-  const isWinRateTarget = total >= 2 && winRate >= 60 && wins > losses;
-
-  const isTargetAchieved = (wins >= 2 && losses === 0) || isTwoConsecutiveWins || isNetTwoWins || isWinRateTarget;
+  // Stopping Condition: Win rate 60%+ with at least 2 decisive trades
+  const isWinRateTarget = total >= 2 && winRate >= 60;
+  const isTargetAchieved = (wins >= 2 && losses === 0) || isWinRateTarget;
 
   return {
     isSessionFinished: isTargetAchieved,
@@ -1202,13 +1172,13 @@ export function getEveningLiveSessionStatus(): {
     winRate,
     isProfitable: wins >= losses,
     statusNote: isTargetAchieved
-      ? `تم تحقيق مستهدف البث المباشر المسائي بنجاح (${winRate}%) واختتام الجلسة`
-      : `جلسة البث المباشر نشطة (${wins} ربح : ${losses} خسارة)`
+      ? `تم الاكتفاء بنسبة ${winRate}% في القناة الخاصة وإرسال التقرير الختامي`
+      : `القناة الخاصة VIP نشطة (${wins} ربح : ${losses} خسارة | ${winRate}%)`
   };
 }
 
 /**
- * Checks whether the Evening Live Broadcast (04:30 PM / 16:30 to 08:00 PM / 20:00 Cairo time) is active right now.
+ * Checks whether the Evening VIP Session (04:30 PM / 16:30 to 07:00 PM / 19:00 Cairo time) is active right now.
  */
 export function isEveningLiveNow(): boolean {
   if (!isGlobalForexMarketOpen()) return false;
@@ -1216,26 +1186,23 @@ export function isEveningLiveNow(): boolean {
 }
 
 /**
- * Checks whether VIP Bot is active right now:
- * 1) Morning Session: 10:30 AM to 01:00 PM Cairo Time (Stops on 60%+ win rate or at 01:00 PM)
- * 2) Evening Live Session: 04:30 PM (16:30) to 08:00 PM (20:00) Cairo Time (Stops on 60%+ or at 08:00 PM)
+ * Checks whether VIP Private Channel Bot is active right now:
+ * - Morning (10:30 AM - 01:00 PM): FALSE (Morning is strictly Public/Free Channel ONLY!)
+ * - Evening (04:30 PM - 07:00 PM): TRUE until 60%+ win rate is achieved, closing report sent, or 07:00 PM
  */
 export function isVipBotActiveNow(): boolean {
   if (!autoPilot.vipEnabled) return false;
   if (!isGlobalForexMarketOpen()) return false;
   const todayEgypt = getCurrentEgyptDateString(new Date());
 
-  // 1. Morning Session: 10:30 AM to 01:00 PM
-  if (isCairoInMorningSession()) {
-    if (autoPilot.vipMorningReportSentDate === todayEgypt) return false;
-    const freeStatus = getFreeBotTargetStatus();
-    if (freeStatus.isTargetReached) return false;
-    return true;
-  }
-
-  // 2. Evening Live Session: 04:30 PM to 08:00 PM (16:30 to 20:00)
+  // Evening Private VIP Session ONLY: 04:30 PM to 07:00 PM (16:30 to 19:00)
   if (isCairoInEveningSession()) {
-    if (liveBroadcastSession.closingReportSentDate === todayEgypt) return false;
+    if (
+      liveBroadcastSession.closingReportSentDate === todayEgypt ||
+      autoPilot.vipClosingReportSentDate === todayEgypt
+    ) {
+      return false;
+    }
     const liveStatus = getEveningLiveSessionStatus();
     if (liveStatus.isSessionFinished) return false;
     return true;
@@ -1245,10 +1212,9 @@ export function isVipBotActiveNow(): boolean {
 }
 
 /**
- * Computes exact Working and Lock Status for the Quotex Robot based on the unified high-liquidity schedule:
- * - Morning Session (London): 10:30 AM to 01:00 PM (with 8-min readiness scan 10:30-10:38)
- * - Evening Live Broadcast (NY/London Overlap): 04:30 PM to 08:00 PM (with 10-min scan 16:30-16:40)
- * - Target: 60%+ win rate or time expiration, then stops and sends report.
+ * Computes exact Working and Lock Status for the Quotex Robot based on the separated channel schedule:
+ * - Morning Public Session: 10:30 AM to 01:00 PM (runs full window without win-rate cap, closing report at 01:00 PM)
+ * - Evening Private VIP Session: 04:30 PM to 07:00 PM (stops immediately on 60%+ or at 07:00 PM with closing report)
  */
 export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
   isActive: boolean;
@@ -1274,36 +1240,34 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
   }
 
   const todayEgypt = getCurrentEgyptDateString(new Date());
-  const scheduleSummary = 'الجلسة الصباحية: 10:30 ص - 01:00 م | البث المباشر: 04:30 م - 08:00 م';
+  const scheduleSummary = 'القناة العامة: 10:30 ص - 01:00 م | القناة الخاصة VIP والروبوت: 04:30 م - 07:00 م';
 
   // 1. Before Morning Session (< 10:30 AM)
   if (cairoMins < MORNING_START_MIN) {
     return {
       isActive: false,
       isLocked: true,
-      lockReason: 'الروبوت في وضع الاستعداد — تبدأ الجلسة الصباحية الرسمية الساعة 10:30 صباحاً بتوقيت مصر.',
+      lockReason: 'الروبوت في وضع الاستعداد — تبدأ الجلسة الصباحية للقناة العامة الساعة 10:30 صباحاً بتوقيت مصر.',
       strategyTitle: title,
       workingHoursText: scheduleSummary,
       nextSessionText: 'تبدأ الجلسة الصباحية اليوم في تمام الساعة 10:30 صباحاً بتوقيت مصر'
     };
   }
 
-  // 2. Morning Session (10:30 AM to 01:00 PM)
+  // 2. Morning Session (10:30 AM to 01:00 PM) - Public Channel (no win-rate cap)
   if (cairoMins >= MORNING_START_MIN && cairoMins < MORNING_END_MIN) {
-    const freeStatus = getFreeBotTargetStatus();
-    const isMorningFinished = freeStatus.isTargetReached ||
-      autoPilot.freeBotStoppedForToday ||
-      autoPilot.freeBotCelebrationSentDate === todayEgypt ||
+    const isMorningClosed =
+      autoPilot.freeBotStoppedForToday === true ||
       autoPilot.freeBot12ReportSentDate === todayEgypt;
 
-    if (isMorningFinished) {
+    if (isMorningClosed) {
       return {
         isActive: false,
         isLocked: true,
-        lockReason: 'تم تحقيق المستهدف الربحي (60%+) واختتام الجلسة الصباحية بنجاح 🎯',
+        lockReason: 'انتهت جلسة القناة العامة الصباحية وتم إرسال التقرير الختامي 🎯',
         strategyTitle: title,
         workingHoursText: scheduleSummary,
-        nextSessionText: 'نلتقي في جلسة ذروة السيولة والبث المباشر الساعة 04:30 عصراً بتوقيت مصر 🔴'
+        nextSessionText: 'تبدأ جلسة القناة الخاصة VIP الساعة 04:30 عصراً حتى 07:00 مساءً بتوقيت مصر 🔴'
       };
     }
 
@@ -1313,7 +1277,7 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
         isLocked: false,
         lockReason: '',
         strategyTitle: title,
-        workingHoursText: '☀️ جاري الاستعداد ومسح الأزواج الستة (10:30 - 10:38 ص) — تنطلق أول إشارة خلال دقائق ⚡',
+        workingHoursText: '☀️ جاري الاستعداد ومسح الأزواج الستة للقناة العامة (10:30 - 10:38 ص) ⚡',
         nextSessionText: 'جاري مسح الأزواج الستة قبل صدور أول إشارة'
       };
     }
@@ -1323,8 +1287,8 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
       isLocked: false,
       lockReason: '',
       strategyTitle: title,
-      workingHoursText: 'الجلسة الصباحية جارية (10:30 ص - 01:00 م) — تنفيذ فوري 5 ثوانٍ ⚡',
-      nextSessionText: 'الجلسة الصباحية نشطة حالياً'
+      workingHoursText: 'الجلسة الصباحية للقناة العامة جارية (10:30 ص - 01:00 م) — بدون تقيد بنسبة ربح ⚡',
+      nextSessionText: 'الجلسة الصباحية نشطة حتى 01:00 ظهراً'
     };
   }
 
@@ -1333,25 +1297,28 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
     return {
       isActive: false,
       isLocked: true,
-      lockReason: 'انتهت الجلسة الصباحية الرسمية (01:00 ظهراً). الروبوت في استراحة بانتظار ذروة السيولة المسائية.',
+      lockReason: 'انتهت الجلسة الصباحية للقناة العامة (01:00 ظهراً). الروبوت في استراحة بانتظار الجلسة المسائية الخاصة.',
       strategyTitle: title,
       workingHoursText: scheduleSummary,
-      nextSessionText: 'تبدأ جلسة البث المباشر وتداخل نيويورك اليوم الساعة 04:30 عصراً بتوقيت مصر 🔴'
+      nextSessionText: 'تبدأ جلسة القناة الخاصة VIP الساعة 04:30 عصراً حتى 07:00 مساءً بتوقيت مصر 🔴'
     };
   }
 
-  // 4. Evening Live Broadcast Session (04:30 PM to 08:00 PM / 16:30 to 20:00)
+  // 4. Evening Private VIP Session (04:30 PM to 07:00 PM / 16:30 to 19:00)
   if (cairoMins >= EVENING_START_MIN && cairoMins < EVENING_END_MIN) {
     const liveStatus = getEveningLiveSessionStatus();
-    const isEveningFinished = liveStatus.isSessionFinished || liveBroadcastSession.closingReportSentDate === todayEgypt;
+    const isEveningFinished =
+      liveStatus.isSessionFinished ||
+      liveBroadcastSession.closingReportSentDate === todayEgypt ||
+      autoPilot.vipClosingReportSentDate === todayEgypt;
 
     if (isEveningFinished) {
       return {
         isActive: false,
         isLocked: true,
-        lockReason: 'تم تحقيق هدف البث المباشر (60%+) واختتام الجلسة بنجاح 🔴',
+        lockReason: 'تم الاكتفاء بنسبة 60%+ في القناة الخاصة وإرسال التقرير الختامي — لن يُعاد إرسال إشارات اليوم 🔴',
         strategyTitle: title,
-        workingHoursText: 'البث المباشر: 04:30 م - 08:00 م بتوقيت مصر',
+        workingHoursText: 'القناة الخاصة VIP: 04:30 م - 07:00 م بتوقيت مصر',
         nextSessionText: 'نلتقي غداً في تمام الساعة 10:30 صباحاً بتوقيت مصر 🤝'
       };
     }
@@ -1362,7 +1329,7 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
         isLocked: false,
         lockReason: '',
         strategyTitle: title,
-        workingHoursText: '🔴 جاري الاستعداد ومسح الأزواج الستة (04:30 - 04:40 م) — تنطلق أول إشارة خلال دقائق ⚡',
+        workingHoursText: '🔴 جاري الاستعداد ومسح الأزواج الستة للقناة الخاصة VIP (04:30 - 04:40 م) ⚡',
         nextSessionText: 'جاري مسح سيولة تداخل لندن ونيويورك'
       };
     }
@@ -1372,19 +1339,19 @@ export function getRobotWorkingStatusForMode(mode: RobotStrategyEngineMode): {
       isLocked: false,
       lockReason: '',
       strategyTitle: title,
-      workingHoursText: '🔴 بث مباشر حي مع ابوسليم (04:30 م - 08:00 م) — تنفيذ فوري 5 ثوانٍ ⚡',
-      nextSessionText: 'جلسة البث المباشر نشطة حالياً'
+      workingHoursText: '🔴 جلسة القناة الخاصة VIP والروبوت (04:30 م - 07:00 م) — الاكتفاء بـ 60%+ ⚡',
+      nextSessionText: 'جلسة القناة الخاصة نشطة حالياً'
     };
   }
 
-  // 5. After 08:00 PM (>= 20:00)
+  // 5. After 07:00 PM (>= 19:00)
   return {
     isActive: false,
     isLocked: true,
-    lockReason: 'انتهت جلسات التداول الرسمية لليوم (الختام الساعة 08:00 مساءً لحماية رأس المال من ضعف السيولة الليلية).',
+    lockReason: 'انتهت جلسات التداول الرسمية لليوم (الختام الساعة 07:00 مساءً لحماية رأس المال).',
     strategyTitle: title,
     workingHoursText: scheduleSummary,
-    nextSessionText: 'تبدأ الجلسة الصباحية غداً في تمام الساعة 10:30 صباحاً بتوقيت مصر 🤝'
+    nextSessionText: 'تبدأ الجلسة الصباحية للقناة العامة غداً الساعة 10:30 صباحاً بتوقيت مصر 🤝'
   };
 }
 
@@ -1396,59 +1363,10 @@ function isFloatingRobotActiveNow(): boolean {
 }
 
 /**
- * Sends celebratory closing report to Free Telegram Channel when target is achieved:
+ * Disabled early mid-morning celebration: Public/Free channel runs until 01:00 PM without win-rate cap,
+ * and sends its single closing report at 01:00 PM via checkAndSendMorningSessionClosingReport(true).
  */
 async function checkAndSendFreeBotTargetCelebration(): Promise<boolean> {
-  const status = getFreeBotTargetStatus();
-  if (!status.isTargetReached) return false;
-
-  const todayEgypt = getCurrentEgyptDateString(new Date());
-  if (autoPilot.freeBotCelebrationSentDate === todayEgypt) {
-    return false; // Already sent today
-  }
-
-  const token = (autoPilot.botToken || '').trim();
-  const chat = (autoPilot.chatId || '').trim();
-  if (!token || !chat) return false;
-
-  const winRate = status.winRate;
-  const qxLink = autoPilot.quotexReferralLink || 'https://broker-qx.pro/?lid=2303934';
-
-  const message = [
-    `🎯 تقرير إنجاز القناة العامة وختام البث | ${appSettings.channelTitle || 'ZAD FX | إشارات أبوسليم'}`,
-    `━━━━━━━━━━━━━━━━━━━━`,
-    `🎉 ألف مبروك لجميع الإخوة والأخوات والمتابعين الأعزاء الذين شاركوا وتداولوا معنا اليوم وحققوا أرباحاً وفوزاً مباركاً! 🏆✨`,
-    ``,
-    `📊 التقرير النهائي لنتائج صفقات اليوم:`,
-    `✅ عدد الصفقات الرابحة: ${status.todayWins}`,
-    `❌ عدد الصفقات الخاسرة: ${status.todayLosses}`,
-    `🎯 نسبة النجاح المحققة: ${winRate}%`,
-    `━━━━━━━━━━━━━━━━━━━━`,
-    `🛑 تم الاكتفاء بهذا القدر وإيقاف بث إشارات القناة العامة لهذا اليوم بنجاح تام.`,
-    ``,
-    `👑 تنويه هام لجميع المتابعين:`,
-    `• قناة VIP الخاصة على تليجرام تستكمل جلساتها حتى الساعة 01:00 ظهراً.`,
-    `• وتعاود بث إشاراتها من جديد في بث مباشر حصري (ذروة السيولة) من الساعة 04:30 عصراً حتى 08:00 مساءً بتوقيت مصر.`,
-    `• روبوت التداول الآلي (Quotex Pro Bot) يعمل بشكل آلي كامل وفوري طوال فترة عمل قناة VIP الخاصة.`,
-    ``,
-    `🔗 للانضمام لقناة VIP والحصول على الروبوت الآلي:`,
-    `${qxLink}`,
-    `━━━━━━━━━━━━━━━━━━━━`,
-    `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
-  ].join('\n');
-
-  try {
-    const res = await sendTelegramMessage(token, chat, message);
-    if (res.ok) {
-      autoPilot.freeBotCelebrationSentDate = todayEgypt;
-      autoPilot.freeBotDailyTargetReached = true;
-      autoPilot.freeBotStoppedForToday = true;
-      await saveState();
-      return true;
-    }
-  } catch (e) {
-    console.warn('Error sending Free Channel target celebration:', e);
-  }
   return false;
 }
 
@@ -1472,31 +1390,27 @@ function getEgyptHourFromDate(dateObj: Date): number {
 
 /**
  * Checks whether a signal was created strictly within Egypt trading hours.
- * (From 10:00 AM up to 09:00 PM Cairo Time)
+ * (From 10:00 AM up to 07:00 PM Cairo Time)
  */
 function isSignalWithinEgyptTradingHours(dateObj: Date): boolean {
   const h = getEgyptHourFromDate(dateObj);
-  return h >= 10 && h < 21;
+  return h >= 10 && h < 19;
 }
 
 /**
- * Checks whether the Free Bot is currently enabled and inside its allowed Cairo working hours:
- * Morning Session: 10:30 AM to 01:00 PM Cairo Time
- * Stops when 60%+ win rate is achieved, or at 01:00 PM.
+ * Checks whether the Free/Public Channel Bot is currently active:
+ * Morning Session ONLY: 10:30 AM to 01:00 PM Cairo Time (NO win-rate cap; stops at 01:00 PM after report)
  */
 function isFreeBotActiveNow(_cfg: AutoPilotConfig): boolean {
   if (!isGlobalForexMarketOpen()) return false;
+  if (_cfg.freeBotEnabled === false) return false;
   const todayEgypt = getCurrentEgyptDateString(new Date());
 
   if (!isCairoInMorningSession()) return false;
 
-  const freeStatus = getFreeBotTargetStatus();
   if (
-    autoPilot.freeBotCelebrationSentDate === todayEgypt ||
     autoPilot.freeBot12ReportSentDate === todayEgypt ||
-    autoPilot.freeBotDailyTargetReached === true ||
-    autoPilot.freeBotStoppedForToday === true ||
-    freeStatus.isTargetReached
+    autoPilot.freeBotStoppedForToday === true
   ) {
     return false;
   }
@@ -1813,17 +1727,17 @@ let autoPilot: AutoPilotConfig = { ...defaultAutoPilot };
 let robotSettings: QuotexRobotSettings = { ...defaultRobotSettings };
 let liveBroadcastSession: LiveBroadcastSessionConfig = {
   enabled: true,
-  startHourEgypt: 16, // 04:30 PM Cairo (16:30 - 20:00)
+  startHourEgypt: 16, // 04:30 PM Cairo (16:30 - 19:00)
   preScanMinutes: 10, // 10 minutes pre-scan (16:30 - 16:40)
   minWinRateTarget: 60, // 60%
   maxWinRateTarget: 75, // 75%
   stopConsecutiveLosses: 3, // 3 consecutive losses
-  sessionDurationMinutes: 210, // 3.5 hours window (16:30 - 20:00)
+  sessionDurationMinutes: 150, // 2.5 hours window (16:30 - 19:00)
   firstSignalTimestamp: undefined,
   initialNoticeSentDate: '',
   activeDate: '',
   status: 'IDLE',
-  statusNote: 'جلسة البث الحي مبرمجة يومياً من الساعة 04:30 عصراً حتى 08:00 مساءً بتوقيت مصر (مع التوقف عند 60%+)',
+  statusNote: 'جلسة القناة الخاصة VIP مبرمجة يومياً من 04:30 عصراً حتى 07:00 مساءً بتوقيت مصر (الاكتفاء بـ 60%+)',
   wins: 0,
   losses: 0,
   consecutiveLosses: 0,
@@ -5522,9 +5436,8 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
           `• يمسح 6 أزواج بالتوازي في نفس اللحظة.\n` +
           `• يصدر الصفقة وينفذها بتأكيد 5 ثوانٍ قبل فتح الشمعة بدقة 00.00.\n\n` +
           `⏰ <b>فترات العمل اليومية (توقيت القاهرة):</b>\n` +
-          `• الفترة الصباحية (جميع القنوات والروبوت): 10:30 ص إلى 01:00 ظهراً (أول 8 دقائق مسح واستعداد)\n` +
-          `• جلسة البث المباشر مع أبوسليم (VIP والروبوت): 04:30 عصراً إلى 08:00 مساءً\n` +
-          `🎯 <i>الاكتفاء بنسبة 60%+ من الأرباح لحماية رأس المال.</i>\n\n` +
+          `• القناة العامة: 10:30 ص إلى 01:00 ظهراً (بدون تقيد بنسبة ربح + تقرير ختامي 01:00 ظهراً)\n` +
+          `• القناة الخاصة VIP والروبوت: 04:30 عصراً إلى 07:00 مساءً (الاكتفاء بـ 60%+ وتقرير ختامي)\n\n` +
           `📹 يمكنك مشاهدة الفيديو التوضيحي لشرح طريقة التثبيت على متصفح Kiwi أو الكمبيوتر عبر الزر أدناه:`
         : `🤖 <b>ZAD FX Automated Trading Robot:</b>\n\n` +
           `🌟 <b>Key Features:</b>\n` +
@@ -5533,9 +5446,8 @@ async function processInteractiveTelegramBotUpdate(update: any, token: string) {
           `• Scans 6 currency pairs simultaneously.\n` +
           `• 5-second pre-candle confirmation at 00.00.\n\n` +
           `⏰ <b>Daily Trading Hours (Cairo Time):</b>\n` +
-          `• Morning Session (All Channels & Robot): 10:30 AM - 01:00 PM (first 8 mins readiness scan)\n` +
-          `• Live Broadcast Session with Abu Salim (VIP & Robot): 04:30 PM - 08:00 PM\n` +
-          `🎯 <i>Target: 60%+ win rate capital preservation limit.</i>\n\n` +
+          `• Public Channel: 10:30 AM - 01:00 PM (full session + closing report at 01:00 PM)\n` +
+          `• Private VIP & Robot: 04:30 PM - 07:00 PM (60%+ target + closing report)\n\n` +
           `📹 Click below to watch the setup tutorial video on Kiwi browser or PC:`;
 
       const buttons = isAr
@@ -6068,8 +5980,18 @@ async function updateTelegramSignalResult(
     const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
     const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
 
-    // 2. Update Free Bot Channel (if this signal was sent to Free Bot) using Free Bot's custom icons & image
-    if (signal.telegramMessageId && freeToken && freeChat) {
+    const todayEgypt = getCurrentEgyptDateString(new Date());
+    const freeClosedForDay =
+      autoPilot.freeBot12ReportSentDate === todayEgypt ||
+      autoPilot.freeBotStoppedForToday === true ||
+      getCairoMinutesOfDay() >= MORNING_END_MIN ||
+      isCairoInEveningSession();
+    const vipClosedForDay =
+      liveBroadcastSession.closingReportSentDate === todayEgypt ||
+      autoPilot.vipClosingReportSentDate === todayEgypt;
+
+    // 2. Update Free Bot Channel ONLY if closing report has NOT been sent yet
+    if (signal.telegramMessageId && freeToken && freeChat && !freeClosedForDay) {
       const freeRes = await updateSingleTelegramDestination(
         freeToken,
         freeChat,
@@ -6085,9 +6007,9 @@ async function updateTelegramSignalResult(
       if (freeRes.ok) anySuccess = true;
     }
 
-    // 3. Update VIP Bot Channel (if this signal was sent to VIP Bot) using VIP Bot's custom icons & image
+    // 3. Update VIP Bot Channel ONLY if VIP closing report has NOT been sent yet
     const isExactDuplicate = (vipChat.toLowerCase() === freeChat.toLowerCase()) && (signal.vipTelegramMessageId === signal.telegramMessageId);
-    if (signal.vipTelegramMessageId && vipToken && vipChat && !isExactDuplicate) {
+    if (signal.vipTelegramMessageId && vipToken && vipChat && !isExactDuplicate && !vipClosedForDay) {
       const vipRes = await updateSingleTelegramDestination(
         vipToken,
         vipChat,
@@ -6416,23 +6338,8 @@ async function dispatchLiveGlobalSignal(candidate: LivePairSnapshot, isAuto: boo
   let vipTelegramMessageId: number | undefined;
   let telegramError: string | undefined;
 
-  // 1. Check Free Bot: Hard Stop if target reached (70%-75%+ or 3 wins) / celebration sent / outside 09:00 - 15:00
-  const freeTargetStatus = getFreeBotTargetStatus();
-  const cairoH = getCurrentEgyptHour();
-  const todayEgyptStr = getCurrentEgyptDateString(new Date());
-  const isFreeBotStoppedForToday =
-    autoPilot.freeBotCelebrationSentDate === todayEgyptStr ||
-    autoPilot.freeBotDailyTargetReached === true ||
-    autoPilot.freeBotStoppedForToday === true ||
-    freeTargetStatus.isTargetReached;
-
-  // Free Bot is strictly STOPPED once target is achieved / celebration sent today / outside 09:00 - 12:00
-  const canSendToFreeBot =
-    autoPilot.freeBotEnabled !== false &&
-    !isFreeBotStoppedForToday &&
-    !(autoPilot.freeBotCooldownUntil && Date.now() < autoPilot.freeBotCooldownUntil) &&
-    cairoH >= 9 &&
-    cairoH < 12;
+  // 1. Check Free/Public Bot: Strictly Morning Session (10:30 AM - 01:00 PM) and never after closing report
+  const canSendToFreeBot = isFreeBotActiveNow(autoPilot);
 
   if (canSendToFreeBot && autoPilot.botToken.trim() && autoPilot.chatId.trim()) {
     try {
@@ -6728,8 +6635,25 @@ async function dispatchVipMomentumPauseSignal(
   const freeToken = (autoPilot.botToken || '').trim();
   const freeChat = (autoPilot.chatId || '').trim();
 
+  const todayEgyptNow = getCurrentEgyptDateString(new Date());
   const isMorning = isCairoInMorningSession();
   const isEveningLive = isEveningLiveNow();
+
+  // Strict Channel & Schedule Guards:
+  // - Morning (10:30 - 13:00): Public/Free Channel ONLY; stop completely after 13:00 / closing report
+  // - Evening (16:30 - 19:00): Private VIP Channel + Robot ONLY; stop completely after 60%+ / closing report / 19:00
+  if (isAuto) {
+    if (!isMorning && !isEveningLive) {
+      return { ok: false, error: 'خارج ساعات جلسات التداول المعتمدة' };
+    }
+    if (isMorning && (autoPilot.freeBot12ReportSentDate === todayEgyptNow || autoPilot.freeBotStoppedForToday === true || getCairoMinutesOfDay() >= MORNING_END_MIN)) {
+      return { ok: false, error: 'انتهت جلسة القناة العامة الصباحية وتم إرسال التقرير الختامي' };
+    }
+    if (isEveningLive && (liveBroadcastSession.closingReportSentDate === todayEgyptNow || autoPilot.vipClosingReportSentDate === todayEgyptNow || getEveningLiveSessionStatus().isSessionFinished)) {
+      return { ok: false, error: 'تم تحقيق هدف القناة الخاصة (60%+) أو انتهت الجلسة المسائية' };
+    }
+  }
+
   const effectiveVariant: 'WITH_MPB' | 'WITHOUT_MPB' = explicitVariant || 'WITH_MPB';
 
   const isOption2 = effectiveVariant === 'WITH_MPB';
@@ -6754,9 +6678,9 @@ async function dispatchVipMomentumPauseSignal(
 
   let headerTitle = `👑 ZAD VIP | إشارات أبوسليم 👑`;
   if (isEveningLive) {
-    headerTitle = `🔴 بث مباشر حي مع ابوسليم 🔴 (Live Session ⚡)\n👑 ZAD VIP | إشارات التداول الفوري 👑`;
+    headerTitle = `🔴 بث مباشر القناة الخاصة VIP 🔴 (Live Session ⚡)\n👑 ZAD VIP | إشارات التداول الفوري 👑`;
   } else if (isMorning) {
-    headerTitle = `👑 إشارات أبوسليم | ZAD FX 👑\n⚡ الجلسة الصباحية الرسمية (تنفيذ فوري 5 ثوانٍ ⚡)`;
+    headerTitle = `📢 ZAD FX | القناة العامة 📢\n☀️ الجلسة الصباحية الرسمية (10:30 ص - 01:00 ظهراً ⚡)`;
   }
 
   const strategyVariantTitle = isOption2
@@ -6792,7 +6716,7 @@ async function dispatchVipMomentumPauseSignal(
     entryMinute,
     entryTime: `:${entryMinute}`,
     targetEntryTimestamp,
-    payout: isEveningLive ? '(🌐) (بث حي VIP 🔴)' : '(🌐) (VIP 5s Execution ⚡)',
+    payout: isEveningLive ? '(🌐) (بث حي VIP 🔴)' : '(🌐) (القناة العامة الصباحية ☀️)',
     livePrice: candidate.formattedPrice,
     rsiValue: confluence.rsiValue,
     analysisReason: isOption2
@@ -6837,7 +6761,41 @@ async function dispatchVipMomentumPauseSignal(
     publishRobotLiveFeedDoc().catch(() => {})
   ];
 
-  if (activeVipToken && activeVipChat) {
+  // Morning (10:30 AM - 01:00 PM): Send ONLY to Public/Free Channel (NEVER VIP!)
+  if (
+    isMorning &&
+    freeToken &&
+    freeChat &&
+    autoPilot.freeBotEnabled !== false &&
+    autoPilot.freeBot12ReportSentDate !== todayEgyptNow &&
+    !autoPilot.freeBotStoppedForToday
+  ) {
+    parallelDeliveries.push(
+      sendTelegramMessage(freeToken, freeChat, formattedMessage)
+        .then(res => {
+          if (res.ok && res.result?.message_id) {
+            freeTelegramMessageId = res.result.message_id;
+            newSignal.telegramMessageId = freeTelegramMessageId;
+          } else {
+            telegramError = res.description;
+          }
+        })
+        .catch(err => {
+          telegramError = err?.message;
+        })
+    );
+  }
+
+  // Evening (04:30 PM - 07:00 PM): Send ONLY to Private VIP Channel (NEVER Free!)
+  if (
+    isEveningLive &&
+    activeVipToken &&
+    activeVipChat &&
+    autoPilot.vipEnabled !== false &&
+    liveBroadcastSession.closingReportSentDate !== todayEgyptNow &&
+    autoPilot.vipClosingReportSentDate !== todayEgyptNow &&
+    !getEveningLiveSessionStatus().isSessionFinished
+  ) {
     parallelDeliveries.push(
       sendTelegramMessage(activeVipToken, activeVipChat, formattedMessage)
         .then(res => {
@@ -6851,20 +6809,6 @@ async function dispatchVipMomentumPauseSignal(
         .catch(err => {
           telegramError = err?.message;
         })
-    );
-  }
-
-  // During Morning Session (11:00 to 12:00), deliver simultaneously to Free Channel as well!
-  if (isMorning && freeToken && freeChat && !autoPilot.freeBotStoppedForToday) {
-    parallelDeliveries.push(
-      sendTelegramMessage(freeToken, freeChat, formattedMessage)
-        .then(res => {
-          if (res.ok && res.result?.message_id) {
-            freeTelegramMessageId = res.result.message_id;
-            newSignal.telegramMessageId = freeTelegramMessageId;
-          }
-        })
-        .catch(() => {})
     );
   }
 
@@ -6916,21 +6860,16 @@ async function dispatchVipMomentumPauseSignal(
 
     if (target.isLiveBroadcast) {
       await handleLiveBroadcastSignalOutcome(target, finalStatus);
-      // Check if Evening target achieved
+      // Check if Evening VIP target (60%+) achieved
       const liveStatus = getEveningLiveSessionStatus();
       if (liveStatus.isSessionFinished) {
         await sendLiveBroadcastClosingReport('target_reached');
       }
     } else {
-      await handleVipBotTradeOutcome(target, finalStatus);
       if (target.telegramMessageId) {
         await handleFreeBotTradeOutcome(target, finalStatus);
       }
-      // Check if Morning target (65%-70%+) achieved
-      const morningStatus = getFreeBotTargetStatus();
-      if (morningStatus.isTargetReached) {
-        await checkAndSendMorningSessionClosingReport(false);
-      }
+      // Morning Public Channel does NOT stop early for win rate; closing report fires strictly at 01:00 PM!
     }
     await saveState();
   }, msUntilCandleClose);
@@ -6961,8 +6900,8 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
     }
 
     // Unified High-Liquidity Session Hours:
-    // 1) Morning Session: 10:30 AM to 01:00 PM (with 8-min readiness scan 10:30-10:38), last entry 12:57
-    // 2) Evening Live Broadcast: 04:30 PM to 08:00 PM (16:40 to 19:57), last entry 19:57
+    // 1) Morning Public Channel: 10:30 AM to 01:00 PM (with 8-min readiness scan 10:30-10:38), last entry 12:57
+    // 2) Evening Private VIP + Robot: 04:30 PM to 07:00 PM (16:40 to 18:57), last entry 18:57
     const isMorning = cairoMins >= MORNING_ACTIVE_MIN && cairoMins < MORNING_END_MIN - 3;
     const isEveningLive = cairoMins >= EVENING_ACTIVE_MIN && cairoMins < EVENING_END_MIN - 3;
 
@@ -6982,23 +6921,24 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
 
     const todayEgypt = getCurrentEgyptDateString(new Date());
 
-    // Morning Session stopping condition check (60%+ target or stopped):
+    // Morning Public Channel stopping check: ONLY stop after 01:00 PM closing report (no early win-rate cap!)
     if (isMorning) {
-      const freeStatus = getFreeBotTargetStatus();
       if (
-        freeStatus.isTargetReached ||
-        autoPilot.freeBotDailyTargetReached ||
-        autoPilot.freeBotStoppedForToday ||
-        autoPilot.freeBotCelebrationSentDate === todayEgypt ||
+        autoPilot.freeBotStoppedForToday === true ||
         autoPilot.freeBot12ReportSentDate === todayEgypt
       ) {
-        return; // Morning session completed
+        return; // Morning Public session completed and report already sent
       }
     }
 
-    // Evening Session stopping condition check & immediate PRE_SCANNING -> ACTIVE transition:
+    // Evening Private VIP stopping check & immediate PRE_SCANNING -> ACTIVE transition:
     if (isEveningLive) {
-      if (liveBroadcastSession.closingReportSentDate === todayEgypt) return;
+      if (
+        liveBroadcastSession.closingReportSentDate === todayEgypt ||
+        autoPilot.vipClosingReportSentDate === todayEgypt
+      ) {
+        return;
+      }
       const liveStatus = getEveningLiveSessionStatus();
       if (liveStatus.isSessionFinished) return;
       if (liveBroadcastSession.status === 'PRE_SCANNING' || liveBroadcastSession.status === 'IDLE') {
@@ -7285,13 +7225,24 @@ async function releaseTelegramDailyNoticeLock(noticeKey: string): Promise<void> 
 
 async function sendLiveBroadcastClosingReport(_reason?: string): Promise<void> {
   const todayEgypt = getCurrentEgyptDateString(new Date());
-  if (liveBroadcastSession.closingReportSentDate === todayEgypt) return;
+  if (
+    liveBroadcastSession.closingReportSentDate === todayEgypt ||
+    autoPilot.vipClosingReportSentDate === todayEgypt
+  ) {
+    return;
+  }
   if (Date.now() - lastLiveClosingReportAttemptMs < 45_000) return;
   lastLiveClosingReportAttemptMs = Date.now();
   await loadStateFromCloudAndDisk();
-  if (liveBroadcastSession.closingReportSentDate === todayEgypt) return;
+  if (
+    liveBroadcastSession.closingReportSentDate === todayEgypt ||
+    autoPilot.vipClosingReportSentDate === todayEgypt
+  ) {
+    return;
+  }
   if (!(await claimTelegramDailyNoticeLock(`evening_closing_${todayEgypt}`))) {
     liveBroadcastSession.closingReportSentDate = todayEgypt;
+    autoPilot.vipClosingReportSentDate = todayEgypt;
     return;
   }
 
@@ -7307,61 +7258,63 @@ async function sendLiveBroadcastClosingReport(_reason?: string): Promise<void> {
     : (liveBroadcastSession.losses || 0);
   const totalDecisive = wins + losses;
   const winRate = totalDecisive > 0 ? Math.round((wins / totalDecisive) * 100) : (liveBroadcastSession.winRate || 0);
-  const isWin = totalDecisive > 0 && (liveStatus.isProfitable || wins >= 2 || winRate >= 60);
+  const isWin = totalDecisive > 0 && (winRate >= 60 || wins > losses);
 
   const todayLiveSignals = signalsStore.filter(s => {
     if (!s.createdAt || s.status === 'PENDING') return false;
-    if (!s.isLiveBroadcast && !(s.payout && s.payout.includes('بث حي'))) return false;
     const d = new Date(s.createdAt);
-    return !isNaN(d.getTime()) && getCurrentEgyptDateString(d) === todayEgypt;
+    if (isNaN(d.getTime()) || getCurrentEgyptDateString(d) !== todayEgypt) return false;
+    return Boolean(s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي')) || (s.vipTelegramMessageId && isCairoInEveningSession(d)));
   });
   const livePairHighlights = buildSessionPairHighlightsText(todayLiveSignals);
 
   let msg = '';
   if (isWin) {
     msg = [
-      '🔴 التقرير الختامي لجلسة البث المباشر الحي مع أبوسليم | ZAD FX 🔴',
-      `📅 التاريخ: ${todayEgypt} (جلسة البث المباشر 04:30 م - 08:00 م ⚡)`,
+      '🔴 التقرير الختامي لجلسة القناة الخاصة VIP وروبوت كيوتكس | ZAD FX 🔴',
+      `📅 التاريخ: ${todayEgypt} (الفترة المسائية 04:30 م - 07:00 م ⚡)`,
       '━━━━━━━━━━━━━━━━━━━',
-      '🎉 ألف مبروك لجميع أعضاء VIP وروبوت كيوتكس الأبطال تحقيق مستهدف البث المباشر بنجاح! 🏆💰',
+      '🎉 ألف مبروك لجميع أعضاء القناة الخاصة VIP وروبوت كيوتكس تحقيق مستهدف الجلسة (60%+) بنجاح! 🏆💰',
       '',
-      `📊 نتائج جلسة البث المباشر:`,
+      `📊 نتائج الجلسة المسائية:`,
       `✅ عدد الصفقات الرابحة: ${wins}`,
       `❌ عدد الصفقات الخاسرة: ${losses}`,
       `🎯 نسبة النجاح المحققة: ${winRate}%`,
       ...(livePairHighlights ? [livePairHighlights] : []),
       '━━━━━━━━━━━━━━━━━━━',
-      '🛑 شكراً لكم، نكتفي بهذا القدر المميز لحماية رأس المال والأرباح.',
-      'نلتقي غداً في تمام الساعة 10:30 صباحاً بتوقيت مصر مع انطلاق الجلسة الصباحية 🤝💎',
+      '🛑 تم الاكتفاء بهذا القدر وإغلاق إشارات القناة الخاصة لليوم لحماية رأس المال والأرباح (لن يُعاد بث الإشارات اليوم).',
+      'نلتقي غداً في تمام الساعة 10:30 صباحاً بتوقيت مصر في القناة العامة 🤝💎',
       '━━━━━━━━━━━━━━━━━━━',
       `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
     ].join('\n');
   } else {
     msg = [
-      '🔴 التقرير الختامي لجلسة البث المباشر الحي مع أبوسليم | ZAD FX 🔴',
-      `📅 التاريخ: ${todayEgypt} (جلسة البث المباشر 04:30 م - 08:00 م ⚡)`,
+      '🔴 التقرير الختامي لجلسة القناة الخاصة VIP وروبوت كيوتكس | ZAD FX 🔴',
+      `📅 التاريخ: ${todayEgypt} (الفترة المسائية 04:30 م - 07:00 م ⚡)`,
       '━━━━━━━━━━━━━━━━━━━',
-      '🤝 نطمئن جميع أبطالنا وأعضاء VIP الكرام ونقول لكم: القادم غداً أفضل بإذن الله تعالى.',
-      'السوق واجه بعض التذبذبات، والتزامنا الصارم بإدارة رأس المال (1%-2%) هو حمايتنا الدائمة.',
+      '🤝 نطمئن جميع أعضاء القناة الخاصة VIP الكرام ونقول لكم: القادم غداً أفضل بإذن الله تعالى.',
+      'تم اختتام الجلسة المسائية وإيقاف البث لليوم حفاظاً على رأس المال.',
       '',
-      `📊 نتائج جلسة البث المباشر:`,
+      `📊 نتائج الجلسة المسائية:`,
       `✅ عدد الصفقات الرابحة: ${wins}`,
       `❌ عدد الصفقات الخاسرة: ${losses}`,
       `🎯 نسبة النجاح المحققة: ${winRate}%`,
       ...(livePairHighlights ? [livePairHighlights] : []),
       '━━━━━━━━━━━━━━━━━━━',
-      'شكراً لكم ونلتقي غداً في تمام الساعة 10:30 صباحاً بتوقيت مصر مع أقوى الصفقات 🤝🛡️',
+      'شكراً لكم، نكتفي بهذا القدر ولنا لقاء غداً بإذن الله في الساعة 10:30 صباحاً 🤝🛡️',
       '━━━━━━━━━━━━━━━━━━━━',
       `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
     ].join('\n');
   }
 
-  // Send closing report strictly to VIP channel (Free channel ended at 12:00 PM)
+  // Send closing report strictly to VIP Private Channel ONLY
   if (vipToken && vipChat) {
     try {
       const tgRes = await sendTelegramMessage(vipToken, vipChat, msg);
       if (tgRes.ok) {
         liveBroadcastSession.closingReportSentDate = todayEgypt;
+        autoPilot.vipClosingReportSentDate = todayEgypt;
+        liveBroadcastSession.status = _reason === 'target_reached' ? 'STOPPED_TARGET_REACHED' : 'STOPPED_SESSION_COMPLETED';
         console.log(`[Live Broadcast 🔴] Closing report sent to VIP channel (${todayEgypt}, reason=${_reason || 'end'}, wins=${wins}, losses=${losses}, winRate=${winRate}%).`);
       } else {
         console.warn('[Live Broadcast 🔴] Failed to send VIP closing report:', tgRes.description);
@@ -7432,12 +7385,6 @@ async function handleLiveBroadcastSignalOutcome(sig: SignalItem, status: 'WIN' |
       const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
       if (vipToken && vipChat) {
         sendTelegramMessage(vipToken, vipChat, apologyMsg).catch(() => {});
-      }
-
-      const freeToken = (autoPilot.botToken || '').trim();
-      const freeChat = (autoPilot.chatId || '').trim();
-      if (freeToken && freeChat) {
-        sendTelegramMessage(freeToken, freeChat, apologyMsg).catch(() => {});
       }
     }
   } else {
@@ -7524,11 +7471,16 @@ async function dispatchLiveBroadcastAutomatedSignal(candidate: LivePairSnapshot)
   await saveState();
 
   let vipTelegramMessageId: number | undefined;
-  let freeTelegramMessageId: number | undefined;
 
   const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
   const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
-  if (vipToken && vipChat) {
+  const todayEgyptNow = getCurrentEgyptDateString(new Date());
+  if (
+    vipToken &&
+    vipChat &&
+    liveBroadcastSession.closingReportSentDate !== todayEgyptNow &&
+    autoPilot.vipClosingReportSentDate !== todayEgyptNow
+  ) {
     try {
       const res = await sendTelegramMessage(vipToken, vipChat, formattedMessage);
       if (res.ok && res.result?.message_id) {
@@ -7538,30 +7490,11 @@ async function dispatchLiveBroadcastAutomatedSignal(candidate: LivePairSnapshot)
     } catch (_err) {}
   }
 
-  // All Telegram channels requirement: Also dispatch 6:00 PM Live Broadcast signal to Free Channel
-  const freeToken = (autoPilot.botToken || '').trim();
-  const freeChat = (autoPilot.chatId || '').trim();
-  if (freeToken && freeChat) {
-    try {
-      const res = await sendTelegramMessage(freeToken, freeChat, formattedMessage);
-      if (res.ok && res.result?.message_id) {
-        freeTelegramMessageId = res.result.message_id;
-        newSignal.telegramMessageId = freeTelegramMessageId;
-      }
-    } catch (_err) {}
-  }
-
   const idx = signalsStore.findIndex(s => s.id === newSignal.id);
-  if (idx !== -1) {
-    if (vipTelegramMessageId) signalsStore[idx].vipTelegramMessageId = vipTelegramMessageId;
-    if (freeTelegramMessageId) signalsStore[idx].telegramMessageId = freeTelegramMessageId;
+  if (idx !== -1 && vipTelegramMessageId) {
+    signalsStore[idx].vipTelegramMessageId = vipTelegramMessageId;
   }
   await saveState();
-
-  // Floating Robot HUD notification & cloud feed sync
-  try {
-    await saveState();
-  } catch (_e) {}
 
   // Evaluation after candle close
   const msUntilCandleClose = Math.max(68000, targetEntryDate.getTime() + 68000 - Date.now());
@@ -7593,25 +7526,19 @@ async function dispatchLiveBroadcastAutomatedSignal(candidate: LivePairSnapshot)
       ? '⚖️ تعادل (استرداد رأس المال بالكامل 100% 🛡️)'
       : '❌ خسارة';
 
-    // Update in VIP Channel
-    if (vipToken && vipChat && target.vipTelegramMessageId) {
+    const todayCloseCheck = getCurrentEgyptDateString(new Date());
+    const vipClosed =
+      liveBroadcastSession.closingReportSentDate === todayCloseCheck ||
+      autoPilot.vipClosingReportSentDate === todayCloseCheck;
+
+    // Update strictly in VIP Channel ONLY if closing report hasn't been sent yet
+    if (vipToken && vipChat && target.vipTelegramMessageId && !vipClosed) {
       await updateSingleTelegramDestination(
         vipToken,
         vipChat,
         target.formattedMessage,
         outcomeBadge,
         target.vipTelegramMessageId
-      );
-    }
-
-    // Update in Free Channel
-    if (freeToken && freeChat && target.telegramMessageId) {
-      await updateSingleTelegramDestination(
-        freeToken,
-        freeChat,
-        target.formattedMessage,
-        target.status === 'WIN' ? '✅ ربح بث حي' : target.status === 'DRAW' ? '⚖️ تعادل (استرداد 100%)' : '❌ خسارة',
-        target.telegramMessageId
       );
     }
 
@@ -7641,6 +7568,7 @@ async function checkAndSendEveningOpeningGreeting(): Promise<boolean> {
   // Never send welcome if evening session already closed or finished
   if (
     liveBroadcastSession.closingReportSentDate === todayEgypt ||
+    autoPilot.vipClosingReportSentDate === todayEgypt ||
     liveBroadcastSession.status === 'STOPPED_TARGET_REACHED' ||
     liveBroadcastSession.status === 'STOPPED_BAD_MARKET' ||
     liveBroadcastSession.status === 'STOPPED_SESSION_COMPLETED' ||
@@ -7679,20 +7607,20 @@ async function checkAndSendEveningOpeningGreeting(): Promise<boolean> {
     const minsLeft = Math.max(1, EVENING_ACTIVE_MIN - cairoMins);
     const introMsg = cairoMins < EVENING_ACTIVE_MIN
       ? [
-          '🔴 بث مباشر حي مع ابوسليم 🔴 (Live Session ⚡)',
+          '🔴 بث مباشر القناة الخاصة VIP 🔴 (Live Session ⚡)',
           '━━━━━━━━━━━━━━━━━━━',
           `نقول بسم الله ونبدأ بعد ${minsLeft} دقيقة ⏱️`,
           'استعدوا يا أبطال 🚀',
           '━━━━━━━━━━━━━━━━━━━',
-          'البث المباشر يعمل على قناة VIP وروبوت التداول الآلي (04:30 م - 08:00 م بتوقيت مصر) مع توقف ذكي عند تحقيق 60%+ ⚡'
+          'القناة الخاصة VIP وروبوت التداول يعملان من 04:30 م - 07:00 م بتوقيت مصر مع الاكتفاء بنسبة 60%+ وإرسال التقرير الختامي ⚡'
         ].join('\n')
       : [
-          '🔴 بث مباشر حي مع ابوسليم 🔴 (Live Session ⚡)',
+          '🔴 بث مباشر القناة الخاصة VIP 🔴 (Live Session ⚡)',
           '━━━━━━━━━━━━━━━━━━━',
-          'نقول بسم الله — انطلقت جلسة البث المباشر المسائية الآن 🚀',
+          'نقول بسم الله — انطلقت جلسة القناة الخاصة المسائية الآن 🚀',
           'جاري مسح الأزواج الستة واقتناص أقوى الفرص ⚡',
           '━━━━━━━━━━━━━━━━━━━',
-          'البث المباشر يعمل على قناة VIP وروبوت التداول الآلي (04:30 م - 08:00 م بتوقيت مصر) مع توقف ذكي عند تحقيق 60%+ ⚡'
+          'القناة الخاصة VIP وروبوت التداول يعملان من 04:30 م - 07:00 م بتوقيت مصر مع الاكتفاء بنسبة 60%+ ⚡'
         ].join('\n');
 
     const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
@@ -7732,12 +7660,12 @@ async function checkAndSendEveningOpeningGreeting(): Promise<boolean> {
 }
 
 /**
- * Checks and manages the automated 04:30 PM (16:30 Egypt time) Live Broadcast session:
- * - 16:30: Sends introductory notice "نقول بسم الله ونبدأ بعد 10 دقائق استعدوا يا أبطال 🚀" to VIP
+ * Checks and manages the automated 04:30 PM (16:30 Egypt time) Evening VIP Session:
+ * - 16:30: Sends introductory notice to VIP Channel
  * - 16:30 - 16:40: Pre-scan 10-minute warm-up
- * - 16:40 - 20:00: Active broadcast exclusively to VIP Private Channel and Floating Robot
- * - Stops upon 60%+ win rate target (min 2 decisive trades), 3 consecutive losses, or at 20:00
- * - Sends congratulations or comforting closing report at end of session
+ * - 16:40 - 19:00: Active broadcast exclusively to VIP Private Channel and Floating Robot
+ * - Stops upon 60%+ win rate target (min 2 decisive trades), 3 consecutive losses, or at 19:00
+ * - Sends closing report once and never repeats signals again for the day
  */
 async function checkLiveBroadcastEveningSession(): Promise<void> {
   if (liveBroadcastSession.enabled === false) return;
@@ -7753,7 +7681,7 @@ async function checkLiveBroadcastEveningSession(): Promise<void> {
   if (liveBroadcastSession.activeDate !== todayEgypt) {
     liveBroadcastSession.activeDate = todayEgypt;
     liveBroadcastSession.status = 'IDLE';
-    liveBroadcastSession.statusNote = 'الجلسة في وضع الاستعداد بانتظار موعد الساعة 04:30 عصراً (مسح 10 دقائق)';
+    liveBroadcastSession.statusNote = 'الجلسة المسائية الخاصة مبرمجة من 04:30 عصراً حتى 07:00 مساءً بتوقيت مصر (الاكتفاء بـ 60%+)';
     liveBroadcastSession.wins = 0;
     liveBroadcastSession.losses = 0;
     liveBroadcastSession.consecutiveLosses = 0;
@@ -7771,6 +7699,10 @@ async function checkLiveBroadcastEveningSession(): Promise<void> {
 
   // Fallback evaluator: Evaluate any finished live broadcast candle whose result was missed
   const nowMs = Date.now();
+  const vipAlreadyClosed =
+    liveBroadcastSession.closingReportSentDate === todayEgypt ||
+    autoPilot.vipClosingReportSentDate === todayEgypt;
+
   for (const sig of signalsStore) {
     if (
       (sig.isLiveBroadcast || (sig.payout && sig.payout.includes('بث حي'))) &&
@@ -7792,7 +7724,7 @@ async function checkLiveBroadcastEveningSession(): Promise<void> {
 
       const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
       const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
-      if (vipToken && vipChat && sig.vipTelegramMessageId) {
+      if (vipToken && vipChat && sig.vipTelegramMessageId && !vipAlreadyClosed) {
         await updateSingleTelegramDestination(
           vipToken,
           vipChat,
@@ -7812,11 +7744,12 @@ async function checkLiveBroadcastEveningSession(): Promise<void> {
   if (
     liveBroadcastSession.status === 'STOPPED_TARGET_REACHED' ||
     liveBroadcastSession.status === 'STOPPED_BAD_MARKET' ||
-    liveBroadcastSession.status === 'STOPPED_SESSION_COMPLETED'
+    liveBroadcastSession.status === 'STOPPED_SESSION_COMPLETED' ||
+    vipAlreadyClosed
   ) {
-    // Guarantee closing report is never missed even if session stopped early or server restarted before 20:00
     if (
       liveBroadcastSession.closingReportSentDate !== todayEgypt &&
+      autoPilot.vipClosingReportSentDate !== todayEgypt &&
       (liveBroadcastSession.status !== 'STOPPED_BAD_MARKET' || cairoMins >= EVENING_END_MIN)
     ) {
       await sendLiveBroadcastClosingReport('ensure_closing_report');
@@ -7827,16 +7760,19 @@ async function checkLiveBroadcastEveningSession(): Promise<void> {
   // Before 16:30 (04:30 PM)
   if (cairoMins < EVENING_START_MIN) {
     liveBroadcastSession.status = 'IDLE';
-    liveBroadcastSession.statusNote = 'الجلسة مبرمجة لتبدأ الساعة 04:30 عصراً بتوقيت القاهرة (04:30 م - 08:00 م)';
+    liveBroadcastSession.statusNote = 'الجلسة الخاصة VIP مبرمجة لتبدأ الساعة 04:30 عصراً بتوقيت القاهرة (04:30 م - 07:00 م)';
     return;
   }
 
-  // At 20:00 (08:00 PM Egypt Time): Strictly conclude evening live session and send closing report
+  // At 19:00 (07:00 PM Egypt Time): Strictly conclude evening VIP session and send closing report
   if (cairoMins >= EVENING_END_MIN) {
-    if (liveBroadcastSession.closingReportSentDate !== todayEgypt) {
+    if (
+      liveBroadcastSession.closingReportSentDate !== todayEgypt &&
+      autoPilot.vipClosingReportSentDate !== todayEgypt
+    ) {
       liveBroadcastSession.status = 'STOPPED_SESSION_COMPLETED';
-      liveBroadcastSession.statusNote = '🛑 تم اختتام جلسة البث المباشر (الساعة 08:00 م) وإرسال تقرير الختام للأعضاء.';
-      await sendLiveBroadcastClosingReport('session_time_ended_20');
+      liveBroadcastSession.statusNote = '🛑 تم اختتام جلسة القناة الخاصة VIP (الساعة 07:00 م) وإرسال تقرير الختام للأعضاء.';
+      await sendLiveBroadcastClosingReport('session_time_ended_19');
     }
     return;
   }
@@ -7848,7 +7784,7 @@ async function checkLiveBroadcastEveningSession(): Promise<void> {
   if (cairoMins >= EVENING_START_MIN && cairoMins < EVENING_ACTIVE_MIN) {
     liveBroadcastSession.status = 'PRE_SCANNING';
     const minsLeft = Math.max(1, EVENING_ACTIVE_MIN - cairoMins);
-    liveBroadcastSession.statusNote = `🔍 فترة المسح الفني لفرص السوق العالمي جارية قبل البث (متبقي ${minsLeft} دقيقة حتى بداية إرسال الصفقات)`;
+    liveBroadcastSession.statusNote = `🔍 فترة المسح الفني للقناة الخاصة VIP جارية قبل البث (متبقي ${minsLeft} دقيقة حتى بداية الصفقات)`;
 
     try {
       const { selectedCandidate } = await scanRealGlobalForexMarket(false);
@@ -7859,14 +7795,12 @@ async function checkLiveBroadcastEveningSession(): Promise<void> {
     return;
   }
 
-  // Active broadcast from 16:40 to 20:00:
-  // Signals are dispatched directly by the unified MPB engine (checkVipMomentumPauseBreakoutLoop)
-  // at the :49-:53s mark, ensuring synchronized instant delivery to VIP channel and Quotex Robot.
+  // Active broadcast from 16:40 to 19:00:
   liveBroadcastSession.status = 'ACTIVE_BROADCAST';
   const minsRunning = liveBroadcastSession.firstSignalTimestamp
     ? Math.floor((Date.now() - liveBroadcastSession.firstSignalTimestamp) / 60000)
     : 0;
-  liveBroadcastSession.statusNote = `🟢 جلسة البث الحي نشطة حالياً وترسل صفقات السوق العالمي لقناة VIP (مضى ${minsRunning} دقيقة — التوقف الذكي عند 60%+ أو 08:00 م)`;
+  liveBroadcastSession.statusNote = `🟢 جلسة القناة الخاصة VIP نشطة حالياً (مضى ${minsRunning} دقيقة — الاكتفاء بـ 60%+ أو الساعة 07:00 م)`;
 }
 
 // Mutex lock to prevent concurrent overlapping executions of checkFocusedGlobalMarketAutoPilot
@@ -8153,9 +8087,7 @@ async function dispatchEndOfDayReportToTelegram(
 }
 
 /**
- * Dispatches the 11:00 AM Morning Opening Greeting & Readiness Notice once per day to Free & VIP Channels:
- * - "صباح الخير، يوم جميل بإذن الله — نستعد..."
- * - Announces 6-pair scanning & 5-10 minute preparation before first signal.
+ * Dispatches the 10:30 AM Morning Opening Greeting & Readiness Notice once per day strictly to the Public/Free Channel:
  */
 async function checkAndSendMorningOpeningGreeting(): Promise<boolean> {
   if (!isGlobalForexMarketOpen()) return false;
@@ -8178,48 +8110,29 @@ async function checkAndSendMorningOpeningGreeting(): Promise<boolean> {
 
   const freeToken = (autoPilot.botToken || '').trim();
   const freeChat = (autoPilot.chatId || '').trim();
-  const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
-  const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
 
   const greetingText = [
     `☀️ صباح الخير، يوم جميل بإذن الله 🌹✨`,
     `━━━━━━━━━━━━━━━━━━━━`,
-    `🚀 نستعد الآن لانطلاق جلسة التداول الصباحية الرسمية (10:30 ص - 01:00 ظهراً بتوقيت مصر).`,
+    `🚀 نستعد الآن لانطلاق الجلسة الصباحية للقناة العامة (10:30 ص - 01:00 ظهراً بتوقيت مصر).`,
     `🔍 يتم الآن مسح السوق وفحص السيولة في الأزواج الستة المعتمدة:`,
     `📊 EUR/USD • EUR/JPY • GBP/USD • AUD/USD • USD/CAD • GBP/JPY`,
-    `⏳ فترة الاستعداد: 5 إلى 10 دقائق قبل صدور أول إشارة بإذن الله لضمان أعلى دقة.`,
+    `⏳ فترة الاستعداد: 5 إلى 8 دقائق قبل صدور أول إشارة بإذن الله لضمان أعلى دقة.`,
     `━━━━━━━━━━━━━━━━━━━━`,
     `💡 جهزوا الأزواج الستة مفتوحة على منصة كيوتكس والتزموا بإدارة رأس المال.`
   ].join('\n');
 
   let anySentOk = false;
-  const deliveries: Promise<any>[] = [];
-  if (freeToken && freeChat) {
-    deliveries.push(
-      sendTelegramMessage(freeToken, freeChat, greetingText)
-        .then(r => {
-          if (r.ok) {
-            anySentOk = true;
-            console.log(`[Morning Greeting ☀️] Sent 10:30 AM greeting to Free channel (${todayEgypt}).`);
-          }
-        })
-        .catch(() => {})
-    );
-  }
-  if (vipToken && vipChat) {
-    deliveries.push(
-      sendTelegramMessage(vipToken, vipChat, greetingText)
-        .then(r => {
-          if (r.ok) {
-            anySentOk = true;
-            console.log(`[Morning Greeting ☀️] Sent 10:30 AM greeting to VIP channel (${todayEgypt}).`);
-          }
-        })
-        .catch(() => {})
-    );
+  if (freeToken && freeChat && autoPilot.freeBotEnabled !== false) {
+    try {
+      const r = await sendTelegramMessage(freeToken, freeChat, greetingText);
+      if (r.ok) {
+        anySentOk = true;
+        console.log(`[Morning Greeting ☀️] Sent 10:30 AM greeting to Public/Free channel (${todayEgypt}).`);
+      }
+    } catch (_e) {}
   }
 
-  await Promise.allSettled(deliveries);
   if (anySentOk) {
     autoPilot.morningGreetingSentDate = todayEgypt;
     autoPilot.freeBotDailyTargetReached = false;
@@ -8236,156 +8149,118 @@ async function checkAndSendMorningOpeningGreeting(): Promise<boolean> {
 }
 
 /**
- * Unified Morning Session Closing Report (10:30 AM to 01:00 PM Cairo Time):
- * - Stops either when 60%+ win rate is achieved, OR at 01:00 PM.
- * - Dispatched simultaneously to Free Channel (@ZadNBFX) and VIP Channel.
+ * Morning Public/Free Channel Closing Report (strictly 01:00 PM Cairo Time):
+ * - Public channel runs the entire 10:30 AM - 01:00 PM session WITHOUT win/rate caps.
+ * - Sends report at 01:00 PM strictly to Free/Public Channel ONLY (never VIP!).
+ * - Once sent, blocks any further signals or trade analyses for the rest of the day on Free Channel.
  */
 async function checkAndSendMorningSessionClosingReport(forceClose = false): Promise<boolean> {
   const todayEgypt = getCurrentEgyptDateString(new Date());
-  const freeAlreadySent =
-    autoPilot.freeBot12ReportSentDate === todayEgypt ||
-    autoPilot.freeBotCelebrationSentDate === todayEgypt;
-  const vipAlreadySent = autoPilot.vipMorningReportSentDate === todayEgypt;
+  const freeAlreadySent = autoPilot.freeBot12ReportSentDate === todayEgypt;
 
-  if (freeAlreadySent && vipAlreadySent) {
-    return false; // Already sent to both channels today
-  }
-
-  const currentCairoMins = getCairoMinutesOfDay();
-  const status = getFreeBotTargetStatus();
-
-  // If not forced by closing time (01:00 PM) and target not yet reached, wait for trades
-  if (!forceClose && !status.isTargetReached && currentCairoMins < MORNING_END_MIN) {
+  if (freeAlreadySent) {
     return false;
   }
 
-  // Must have at least 1 completed signal today to end early before 01:00 PM
-  if (status.totalCompleted === 0 && currentCairoMins < MORNING_END_MIN) {
+  const currentCairoMins = getCairoMinutesOfDay();
+  // Never close morning Public channel early for win rate — only close at >= 01:00 PM (13:00) or explicit admin forceClose
+  if (!forceClose && currentCairoMins < MORNING_END_MIN) {
     return false;
   }
 
   if (!(await claimTelegramDailyNoticeLock(`morning_closing_${todayEgypt}`))) {
     autoPilot.freeBotCelebrationSentDate = todayEgypt;
     autoPilot.freeBot12ReportSentDate = todayEgypt;
-    autoPilot.vipMorningReportSentDate = todayEgypt;
+    autoPilot.freeBotDailyTargetReached = true;
+    autoPilot.freeBotStoppedForToday = true;
     return false;
   }
 
+  const status = getFreeBotTargetStatus();
   const freeToken = (autoPilot.botToken || '').trim();
   const freeChat = (autoPilot.chatId || '').trim();
-  const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
-  const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
 
   const wins = status.todayWins;
   const losses = status.todayLosses;
   const winRate = status.winRate;
-  const isWin = status.totalCompleted > 0 && (winRate >= 60 || (wins >= 2 && losses === 0) || wins > losses);
+  const isWin = status.totalCompleted > 0 && (winRate >= 50 || wins >= losses);
 
   const morningSignalsToday = signalsStore.filter(s => {
     if (!s.createdAt || s.status === 'PENDING') return false;
     if (s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'))) return false;
-    if (!s.telegramMessageId && !s.vipTelegramMessageId) return false;
+    if (!s.telegramMessageId) return false;
     const d = new Date(s.createdAt);
     if (isNaN(d.getTime()) || getCurrentEgyptDateString(d) !== todayEgypt) return false;
     return isCairoInMorningSession(d);
   });
   const morningPairHighlights = buildSessionPairHighlightsText(morningSignalsToday);
 
-  let reportText = '';
-  if (isWin) {
-    reportText = [
-      `🎯 التقرير الختامي للجلسة الصباحية الرسمية | ZAD FX 🎯`,
-      `📅 التاريخ: ${todayEgypt} (الفترة من 10:30 ص حتى 01:00 ظهراً ⚡)`,
-      `━━━━━━━━━━━━━━━━━━━━`,
-      `🎉 نبارك لجميع الأعضاء والمتابعين الكرام تحقيق المستهدف الربحي بنجاح! 🎉`,
-      `✅ عدد الصفقات الرابحة: ${wins}`,
-      `❌ عدد الصفقات الخاسرة: ${losses}`,
-      `📈 نسبة النجاح المحققة: ${winRate}%`,
-      ...(morningPairHighlights ? [morningPairHighlights] : []),
-      `━━━━━━━━━━━━━━━━━━━━`,
-      `🛑 تم الاكتفاء بهذا القدر المميز من الأرباح لحماية رأس المال.`,
-      `• القناة العامة: تتوقف عن العمل لليوم، ونلتقي بكم غداً في تمام الساعة 10:30 صباحاً 🤝`,
-      `• القناة الخاصة والروبوت: موعدنا يتجدد في البث المباشر الحي مع أبوسليم الساعة 04:30 عصراً بتوقيت مصر 🔴⚡`,
-      `━━━━━━━━━━━━━━━━━━━━`,
-      `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
-    ].join('\n');
-  } else {
-    reportText = [
-      `🎯 التقرير الختامي للجلسة الصباحية الرسمية | ZAD FX 🎯`,
-      `📅 التاريخ: ${todayEgypt} (الفترة من 10:30 ص حتى 01:00 ظهراً ⚡)`,
-      `━━━━━━━━━━━━━━━━━━━━`,
-      `🤝 نطمئن جميع متابعينا وأعضائنا الأعزاء ونقول لكم: القادم غداً أفضل بإذن الله تعالى.`,
-      `📊 نتائج الجلسة الصباحية:`,
-      `✅ عدد الصفقات الرابحة: ${wins}`,
-      `❌ عدد الصفقات الخاسرة: ${losses}`,
-      `🎯 نسبة النجاح: ${winRate}%`,
-      ...(morningPairHighlights ? [morningPairHighlights] : []),
-      `━━━━━━━━━━━━━━━━━━━━`,
-      `💡 الالتزام الصارم بإدارة رأس المال (1% إلى 2%) هو سر النجاح والاستمرارية دائماً.`,
-      `• القناة العامة: تتوقف عن العمل لليوم ونلتقي بكم غداً في تمام الساعة 10:30 صباحاً 🤝`,
-      `• القناة الخاصة والروبوت: نلتقي معكم في البث المباشر الحي مع أبوسليم الساعة 04:30 عصراً بتوقيت مصر 🔴⚡`,
-      `━━━━━━━━━━━━━━━━━━━━`,
-      `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
-    ].join('\n');
+  const reportText = isWin
+    ? [
+        `🎯 التقرير الختامي للجلسة الصباحية | القناة العامة ZAD FX 🎯`,
+        `📅 التاريخ: ${todayEgypt} (من 10:30 ص حتى 01:00 ظهراً بتوقيت مصر ⚡)`,
+        `━━━━━━━━━━━━━━━━━━━━`,
+        `📊 ملخص نتائج إشارات القناة العامة اليوم:`,
+        `✅ عدد الصفقات الرابحة: ${wins}`,
+        `❌ عدد الصفقات الخاسرة: ${losses}`,
+        `📈 نسبة النجاح المحققة: ${winRate}%`,
+        ...(morningPairHighlights ? [morningPairHighlights] : []),
+        `━━━━━━━━━━━━━━━━━━━━`,
+        `🛑 انتهى وقت الجلسة الصباحية للقناة العامة عند الساعة 01:00 ظهراً، ولن يتم بث أي إشارات أو تحليلات أخرى في القناة العامة لليوم.`,
+        `👑 القناة الخاصة VIP وروبوت كيوتكس ينطلقان في الفترة المسائية من الساعة 04:30 عصراً حتى 07:00 مساءً بتوقيت مصر 🔴⚡`,
+        `نلتقي في القناة العامة غداً الساعة 10:30 صباحاً بإذن الله 🤝`,
+        `━━━━━━━━━━━━━━━━━━━━`,
+        `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
+      ].join('\n')
+    : [
+        `🎯 التقرير الختامي للجلسة الصباحية | القناة العامة ZAD FX 🎯`,
+        `📅 التاريخ: ${todayEgypt} (من 10:30 ص حتى 01:00 ظهراً بتوقيت مصر ⚡)`,
+        `━━━━━━━━━━━━━━━━━━━━`,
+        `🤝 نطمئن جميع متابعينا الأعزاء بأن القادم غداً أفضل بإذن الله تعالى.`,
+        `📊 نتائج الجلسة الصباحية للقناة العامة:`,
+        `✅ عدد الصفقات الرابحة: ${wins}`,
+        `❌ عدد الصفقات الخاسرة: ${losses}`,
+        `🎯 نسبة النجاح: ${winRate}%`,
+        ...(morningPairHighlights ? [morningPairHighlights] : []),
+        `━━━━━━━━━━━━━━━━━━━━`,
+        `🛑 انتهى وقت الجلسة الصباحية للقناة العامة لليوم، ولن يتم إرسال أي إشارات أو تحليلات أخرى في القناة العامة حتى غداً الساعة 10:30 صباحاً 🤝`,
+        `👑 القناة الخاصة VIP وروبوت كيوتكس يعملان في الفترة المسائية (04:30 عصراً - 07:00 مساءً) بتوقيت مصر 🔴⚡`,
+        `━━━━━━━━━━━━━━━━━━━━`,
+        `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
+      ].join('\n');
+
+  if (freeToken && freeChat) {
+    try {
+      const res = await sendTelegramMessage(freeToken, freeChat, reportText);
+      if (res.ok) {
+        autoPilot.freeBotCelebrationSentDate = todayEgypt;
+        autoPilot.freeBot12ReportSentDate = todayEgypt;
+        autoPilot.freeBotDailyTargetReached = true;
+        autoPilot.freeBotStoppedForToday = true;
+        console.log(`[Morning Report ✅] Sent 01:00 PM Public/Free Channel closing report (${todayEgypt}).`);
+      }
+    } catch (_e) {}
   }
 
-  const promises: Promise<any>[] = [];
-  if (freeToken && freeChat && !freeAlreadySent) {
-    promises.push(
-      sendTelegramMessage(freeToken, freeChat, reportText)
-        .then(res => {
-          if (res.ok) {
-            autoPilot.freeBotCelebrationSentDate = todayEgypt;
-            autoPilot.freeBot12ReportSentDate = todayEgypt;
-            autoPilot.freeBotDailyTargetReached = true;
-            autoPilot.freeBotStoppedForToday = true;
-            console.log(`[Morning Report ✅] Sent Free Channel closing report (${todayEgypt}).`);
-          }
-        })
-        .catch(() => {})
-    );
-  }
-
-  if (vipToken && vipChat && !vipAlreadySent) {
-    promises.push(
-      sendTelegramMessage(vipToken, vipChat, reportText)
-        .then(res => {
-          if (res.ok) {
-            autoPilot.vipMorningReportSentDate = todayEgypt;
-            console.log(`[Morning Report ✅] Sent VIP Channel closing report (${todayEgypt}).`);
-          }
-        })
-        .catch(() => {})
-    );
-  }
-
-  await Promise.allSettled(promises);
   await saveState();
   return true;
 }
 
 /**
- * Dispatches Free Channel 01:00 PM (13:00) closing report:
+ * Dispatches Free/Public Channel 01:00 PM (13:00) closing report:
  */
 async function checkAndSendFreeBot12Report(): Promise<void> {
   const currentCairoMins = getCairoMinutesOfDay();
   if (currentCairoMins >= MORNING_END_MIN) {
     await checkAndSendMorningSessionClosingReport(true);
-  } else {
-    await checkAndSendMorningSessionClosingReport(false);
   }
 }
 
 /**
- * Dispatches the VIP Channel Morning Session Report:
+ * Private VIP Channel does NOT operate in the morning session (Evening 04:30 PM - 07:00 PM ONLY).
  */
 async function checkAndSendVipMorning12Report(): Promise<void> {
-  const currentCairoMins = getCairoMinutesOfDay();
-  if (currentCairoMins >= MORNING_END_MIN) {
-    await checkAndSendMorningSessionClosingReport(true);
-  } else {
-    await checkAndSendMorningSessionClosingReport(false);
-  }
+  return;
 }
 
 /**
@@ -8437,71 +8312,8 @@ async function checkAndSendVipClosingReport(): Promise<void> {
   const todayEgypt = getCurrentEgyptDateString(new Date());
   if (autoPilot.vipClosingReportSentDate === todayEgypt || liveBroadcastSession.closingReportSentDate === todayEgypt) return;
   const currentCairoMins = getCairoMinutesOfDay();
-  if (currentCairoMins < EVENING_END_MIN) return; // Closes at 08:00 PM (20:00)
-
-  const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
-  const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
-  if (!vipToken || !vipChat) return;
-
-  // Filter VIP signals of today (strictly VIP channel signals, excluding live broadcast)
-  const dayVipSignals = signalsStore.filter(s => {
-    if (!s.createdAt || s.status === 'PENDING') return false;
-    if (s.isLiveBroadcast || (s.payout && s.payout.includes('بث حي'))) return false;
-    if (!s.vipTelegramMessageId) return false;
-    const d = new Date(s.createdAt);
-    if (isNaN(d.getTime())) return false;
-    return getCurrentEgyptDateString(d) === todayEgypt;
-  });
-
-  const is0Gale = !autoPilot.oneGaleEnabled;
-  const wins = dayVipSignals.filter(s => s.status === 'WIN' || (!is0Gale && s.status === 'WIN_GALE1')).length;
-  const losses = dayVipSignals.filter(s => s.status === 'LOSS' || (is0Gale && s.status === 'WIN_GALE1')).length;
-  const total = wins + losses;
-  const winRate = total > 0 ? Math.round((wins / total) * 100) : 0;
-
-  if (total === 0) return;
-
-  const isGoodWin = total >= 2 && winRate >= 60 && wins > losses;
-  const vipPairHighlights = buildSessionPairHighlightsText(dayVipSignals);
-
-  let message = '';
-  if (isGoodWin) {
-    message = [
-      '👑 التقرير الختامي لقناة VIP الخاصة وروبوت كيوتكس | ZAD FX 👑',
-      `📅 التاريخ: ${todayEgypt} (ختام جلسة اليوم الرسمية 08:00 مساءً بتوقيت مصر)`,
-      '━━━━━━━━━━━━━━━━━━━━',
-      '🎉 ألف مبروك لجميع أعضاء ومتاجري قناة VIP وروبوت كيوتكس الأبطال!',
-      'جلسة تداول مميزة وأرباح مباركة بفضل الله تعالى 💰🏆',
-      `📊 نتائج جلسة VIP اليوم:`,
-      `✅ صفقات رابحة: ${wins}`,
-      `❌ صفقات خاسرة: ${losses}`,
-      `🎯 نسبة النجاح: ${winRate}%`,
-      ...(vipPairHighlights ? [vipPairHighlights] : []),
-      '━━━━━━━━━━━━━━━━━━━━',
-      'بارك الله في أرباحكم جميعاً ونلتقي غداً في تمام الساعة 10:30 صباحاً مع انطلاق الصفقات الجديدة 🤝✨'
-    ].join('\n');
-  } else {
-    message = [
-      '🛡️ التقرير الختامي لقناة VIP الخاصة وروبوت كيوتكس | ZAD FX 🛡️',
-      `📅 التاريخ: ${todayEgypt} (ختام جلسة اليوم الرسمية 08:00 مساءً بتوقيت مصر)`,
-      '━━━━━━━━━━━━━━━━━━━━',
-      'تم بحمد الله اختتام جلسة اليوم الرسمية.',
-      'نطمئنكم جميعاً بأن الغد قادم بإذن الله وسيحمل فرصاً أجمل وأرباحاً أفضل بكثير 🤝✨',
-      'السوق اليوم واجه تقلبات وارتدادات خارجة عن المألوف، والتزامنا الصارم بإدارة رأس المال (1%-2%) هو درعنا الحقيقي الذي يحمي محافظكم دائماً في الأيام المتقلبة.',
-      `📊 نتائج الجلسة: ${wins} صفقة رابحة | ${losses} صفقة خاسرة (نسبة النجاح ${winRate}%)`,
-      ...(vipPairHighlights ? [vipPairHighlights] : []),
-      '━━━━━━━━━━━━━━━━━━━━',
-      'راحة اليوم والاستعداد للغد هو جوهر النجاح والاستمرارية.. نراكم غداً في تمام الساعة 10:30 صباحاً بأقوى الفرص إن شاء الله 🛡️'
-    ].join('\n');
-  }
-
-  try {
-    const res = await sendTelegramMessage(vipToken, vipChat, message);
-    if (res.ok) {
-      autoPilot.vipClosingReportSentDate = todayEgypt;
-      await saveState();
-    }
-  } catch (_e) {}
+  if (currentCairoMins < EVENING_END_MIN) return; // Closes at 07:00 PM (19:00)
+  await sendLiveBroadcastClosingReport('session_time_ended_19');
 }
 
 // Background Worker: Scans Global Forex Market without flooding
@@ -8571,14 +8383,12 @@ async function checkFocusedGlobalMarketAutoPilot() {
           );
           sig.formattedMessage = appendResultToSignalMessage(sig.formattedMessage, finalOutcome);
           await saveState();
-          if (sig.telegramMessageId || sig.vipTelegramMessageId) {
-            const mStatus = getFreeBotTargetStatus();
-            if (mStatus.isTargetReached) {
-              await checkAndSendMorningSessionClosingReport(false);
-            }
-          }
           if (sig.isLiveBroadcast || (sig.payout && sig.payout.includes('بث حي'))) {
             await handleLiveBroadcastSignalOutcome(sig, finalOutcome);
+            const liveStatus = getEveningLiveSessionStatus();
+            if (liveStatus.isSessionFinished) {
+              await sendLiveBroadcastClosingReport('target_reached');
+            }
           } else {
             if (sig.telegramMessageId) {
               await handleFreeBotTradeOutcome(sig, finalOutcome);
@@ -8708,19 +8518,13 @@ async function pollTelegramBotIncomingForwards() {
         }
 
         if (/([A-Z]{3}\/[A-Z]{3}|CALL|PUT|UP|DOWN|M1|\d{1,2}:\d{2})/i.test(msg.text)) {
-          const freeTarget = getFreeBotTargetStatus();
-          const cairoH = getCurrentEgyptHour();
-          const canSendFree =
-            autoPilot.freeBotEnabled !== false &&
-            !freeTarget.isTargetReached &&
-            cairoH >= 9 &&
-            cairoH < 15;
+          const canSendFree = isFreeBotActiveNow(autoPilot);
 
           if (!canSendFree) {
             await sendTelegramMessage(
               autoPilot.botToken,
               String(msg.chat.id),
-              '⚠️ تم إيقاف بث القناة العامة حالياً (محققاً المستهدف اليومي 70% - 75% أو خارج فترة العمل 09:00 ص - 03:00 م).'
+              '⚠️ تم إيقاف بث القناة العامة حالياً (انتهاء الجلسة الصباحية 10:30 ص - 01:00 ظهراً أو إرسال التقرير الختامي).'
             );
             continue;
           }
@@ -8815,9 +8619,8 @@ async function startServer() {
       res.setHeader('Access-Control-Allow-Credentials', 'true');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-api-key');
-    } else if (origin && isRobotStatelessPath && isApprovedBrokerOrAppOrigin(origin)) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Vary', 'Origin');
+    } else if (isRobotStatelessPath) {
+      res.setHeader('Access-Control-Allow-Origin', '*');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, x-api-key');
     }
@@ -9050,6 +8853,9 @@ async function startServer() {
 
   // Admin Only: Add a new Subscriber/Member with optional Robot API Key generation
   app.post('/api/subscribers', requireAdminAuth, async (req, res) => {
+    if (!isCloudStateLoaded) {
+      await loadStateFromCloudAndDisk();
+    }
     const b = req.body || {};
     const cleanName = String(b.name || '').trim().slice(0, 120);
     if (!cleanName) {
@@ -9574,6 +9380,9 @@ async function startServer() {
 
   // Admin: Quickly create a dedicated member/key or generate key for Quotex Robot
   app.post('/api/quotex-robot/create-key', requireAdminAuth, async (req, res) => {
+    if (!isCloudStateLoaded) {
+      await loadStateFromCloudAndDisk();
+    }
     const { name, brokerAccountId, expiryDate, tradeStake, defaultMode } = req.body || {};
     if (!name || !String(name).trim()) {
       return res.status(400).json({ ok: false, error: 'اسم العضو مطلوب لتوليد مفتاح الروبوت' });
@@ -9613,7 +9422,11 @@ async function startServer() {
     };
 
     subscribersStore.unshift(newSub);
-    await saveState();
+    if (subscribersStore.length > 250) subscribersStore.pop();
+    const savedOk = await saveState();
+    if (!savedOk) {
+      return res.status(500).json({ ok: false, error: 'تعذر حفظ المفتاح على قرص الخادم' });
+    }
     res.json({ ok: true, subscriber: newSub });
   });
 
@@ -9653,7 +9466,7 @@ async function startServer() {
     res.json({
       ok: true,
       script,
-      version: 'v5.2.1',
+      version: 'v5.4',
       serverOrigin,
       fallbackOrigins,
       embeddedApiKey: embeddedApiKey || 'غير مضمّن'
@@ -9851,7 +9664,7 @@ async function startServer() {
       },
       vipBotStatus: {
         isActive: isVipActive,
-        hoursText: 'الجلسة الصباحية: 10:30 ص - 01:00 م | البث المباشر: 04:30 م - 08:00 م'
+        hoursText: 'القناة العامة: 10:30 ص - 01:00 م | القناة الخاصة VIP والروبوت: 04:30 م - 07:00 م'
       },
       robotConfig: {
         title: robotSettings.robotTitle,

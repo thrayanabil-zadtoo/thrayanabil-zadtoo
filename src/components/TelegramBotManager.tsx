@@ -234,7 +234,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({
   isAdmin = true,
   onSubscriberSynced
 }) => {
-  const canAdminManageKeys = Boolean(adminToken) && isAdmin !== false;
+  const canAdminManageKeys = isAdmin !== false;
   const defaultKeyExpiryStr = () => {
     const d = new Date();
     d.setDate(d.getDate() + 30);
@@ -301,13 +301,13 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({
 
   // Fetch initial data from protected Admin API
   const fetchData = async () => {
-    if (!adminToken) return;
+    if (isAdmin === false) return;
     setIsLoading(true);
     try {
       const authHeaders = getAuthHeaders(false);
       const [resUsers, resConfig] = await Promise.all([
-        fetch('/api/telegram-bot/users', { headers: authHeaders }).catch(() => null),
-        fetch('/api/telegram-bot/config', { headers: authHeaders }).catch(() => null)
+        fetch('/api/telegram-bot/users', { credentials: 'include', headers: authHeaders }).catch(() => null),
+        fetch('/api/telegram-bot/config', { credentials: 'include', headers: authHeaders }).catch(() => null)
       ]);
 
       if (resUsers && resUsers.ok) {
@@ -353,6 +353,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({
 
       const res = await fetch('/api/telegram-bot/config', {
         method: 'POST',
+        credentials: 'include',
         headers: getAuthHeaders(),
         body: JSON.stringify(payload)
       });
@@ -380,6 +381,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({
       const trimmed = botTokenInput.trim();
       const res = await fetch('/api/telegram-bot/test-token', {
         method: 'POST',
+        credentials: 'include',
         headers: getAuthHeaders(),
         body: JSON.stringify(trimmed ? { token: trimmed } : {})
       });
@@ -407,6 +409,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({
     try {
       const res = await fetch(`/api/telegram-bot/users/${id}/status`, {
         method: 'POST',
+        credentials: 'include',
         headers: getAuthHeaders(),
         body: JSON.stringify({ status })
       });
@@ -428,6 +431,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({
     try {
       const res = await fetch(`/api/telegram-bot/users/${id}`, {
         method: 'DELETE',
+        credentials: 'include',
         headers: getAuthHeaders(false)
       });
       const data = await res.json();
@@ -454,6 +458,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({
     try {
       const res = await fetch(`/api/telegram-bot/users/${targetUser.id}`, {
         method: 'PUT',
+        credentials: 'include',
         headers: getAuthHeaders(),
         body: JSON.stringify({
           ...targetUser,
@@ -490,6 +495,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({
       const shouldGenKey = canAdminManageKeys && addGenerateRobotKey;
       const res = await fetch('/api/telegram-bot/users', {
         method: 'POST',
+        credentials: 'include',
         headers: getAuthHeaders(),
         body: JSON.stringify({
           ...newMember,
@@ -536,6 +542,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({
     try {
       const res = await fetch(`/api/telegram-bot/users/${directMsgUser.id}/message`, {
         method: 'POST',
+        credentials: 'include',
         headers: getAuthHeaders(),
         body: JSON.stringify({ message: directMsgText.trim() })
       });
@@ -566,6 +573,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({
     try {
       const res = await fetch('/api/telegram-bot/broadcast', {
         method: 'POST',
+        credentials: 'include',
         headers: getAuthHeaders(),
         body: JSON.stringify({
           message: broadcastText.trim(),
