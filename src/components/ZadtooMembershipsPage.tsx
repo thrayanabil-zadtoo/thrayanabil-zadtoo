@@ -522,14 +522,14 @@ export const ZadtooMembershipsPage: React.FC<ZadtooMembershipsPageProps> = ({
 
                 <div>
                   <label className="block text-slate-700 font-bold mb-1">
-                    معرف منصة التداول (Quotex ID أو تليجرام):
+                    معرف التليجرام أو منصة التداول (اختياري):
                   </label>
                   <input
                     type="text"
                     value={quotexId}
                     onChange={e => setQuotexId(e.target.value)}
                     dir="ltr"
-                    placeholder="رقم حسابك في المنصة ID أو @username"
+                    placeholder="اختياري: @username أو ID الحساب إن وجد"
                     className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:outline-none focus:border-emerald-500 font-mono-num"
                   />
                 </div>

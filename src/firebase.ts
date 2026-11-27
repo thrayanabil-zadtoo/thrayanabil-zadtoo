@@ -15,11 +15,11 @@ setLogLevel('silent');
 
 const app = initializeApp(firebaseConfig);
 
-// Use experimentalForceLongPolling so Firestore connects reliably inside cloud preview iframes and proxies
+// Use experimentalAutoDetectLongPolling so Firestore prefers fast WebChannel and cleanly falls back in restricted proxies
 export const db = initializeFirestore(
   app,
   {
-    experimentalForceLongPolling: true,
+    experimentalAutoDetectLongPolling: true,
   },
   firebaseConfig.firestoreDatabaseId
 );
@@ -87,10 +87,27 @@ export async function signOutFirebaseAdmin(): Promise<void> {
 }
 
 async function testConnection() {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
+      // Retry once after brief startup settle in case browser iframe channel was still initializing
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        await getDocFromServer(doc(db, 'test', 'connection'));
+        return;
+      } catch (_retryErr) {
+        // Confirm via Firestore REST API whether database/config is actually unreachable
+        try {
+          const restRes = await fetch(
+            `${FIRESTORE_REST_BASE}/test/connection?key=${encodeURIComponent(firebaseConfig.apiKey)}`
+          );
+          if (restRes.ok || restRes.status === 404 || restRes.status === 403) {
+            return;
+          }
+        } catch (_restErr) {}
+      }
       console.error('Please check your Firebase configuration.');
     }
   }
@@ -152,10 +169,12 @@ export const SYSTEM_STATE_DOC_PATH = 'system_state';
 export const SYSTEM_STATE_DOC_ID = 'zad_main_state_v1';
 export const PLATFORM_PLANS_DOC_ID = 'platform_plans';
 export const PLATFORM_LINKS_DOC_ID = 'platform_contact_links';
+export const PLATFORM_SUBSCRIBERS_DOC_ID = 'platform_subscribers';
 export const TELEGRAM_BOT_STATE_DOC_ID = 'telegram_bot_state';
 
 let inMemoryCachedPlans: any[] | null = null;
 let inMemoryCachedLinks: any | null = null;
+let inMemoryCachedSubscribers: any[] | null = null;
 
 async function readMainStateDoc(): Promise<Record<string, any> | null> {
   if (!isFirebaseAdminSignedIn()) return null;
@@ -342,55 +361,174 @@ export async function saveCloudPaymentMethods(methods: any[]): Promise<boolean> 
   return await writeMainStateDoc(mainState);
 }
 
+function normalizeCloudSubscriber(s: any) {
+  const safeMessages = Array.isArray(s?.messages)
+    ? s.messages.slice(-20).map((m: any) => ({
+        id: String(m?.id || ''),
+        sender: m?.sender === 'admin' ? 'admin' : 'member',
+        text: String(m?.text || '').slice(0, 1200),
+        createdAt: String(m?.createdAt || ''),
+        ...(m?.isActivationLink ? { isActivationLink: true } : {})
+      }))
+    : [];
+  return {
+    id: String(s?.id || ''),
+    name: String(s?.name || ''),
+    telegramUsername: String(s?.telegramUsername || ''),
+    country: String(s?.country || 'مصر 🇪🇬'),
+    email: String(s?.email || ''),
+    phone: String(s?.phone || ''),
+    broker: String(s?.broker || 'بدون منصة محددة'),
+    brokerAccountId: String(s?.brokerAccountId || ''),
+    subscriptionType: s?.subscriptionType === 'quotex_referral' ? 'quotex_referral' : 'paid_plan',
+    quotexDepositConfirmed: Boolean(s?.quotexDepositConfirmed),
+    planDuration: String(s?.planDuration || '1_month'),
+    amountPaid: typeof s?.amountPaid === 'number' ? s.amountPaid : 0,
+    paymentMethod: String(s?.paymentMethod || ''),
+    activationLink: String(s?.activationLink || ''),
+    robotApiKey: String(s?.robotApiKey || '').trim().toUpperCase(),
+    status: s?.status || 'ACTIVE',
+    robotExpiryDate: String(s?.robotExpiryDate || s?.expiryDate || ''),
+    expiryDate: String(s?.expiryDate || s?.robotExpiryDate || ''),
+    robotEnabled: s?.robotEnabled !== false,
+    robotDefaultMode: s?.robotDefaultMode || s?.defaultMode || 'AUTO',
+    robotTradeStake: Number(s?.robotTradeStake || s?.tradeStakeUsd) || 5,
+    robotWins: Number(s?.robotWins) || 0,
+    robotLosses: Number(s?.robotLosses) || 0,
+    messages: safeMessages,
+    createdAt: s?.createdAt || new Date().toISOString()
+  };
+}
+
+function mergeSubscriberListsById(primary: any[], secondary: any[]): any[] {
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const item of [...primary, ...secondary]) {
+    if (!item || !item.id || seen.has(item.id)) continue;
+    seen.add(item.id);
+    out.push(item);
+  }
+  return out;
+}
+
+export async function saveCloudSubscribers(subscribers: any[]): Promise<boolean> {
+  if (!Array.isArray(subscribers)) return false;
+  const normalized = mergeSubscriberListsById(subscribers.map(normalizeCloudSubscriber), []).slice(0, 250);
+  inMemoryCachedSubscribers = normalized;
+  if (!isFirebaseAdminSignedIn()) return false;
+
+  const fullPath = `${SYSTEM_STATE_DOC_PATH}/${PLATFORM_SUBSCRIBERS_DOC_ID}`;
+  try {
+    const nowIso = new Date().toISOString();
+    let listToSerialize = normalized;
+    let serialized = JSON.stringify(listToSerialize);
+    if (serialized.length > 480000) {
+      listToSerialize = normalized.map(s => ({ ...s, messages: [] }));
+      serialized = JSON.stringify(listToSerialize);
+    }
+    if (serialized.length > 480000) {
+      listToSerialize = listToSerialize.slice(0, 150);
+      serialized = JSON.stringify(listToSerialize);
+    }
+    if (serialized.length > 495000) return false;
+
+    await setDoc(doc(db, SYSTEM_STATE_DOC_PATH, PLATFORM_SUBSCRIBERS_DOC_ID), {
+      updatedAt: nowIso,
+      payload: serialized
+    });
+
+    try {
+      const mainState = await readMainStateDoc();
+      if (mainState) {
+        mainState.subscribers = listToSerialize.slice(0, 100);
+        await writeMainStateDoc(mainState);
+      }
+    } catch (_ignore) {}
+    return true;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, fullPath);
+    return false;
+  }
+}
+
 export async function loadSubscribersFromFirestore<T = any[]>(): Promise<T | null> {
   if (!isFirebaseAdminSignedIn()) return null;
-  const mainState = await readMainStateDoc();
-  if (mainState && Array.isArray(mainState.subscribers)) {
-    return mainState.subscribers as T;
+  const fullPath = `${SYSTEM_STATE_DOC_PATH}/${PLATFORM_SUBSCRIBERS_DOC_ID}`;
+  let dedicatedSubs: any[] = [];
+  let hasDedicatedDoc = false;
+  try {
+    const snap = await getDoc(doc(db, SYSTEM_STATE_DOC_PATH, PLATFORM_SUBSCRIBERS_DOC_ID));
+    if (snap.exists()) {
+      hasDedicatedDoc = true;
+      const data = snap.data();
+      if (data && typeof data.payload === 'string') {
+        const parsed = JSON.parse(data.payload);
+        if (Array.isArray(parsed)) {
+          dedicatedSubs = parsed;
+        }
+      }
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, fullPath);
   }
-  return null;
+
+  let mainSubs: any[] = [];
+  let hasMainSubs = false;
+  try {
+    const mainState = await readMainStateDoc();
+    if (mainState && Array.isArray(mainState.subscribers)) {
+      hasMainSubs = true;
+      mainSubs = mainState.subscribers;
+    }
+  } catch (_err) {}
+
+  if (!hasDedicatedDoc && !hasMainSubs) {
+    return inMemoryCachedSubscribers as T | null;
+  }
+
+  const merged = mergeSubscriberListsById(dedicatedSubs, mainSubs);
+  inMemoryCachedSubscribers = merged;
+  return merged as T;
 }
 
 export async function saveSubscriberToFirestore(subscriber: any): Promise<boolean> {
   if (!isFirebaseAdminSignedIn() || !subscriber || !subscriber.id) return false;
-  const mainState = (await readMainStateDoc()) || {};
-  const list: any[] = Array.isArray(mainState.subscribers) ? mainState.subscribers : [];
-  const next = [subscriber, ...list.filter((s: any) => s.id !== subscriber.id)];
-  mainState.subscribers = next.map((s: any) => ({
-    id: s.id,
-    name: s.name,
-    telegramUsername: s.telegramUsername || '',
-    country: s.country || '',
-    email: s.email || '',
-    phone: s.phone || '',
-    broker: s.broker || 'Quotex (كوتيكس)',
-    brokerAccountId: s.brokerAccountId || '',
-    subscriptionType: s.subscriptionType || 'paid_plan',
-    quotexDepositConfirmed: Boolean(s.quotexDepositConfirmed),
-    planDuration: s.planDuration || '1_month',
-    amountPaid: typeof s.amountPaid === 'number' ? s.amountPaid : 0,
-    paymentMethod: s.paymentMethod || '',
-    activationLink: s.activationLink || '',
-    robotApiKey: String(s.robotApiKey || '').trim().toUpperCase(),
-    status: s.status || 'ACTIVE',
-    robotExpiryDate: s.robotExpiryDate || s.expiryDate || '',
-    expiryDate: s.expiryDate || s.robotExpiryDate || '',
-    robotEnabled: s.robotEnabled !== false,
-    robotDefaultMode: s.robotDefaultMode || s.defaultMode || 'AUTO',
-    robotTradeStake: s.robotTradeStake || s.tradeStakeUsd || 5,
-    robotWins: s.robotWins || 0,
-    robotLosses: s.robotLosses || 0,
-    createdAt: s.createdAt || new Date().toISOString()
-  }));
-  return await writeMainStateDoc(mainState);
+  const existing = (await loadSubscribersFromFirestore<any[]>()) || [];
+  const next = mergeSubscriberListsById([subscriber], existing);
+  return await saveCloudSubscribers(next);
 }
 
 export async function deleteSubscriberFromFirestore(subscriberId: string, _robotApiKey?: string): Promise<boolean> {
   if (!isFirebaseAdminSignedIn() || !subscriberId) return false;
-  const mainState = (await readMainStateDoc()) || {};
-  const list: any[] = Array.isArray(mainState.subscribers) ? mainState.subscribers : [];
-  mainState.subscribers = list.filter((s: any) => s.id !== subscriberId);
-  return await writeMainStateDoc(mainState);
+  const existing = (await loadSubscribersFromFirestore<any[]>()) || [];
+  const filtered = existing.filter((s: any) => s.id !== subscriberId);
+  inMemoryCachedSubscribers = filtered;
+
+  let okDedicated = false;
+  const fullPath = `${SYSTEM_STATE_DOC_PATH}/${PLATFORM_SUBSCRIBERS_DOC_ID}`;
+  try {
+    const nowIso = new Date().toISOString();
+    const serialized = JSON.stringify(filtered.map(normalizeCloudSubscriber));
+    if (serialized.length <= 495000) {
+      await setDoc(doc(db, SYSTEM_STATE_DOC_PATH, PLATFORM_SUBSCRIBERS_DOC_ID), {
+        updatedAt: nowIso,
+        payload: serialized
+      });
+      okDedicated = true;
+    }
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, fullPath);
+  }
+
+  let okMain = false;
+  try {
+    const mainState = (await readMainStateDoc()) || {};
+    const list: any[] = Array.isArray(mainState.subscribers) ? mainState.subscribers : [];
+    mainState.subscribers = list.filter((s: any) => s.id !== subscriberId);
+    okMain = await writeMainStateDoc(mainState);
+  } catch (_err) {}
+
+  return okDedicated || okMain;
 }
 
 export async function loadSignalsFromFirestore<T = any[]>(): Promise<T | null> {
@@ -470,13 +608,17 @@ export async function syncAllAdminStateToFirestore(state: {
   robotSettings?: any;
 }): Promise<boolean> {
   if (!isFirebaseAdminSignedIn()) return false;
-  const existing = (await readMainStateDoc()) || {};
-  const existingSubs: any[] = Array.isArray(existing.subscribers) ? existing.subscribers : [];
-  let mergedSubscribers = existingSubs;
+  const [existing, existingCloudSubs] = await Promise.all([
+    readMainStateDoc().then(r => r || {}),
+    loadSubscribersFromFirestore<any[]>().then(r => (Array.isArray(r) ? r : []))
+  ]);
+  const mainSubs: any[] = Array.isArray(existing.subscribers) ? existing.subscribers : [];
+  const allExistingSubs = mergeSubscriberListsById(existingCloudSubs, mainSubs);
+
+  let mergedSubscribers = allExistingSubs;
   if (Array.isArray(state.subscribers)) {
-    const incomingIds = new Set(state.subscribers.map((s: any) => s?.id).filter(Boolean));
-    const cloudOnlySubs = existingSubs.filter((s: any) => s?.id && !incomingIds.has(s.id));
-    mergedSubscribers = [...state.subscribers, ...cloudOnlySubs];
+    mergedSubscribers = mergeSubscriberListsById(state.subscribers, allExistingSubs);
+    await saveCloudSubscribers(mergedSubscribers).catch(() => false);
   }
   const merged = {
     ...existing,
@@ -492,7 +634,7 @@ export async function syncAllAdminStateToFirestore(state: {
           }
         }
       : {}),
-    ...(Array.isArray(state.subscribers) ? { subscribers: mergedSubscribers } : {})
+    ...(Array.isArray(state.subscribers) ? { subscribers: mergedSubscribers.map(normalizeCloudSubscriber) } : {})
   };
 
   const ok = await saveCloudSystemState(merged);
@@ -527,18 +669,7 @@ export async function saveCloudSystemState(payloadObj: any): Promise<boolean> {
         };
       }
       if (Array.isArray(sanitizedObj.subscribers)) {
-        sanitizedObj.subscribers = sanitizedObj.subscribers.map((s: any) => ({
-          id: s.id,
-          name: s.name,
-          brokerAccountId: s.brokerAccountId || '',
-          robotApiKey: s.robotApiKey || '',
-          status: s.status,
-          robotExpiryDate: s.robotExpiryDate || s.expiryDate || '',
-          expiryDate: s.expiryDate || '',
-          robotEnabled: s.robotEnabled !== false,
-          defaultMode: s.robotDefaultMode || s.defaultMode || 'AUTO',
-          tradeStakeUsd: s.robotTradeStake || s.tradeStakeUsd || 5,
-        }));
+        sanitizedObj.subscribers = sanitizedObj.subscribers.map(normalizeCloudSubscriber);
       }
       sanitizedObj.quickNotes = [];
       sanitizedObj.stateUpdatedAt = nowIso;

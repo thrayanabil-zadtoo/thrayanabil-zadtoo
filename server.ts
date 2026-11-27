@@ -2328,8 +2328,9 @@ async function saveState(): Promise<boolean> {
     };
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf-8');
     return true;
-  } catch (_e) {
-    return true;
+  } catch (err) {
+    console.error('[saveState] Failed writing autopilot-state.json:', err);
+    return false;
   }
 }
 
@@ -8854,7 +8855,7 @@ async function startServer() {
     });
   });
 
-  // Direct Visitor Registration (No Email Verification Required)
+  // Direct Visitor Registration (Broker/Platform registration is completely optional)
   app.post('/api/register-trader', async (req, res) => {
     const {
       name,
@@ -8868,9 +8869,12 @@ async function startServer() {
       planDuration,
       paymentMethod
     } = req.body;
-    if (!name || !telegramUsername || !email || !phone || !broker || !brokerAccountId) {
-      return res.status(400).json({ ok: false, error: 'يرجى ملء جميع الحقول المطلوبة بما في ذلك رقم حسابك في البروكر (كلمة المرور)' });
+    if (!name || !telegramUsername || !email || !phone) {
+      return res.status(400).json({ ok: false, error: 'يرجى ملء الحقول الأساسية: الاسم ومعرف التليجرام والبريد الإلكتروني ورقم الموبايل.' });
     }
+
+    const cleanBroker = String(broker || '').trim().slice(0, 80) || 'بدون منصة محددة';
+    const cleanBrokerAccountId = String(brokerAccountId || '').trim().slice(0, 80);
 
     const planPrices: Record<string, { label: string; price: number }> = {
       '1_month': { label: 'شهر واحد', price: 30 },
@@ -8883,7 +8887,7 @@ async function startServer() {
       planPrices[p.id] = { label: p.name, price: p.priceUsd };
     }
 
-    const isQuotexBroker = String(broker).toLowerCase().includes('quotex') || String(broker).includes('كوتيكس') || String(broker).includes('كيوتكس');
+    const isQuotexBroker = cleanBroker.toLowerCase().includes('quotex') || cleanBroker.includes('كوتيكس') || cleanBroker.includes('كيوتكس');
     const isQuotexReferral =
       isQuotexBroker &&
       (subscriptionType === 'quotex_referral' || planDuration === 'quotex_referral_free');
@@ -8934,8 +8938,8 @@ async function startServer() {
       existing.name = String(name).trim().slice(0, 120);
       existing.telegramUsername = String(telegramUsername).trim().slice(0, 100);
       existing.country = cleanCountry;
-      existing.broker = String(broker).trim().slice(0, 80);
-      existing.brokerAccountId = String(brokerAccountId).trim().slice(0, 80);
+      existing.broker = cleanBroker;
+      if (cleanBrokerAccountId) existing.brokerAccountId = cleanBrokerAccountId;
       existing.subscriptionType = isQuotexReferral ? 'quotex_referral' : 'paid_plan';
       existing.planDuration = chosenPlanKey;
       existing.paymentMethod = chosenPayMethod;
@@ -8944,12 +8948,15 @@ async function startServer() {
     }
 
     const qxLink = contactLinksStore.quotexReferralLink || autoPilot.quotexReferralLink || 'https://broker-qx.pro/?lid=2303934';
+    const brokerLine = cleanBrokerAccountId
+      ? `\n🔑 رقم حساب البروكر: ${cleanBrokerAccountId}`
+      : '';
     const welcomeMsg: SubscriberMessage = {
       id: `msg-${Date.now()}`,
       sender: 'admin',
       text: isQuotexReferral
-        ? `مرحباً بك يا ${String(name).trim()} في نظام التفعيل المجاني لعضوية كيوتكس (Quotex) VIP! 🎁\n🔗 رابط الإحالة الرسمي للتسجيل في كيوتكس:\n${qxLink}\n📋 خطوات التفعيل المجاني:\n1️⃣ تأكد من تسجيل حسابك في كيوتكس عبر رابط الإحالة أعلاه.\n2️⃣ رقم حسابك في كيوتكس (ID): ${String(brokerAccountId).trim()}\n3️⃣ راسل المشرف هنا لتأكيد ارتباط حسابك في الإحالة.\n4️⃣ بعد التأكد، قم بإيداع 100 دولار ($) أو أكثر في حسابك الشخصي على منصة كيوتكس للتداول بها، وسيتم منحك عضوية VIP مجانية فوراً!`
-        : `مرحباً بك يا ${String(name).trim()} في نَبض التداول VIP!\n🌍 الدولة: ${cleanCountry}\n📦 الباقة المختارة: ${chosenPlanInfo.label} (${priceDisplayForWelcome})\n💳 طريقة الدفع المتاحة: ${chosenPayMethod}\n🔑 رقم حساب البروكر: ${String(brokerAccountId).trim()}\nيمكنك مراسلة المشرف هنا مباشرة لإتمام التفعيل واستلام رابط قناة VIP.`,
+        ? `مرحباً بك يا ${String(name).trim()} في نظام التفعيل المجاني لعضوية كيوتكس (Quotex) VIP! 🎁\n🔗 رابط الإحالة الرسمي للتسجيل في كيوتكس:\n${qxLink}\n📋 خطوات التفعيل المجاني:\n1️⃣ تأكد من تسجيل حسابك في كيوتكس عبر رابط الإحالة أعلاه.${cleanBrokerAccountId ? `\n2️⃣ رقم حسابك في كيوتكس (ID): ${cleanBrokerAccountId}` : ''}\n3️⃣ راسل المشرف هنا لتأكيد تفعيل عضويتك.\n4️⃣ بعد التأكد، قم بإيداع 100 دولار ($) أو أكثر في حسابك الشخصي على منصة كيوتكس للتداول بها، وسيتم منحك عضوية VIP مجانية فوراً!`
+        : `مرحباً بك يا ${String(name).trim()} في نَبض التداول VIP!\n🌍 الدولة: ${cleanCountry}\n📦 الباقة المختارة: ${chosenPlanInfo.label} (${priceDisplayForWelcome})\n💳 طريقة الدفع المتاحة: ${chosenPayMethod}${brokerLine}\nيمكنك مراسلة المشرف هنا مباشرة لإتمام التفعيل واستلام رابط قناة VIP.`,
       createdAt: new Date().toISOString()
     };
 
@@ -8958,11 +8965,11 @@ async function startServer() {
       id: newSubId,
       name: String(name).trim().slice(0, 120),
       telegramUsername: String(telegramUsername).trim().slice(0, 100),
-      country: String(country || 'مصر 🇪🇬').trim().slice(0, 80),
+      country: cleanCountry,
       email: String(email).trim().slice(0, 150),
       phone: String(phone).trim().slice(0, 50),
-      broker: String(broker).trim().slice(0, 80),
-      brokerAccountId: String(brokerAccountId).trim().slice(0, 80),
+      broker: cleanBroker,
+      brokerAccountId: cleanBrokerAccountId,
       subscriptionType: isQuotexReferral ? 'quotex_referral' : 'paid_plan',
       quotexDepositConfirmed: false,
       planDuration: chosenPlanKey,
@@ -8983,13 +8990,16 @@ async function startServer() {
     };
 
     subscribersStore.unshift(newSub);
-    if (subscribersStore.length > 200) subscribersStore.pop();
-    await saveState();
+    if (subscribersStore.length > 250) subscribersStore.pop();
+    const savedOk = await saveState();
+    if (!savedOk) {
+      return res.status(500).json({ ok: false, error: 'تعذر حفظ التسجيل على الخادم، يرجى المحاولة مجدداً.' });
+    }
 
     res.json({ ok: true, subscriber: newSub });
   });
 
-  // Member lookup by ID or by Email/Phone/Telegram + Broker Account ID as Password (for Member VIP Dashboard)
+  // Member lookup by ID or by Email/Phone/Telegram + Broker Account ID (or phone/API key when no broker ID)
   app.post('/api/member/lookup', async (req, res) => {
     if (!isCloudStateLoaded) {
       await loadStateFromCloudAndDisk();
@@ -9018,13 +9028,19 @@ async function startServer() {
       });
     }
 
-    // Verify password (which is the member's Broker Account ID) if logging in via identifier
+    // Verify password: brokerAccountId (if set) or phone/robotApiKey fallback when registered without broker ID
     if (!id && password !== undefined) {
       const cleanPass = String(password).trim();
-      if (found.brokerAccountId && found.brokerAccountId !== cleanPass) {
+      const matchesBroker = Boolean(found.brokerAccountId && found.brokerAccountId === cleanPass);
+      const matchesPhone = Boolean(found.phone && found.phone === cleanPass);
+      const matchesRobotKey = Boolean(found.robotApiKey && found.robotApiKey.toUpperCase() === cleanPass.toUpperCase());
+      const authorized = found.brokerAccountId
+        ? matchesBroker || matchesRobotKey
+        : matchesPhone || matchesRobotKey;
+      if (!authorized) {
         return res.status(401).json({
           ok: false,
-          error: 'كلمة المرور (معرف حسابك في شركة البروكر ID) غير صحيحة.'
+          error: 'كلمة المرور غير صحيحة (أدخل معرف حساب البروكر أو رقم الموبايل أو مفتاح الروبوت).'
         });
       }
     }
@@ -9068,7 +9084,7 @@ async function startServer() {
       country: String(b.country || 'مصر 🇪🇬').trim().slice(0, 80),
       email: String(b.email || '').trim().slice(0, 150),
       phone: String(b.phone || '').trim().slice(0, 50),
-      broker: String(b.broker || 'Quotex (كوتيكس)').trim().slice(0, 80),
+      broker: String(b.broker || 'بدون منصة محددة').trim().slice(0, 80),
       brokerAccountId: String(b.brokerAccountId || '').trim().slice(0, 80),
       subscriptionType: isRef ? 'quotex_referral' : 'paid_plan',
       quotexDepositConfirmed: Boolean(b.quotexDepositConfirmed),
@@ -9091,7 +9107,10 @@ async function startServer() {
 
     subscribersStore.unshift(newSub);
     if (subscribersStore.length > 250) subscribersStore.pop();
-    await saveState();
+    const savedOk = await saveState();
+    if (!savedOk) {
+      return res.status(500).json({ ok: false, error: 'تعذر حفظ العضو على قرص الخادم' });
+    }
 
     res.json({ ok: true, subscriber: newSub });
   });
@@ -9129,7 +9148,7 @@ async function startServer() {
           country: String(raw.country || 'مصر 🇪🇬').trim().slice(0, 80),
           email: String(raw.email || '').trim().slice(0, 150),
           phone: String(raw.phone || '').trim().slice(0, 50),
-          broker: String(raw.broker || 'Quotex (كوتيكس)').trim().slice(0, 80),
+          broker: String(raw.broker || 'بدون منصة محددة').trim().slice(0, 80),
           brokerAccountId: String(raw.brokerAccountId || '').trim().slice(0, 80),
           subscriptionType: raw.subscriptionType === 'quotex_referral' ? 'quotex_referral' : 'paid_plan',
           quotexDepositConfirmed: Boolean(raw.quotexDepositConfirmed),
@@ -9160,6 +9179,18 @@ async function startServer() {
         if (cleanExp && !existing.robotExpiryDate) {
           existing.robotExpiryDate = cleanExp;
           if (!existing.expiryDate) existing.expiryDate = cleanExp;
+          changed = true;
+        }
+        if (raw.email && !existing.email) {
+          existing.email = String(raw.email).trim().slice(0, 150);
+          changed = true;
+        }
+        if (raw.phone && !existing.phone) {
+          existing.phone = String(raw.phone).trim().slice(0, 50);
+          changed = true;
+        }
+        if (raw.telegramUsername && !existing.telegramUsername) {
+          existing.telegramUsername = String(raw.telegramUsername).trim().slice(0, 100);
           changed = true;
         }
         if (raw.robotEnabled !== undefined && existing.robotEnabled === undefined) {
@@ -9557,12 +9588,12 @@ async function startServer() {
     const newSub: VipSubscriber = {
       id: newId,
       name: String(name).trim().slice(0, 120),
-      telegramUsername: '@QuotexTrader',
+      telegramUsername: '',
       country: 'مصر 🇪🇬',
-      email: `robot.${Date.now()}@zadnbfx.com`,
-      phone: String(brokerAccountId || Date.now()).slice(0, 20),
-      broker: 'Quotex (كوتيكس)',
-      brokerAccountId: String(brokerAccountId || 'QX-AUTO').trim(),
+      email: '',
+      phone: '',
+      broker: brokerAccountId ? 'Quotex (كوتيكس)' : 'بدون منصة محددة',
+      brokerAccountId: String(brokerAccountId || '').trim(),
       subscriptionType: 'paid_plan',
       planDuration: '1_month',
       amountPaid: 30,

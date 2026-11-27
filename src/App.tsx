@@ -231,6 +231,7 @@ const COUNTRIES_LIST = [
 ];
 
 const BROKERS_LIST = [
+  'بدون منصة محددة (اختياري)',
   'Quotex (كوتيكس)',
   'Pocket Option (بوكيت أوبشن)',
   'IQ Option (آي كيو أوبشن)',
@@ -428,12 +429,20 @@ export default function App() {
     return '';
   };
 
-  const syncCloudSubscribersToServer = async (tokOverride?: string) => {
+  const deletedSubscriberIdsRef = React.useRef<Set<string>>(new Set());
+  const isSyncingCloudToServerRef = React.useRef<boolean>(false);
+
+  const syncCloudSubscribersToServer = async (tokOverride?: string): Promise<boolean> => {
     const activeTok = tokOverride || adminToken || (await ensureExpressAdminToken());
-    if (!activeTok || !canWriteFirestoreAsAdmin()) return;
+    if (!activeTok || !canWriteFirestoreAsAdmin()) return false;
+    if (isSyncingCloudToServerRef.current) return false;
+    isSyncingCloudToServerRef.current = true;
     try {
       const fbSubs = await loadSubscribersFromFirestore<VipSubscriber[]>();
-      if (Array.isArray(fbSubs) && fbSubs.length > 0) {
+      const validCloudSubs = Array.isArray(fbSubs)
+        ? fbSubs.filter(s => s && s.id && !deletedSubscriberIdsRef.current.has(s.id))
+        : [];
+      if (validCloudSubs.length > 0) {
         const res = await fetch('/api/subscribers/sync-from-cloud', {
           method: 'POST',
           credentials: 'include',
@@ -441,17 +450,24 @@ export default function App() {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${activeTok}`
           },
-          body: JSON.stringify({ subscribers: fbSubs })
+          body: JSON.stringify({ subscribers: validCloudSubs })
         });
         const ct = res.headers.get('content-type') || '';
         if (res.ok && ct.includes('application/json')) {
           const data = await res.json().catch(() => ({}));
           if (data?.ok && Array.isArray(data.subscribers)) {
-            setSubscribers(data.subscribers);
+            const serverIds = new Set(data.subscribers.map((s: any) => s?.id).filter(Boolean));
+            const cloudExtra = validCloudSubs.filter(s => !serverIds.has(s.id));
+            setSubscribers([...data.subscribers, ...cloudExtra]);
+            return true;
           }
         }
       }
     } catch (_e) {}
+    finally {
+      isSyncingCloudToServerRef.current = false;
+    }
+    return false;
   };
 
   useEffect(() => {
@@ -889,7 +905,12 @@ export default function App() {
         setRobotSettings(prev => ({ ...prev, ...fbRobot, noMartingaleStrict: true }));
       }
       if (Array.isArray(fbSubs)) {
-        setSubscribers(fbSubs);
+        const filteredCloud = fbSubs.filter(s => s && s.id && !deletedSubscriberIdsRef.current.has(s.id));
+        setSubscribers(prev => {
+          const cloudIds = new Set(filteredCloud.map(s => s.id));
+          const localOnly = prev.filter(s => s && s.id && !cloudIds.has(s.id) && !deletedSubscriberIdsRef.current.has(s.id));
+          return [...filteredCloud, ...localOnly];
+        });
       }
     } catch (_err) {}
   };
@@ -918,11 +939,27 @@ export default function App() {
         setLiveMarket(data.liveMarket);
       }
       if (Array.isArray(data.subscribers)) {
+        let shouldSyncExtrasToServer = false;
         setSubscribers(prev => {
-          if (data.isAdmin) return data.subscribers;
+          if (data.isAdmin) {
+            const serverSubs = (data.subscribers as VipSubscriber[]).filter(
+              s => s && s.id && !deletedSubscriberIdsRef.current.has(s.id)
+            );
+            const serverIds = new Set(serverSubs.map(s => s.id));
+            const localUnsynced = prev.filter(
+              s => s && s.id && !serverIds.has(s.id) && !deletedSubscriberIdsRef.current.has(s.id)
+            );
+            if (localUnsynced.length > 0) {
+              shouldSyncExtrasToServer = true;
+            }
+            return [...localUnsynced, ...serverSubs];
+          }
           if (canWriteFirestoreAsAdmin()) return prev;
           return prev.filter(s => s.id === currentMemberId);
         });
+        if (data.isAdmin && shouldSyncExtrasToServer && canWriteFirestoreAsAdmin()) {
+          syncCloudSubscribersToServer(activeToken).catch(() => false);
+        }
       }
       if (data.quickNotes) {
         setQuickNotes(data.quickNotes);
@@ -1014,7 +1051,7 @@ export default function App() {
       if (canWriteFirestoreAsAdmin() && Date.now() - lastFirestoreMirrorRef.current > 25000) {
         lastFirestoreMirrorRef.current = Date.now();
         syncAllAdminStateToFirestore({
-          subscribers: data.isAdmin && Array.isArray(data.subscribers) ? data.subscribers : undefined,
+          subscribers: data.isAdmin && subscribers.length > 0 ? subscribers : undefined,
           signals: Array.isArray(data.signals) ? data.signals : undefined,
           plans: Array.isArray(data.plans) ? data.plans : undefined,
           contactLinks: data.contactLinks || undefined,
@@ -1142,7 +1179,7 @@ export default function App() {
     clearAdminSession();
   };
 
-  // Direct Trader Registration without email/gmail verification
+  // Direct Trader Registration without email/gmail verification (Broker/Platform is optional)
   const handleTraderRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setRegError('');
@@ -1150,11 +1187,9 @@ export default function App() {
       !regName.trim() ||
       !regTelegram.trim() ||
       !regEmail.trim() ||
-      !regPhone.trim() ||
-      !regBroker.trim() ||
-      !regBrokerAccountId.trim()
+      !regPhone.trim()
     ) {
-      setRegError('يرجى إدخال جميع البيانات بما في ذلك رقم حسابك في البروكر (كلمة المرور للدخول).');
+      setRegError('يرجى إدخال الاسم ومعرف التليجرام والبريد الإلكتروني ورقم الموبايل.');
       return;
     }
     setIsSubmittingReg(true);
@@ -1576,6 +1611,10 @@ export default function App() {
     setAdminAddFeedback(null);
 
     let createdSub: VipSubscriber | null = null;
+    let savedToServer = false;
+    let savedToCloud = false;
+    let serverErrorMsg = '';
+
     try {
       const activeTok = adminToken || (canWriteFirestoreAsAdmin() ? await ensureExpressAdminToken() : '');
       if (activeTok) {
@@ -1595,11 +1634,9 @@ export default function App() {
         const data = ct.includes('application/json') ? await res.json().catch(() => ({})) : {};
         if (res.ok && data?.ok && data?.subscriber) {
           createdSub = data.subscriber;
-        } else if (!canWriteFirestoreAsAdmin()) {
-          setAdminAddFeedback({
-            type: 'error',
-            message: data?.error || '❌ تعذر إضافة العضو — تحقق من صلاحية المشرف'
-          });
+          savedToServer = true;
+        } else {
+          serverErrorMsg = data?.error || '';
         }
       }
     } catch (_err) {
@@ -1615,7 +1652,7 @@ export default function App() {
         country: adminAddForm.country,
         email: adminAddForm.email.trim(),
         phone: adminAddForm.phone.trim(),
-        broker: adminAddForm.broker,
+        broker: adminAddForm.broker || 'بدون منصة محددة',
         brokerAccountId: adminAddForm.brokerAccountId.trim(),
         subscriptionType: adminAddForm.subscriptionType,
         quotexDepositConfirmed: adminAddForm.quotexDepositConfirmed,
@@ -1639,14 +1676,21 @@ export default function App() {
       };
     }
 
-    if (createdSub) {
-      if (canWriteFirestoreAsAdmin()) {
-        await saveSubscriberToFirestore(createdSub).catch(() => false);
-      }
+    if (createdSub && canWriteFirestoreAsAdmin()) {
+      savedToCloud = await saveSubscriberToFirestore(createdSub).catch(() => false);
+    }
+
+    if (createdSub && (savedToServer || savedToCloud)) {
+      deletedSubscriberIdsRef.current.delete(createdSub.id);
       setSubscribers(prev => [createdSub!, ...prev.filter(s => s.id !== createdSub!.id)]);
+      if (savedToCloud && !savedToServer) {
+        ensureExpressAdminToken().then(tok => {
+          if (tok) syncCloudSubscribersToServer(tok);
+        });
+      }
       const successText = createdSub.robotApiKey
-        ? `✅ تم إضافة العضو "${createdSub.name}" وتوليد مفتاح الروبوت (${createdSub.robotApiKey}) بنجاح!`
-        : `✅ تم إضافة العضو "${createdSub.name}" بنجاح!`;
+        ? `✅ تم حفظ العضو "${createdSub.name}" في قاعدة البيانات وتوليد المفتاح (${createdSub.robotApiKey}) بنجاح!`
+        : `✅ تم حفظ العضو "${createdSub.name}" في قاعدة البيانات بنجاح!`;
       setPublishStatus({ type: 'success', message: successText });
       setTimeout(() => setPublishStatus({ type: 'idle' }), 4500);
       setShowAdminAddMemberModal(false);
@@ -1671,6 +1715,13 @@ export default function App() {
         robotEnabled: true,
         robotDefaultMode: 'AUTO',
         robotTradeStake: 5
+      });
+    } else {
+      setAdminAddFeedback({
+        type: 'error',
+        message:
+          serverErrorMsg ||
+          '❌ لم يتم حفظ العضو في قاعدة البيانات! تأكد من تسجيل الدخول بحساب المشرف ثم أعد المحاولة.'
       });
     }
     setIsCreatingAdminMember(false);
@@ -1885,12 +1936,12 @@ export default function App() {
     }
   };
 
-  // Member lookup by email, phone, or telegram username + Broker Account ID as Password
+  // Member lookup by email, phone, or telegram username + Broker ID or Phone/API Key as Password
   const handleMemberLookup = async (e: React.FormEvent) => {
     e.preventDefault();
     setMemberLookupError('');
     if (!memberLookupInput.trim() || !memberPasswordInput.trim()) {
-      setMemberLookupError('يرجى إدخال البريد/الموبايل وكلمة المرور (معرف حسابك في البروكر).');
+      setMemberLookupError('يرجى إدخال البريد/الموبايل وكلمة المرور (معرف البروكر أو رقم الموبايل أو مفتاح الروبوت).');
       return;
     }
     try {
@@ -1922,13 +1973,16 @@ export default function App() {
 
   const handleDeleteSubscriber = async (id: string) => {
     const target = subscribers.find(s => s.id === id);
+    deletedSubscriberIdsRef.current.add(id);
     try {
+      const activeTok = adminToken || (canWriteFirestoreAsAdmin() ? await ensureExpressAdminToken() : '');
       await fetch(`/api/subscribers/${id}`, {
         method: 'DELETE',
-        headers: getAdminHeaders(undefined, false)
+        credentials: 'include',
+        headers: activeTok ? { Authorization: `Bearer ${activeTok}` } : getAdminHeaders(undefined, false)
       }).catch(() => {});
       if (canWriteFirestoreAsAdmin()) {
-        await deleteSubscriberFromFirestore(id, target?.robotApiKey);
+        await deleteSubscriberFromFirestore(id, target?.robotApiKey).catch(() => false);
       }
       setSubscribers(prev => prev.filter(s => s.id !== id));
       if (selectedAdminSubId === id) setSelectedAdminSubId(null);
@@ -3476,7 +3530,11 @@ export default function App() {
       {/* Screen 6: قسم بوت التليجرام الذكي (محمي للمشرف فقط) */}
       {zadtooTab === 'telegram_bot' && (
         effectiveIsAdmin ? (
-          <TelegramBotManager adminToken={adminToken} isAdmin={effectiveIsAdmin} />
+          <TelegramBotManager
+            adminToken={adminToken}
+            isAdmin={effectiveIsAdmin}
+            onSubscriberSynced={() => fetchSignals()}
+          />
         ) : (
           <div className="max-w-md mx-auto my-16 p-8 bg-white border border-slate-200 rounded-3xl shadow-lg text-center space-y-4">
             <div className="w-14 h-14 rounded-2xl bg-sky-50 text-sky-600 flex items-center justify-center mx-auto text-xl font-bold">
@@ -6724,6 +6782,7 @@ export default function App() {
           <ErrorBoundary>
             <QuotexRobotAdminPage
               adminToken={adminToken}
+              ensureExpressAdminToken={ensureExpressAdminToken}
               robotSettings={robotSettings}
               setRobotSettings={setRobotSettings}
               subscribers={subscribers}
@@ -9040,7 +9099,7 @@ export default function App() {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-medium text-slate-300 mb-1">
-                        نوع البروكر (منصة التداول)
+                        منصة التداول / البروكر (اختياري)
                       </label>
                       <select
                         value={regBroker}
@@ -9065,17 +9124,16 @@ export default function App() {
                     </div>
 
                     <div>
-                      <label className="block text-xs font-medium text-amber-300 mb-1">
-                        رقم حسابك في البروكر (كلمة المرور للدخول)
+                      <label className="block text-xs font-medium text-slate-300 mb-1">
+                        رقم حسابك في البروكر (اختياري — إن وجد)
                       </label>
                       <input
                         type="text"
-                        required
                         value={regBrokerAccountId}
                         onChange={(e) => setRegBrokerAccountId(e.target.value)}
                         dir="ltr"
-                        placeholder="مثال: 98765432 (ID حسابك)"
-                        className="w-full px-3 py-2 text-sm bg-[#0B0F17] border border-amber-500/40 rounded-lg text-slate-100 focus:outline-none focus:border-amber-400 font-mono-num"
+                        placeholder="اختياري — ليس إلزامياً التسجيل في منصة"
+                        className="w-full px-3 py-2 text-sm bg-[#0B0F17] border border-slate-800 rounded-lg text-slate-100 focus:outline-none focus:border-amber-400 font-mono-num"
                       />
                     </div>
                   </div>
@@ -9325,7 +9383,7 @@ export default function App() {
             {!currentMember ? (
               <div className="space-y-4">
                 <p className="text-xs text-slate-300 leading-relaxed">
-                  أدخل <strong className="text-white">البريد الإلكتروني أو رقم الموبايل أو معرف التليجرام</strong>، مع <strong className="text-amber-300">كلمة المرور (وهي رقم حسابك ID في شركة البروكر)</strong> لعرض بيانات عضويتك وتاريخ انتهاء اشتراكك ومراسلة المشرف:
+                  أدخل <strong className="text-white">البريد الإلكتروني أو رقم الموبايل أو معرف التليجرام</strong>، مع <strong className="text-amber-300">كلمة المرور (رقم حساب البروكر إن وجد، أو رقم موبايلك، أو مفتاح الروبوت)</strong> لعرض بيانات عضويتك ومراسلة المشرف:
                 </p>
                 <form onSubmit={handleMemberLookup} className="space-y-3">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -9345,7 +9403,7 @@ export default function App() {
                     </div>
                     <div>
                       <label className="block text-[11px] text-amber-300 font-semibold mb-1">
-                        كلمة المرور (رقم حسابك ID في شركة البروكر)
+                        كلمة المرور (رقم الموبايل أو ID البروكر أو مفتاح الروبوت)
                       </label>
                       <input
                         type="password"
@@ -9353,7 +9411,7 @@ export default function App() {
                         value={memberPasswordInput}
                         onChange={(e) => setMemberPasswordInput(e.target.value)}
                         dir="ltr"
-                        placeholder="رقم حسابك في البروكر (Account ID)"
+                        placeholder="رقم الموبايل / ID البروكر / QX-ZAD-..."
                         className="w-full px-3.5 py-2.5 text-sm bg-[#0B0F17] border border-amber-500/40 rounded-lg text-slate-100 focus:outline-none focus:border-amber-400 font-mono-num"
                       />
                     </div>
@@ -9771,7 +9829,7 @@ export default function App() {
 
                 <div className="grid grid-cols-2 gap-2.5">
                   <div>
-                    <label className="block text-[11px] text-slate-400 mb-1">البروكر</label>
+                    <label className="block text-[11px] text-slate-400 mb-1">منصة التداول (اختياري)</label>
                     <select
                       value={adminEditForm.broker}
                       onChange={(e) => setAdminEditForm(p => ({ ...p, broker: e.target.value }))}
@@ -9783,8 +9841,8 @@ export default function App() {
                     </select>
                   </div>
                   <div>
-                    <label className="block text-[11px] text-amber-300 font-semibold mb-1">
-                      رقم حساب البروكر (كلمة المرور)
+                    <label className="block text-[11px] text-slate-300 font-semibold mb-1">
+                      رقم حساب البروكر (اختياري)
                     </label>
                     <input
                       type="text"
@@ -9793,7 +9851,8 @@ export default function App() {
                       onChange={(e) =>
                         setAdminEditForm(p => ({ ...p, brokerAccountId: e.target.value }))
                       }
-                      className="w-full px-2.5 py-1.5 text-xs bg-slate-900 border border-amber-500/40 rounded text-white font-mono-num"
+                      placeholder="اختياري"
+                      className="w-full px-2.5 py-1.5 text-xs bg-slate-900 border border-slate-800 rounded text-white font-mono-num"
                     />
                   </div>
                 </div>
@@ -10389,7 +10448,7 @@ export default function App() {
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-[11px] text-slate-300 mb-1">منصة التداول (البروكر)</label>
+                  <label className="block text-[11px] text-slate-300 mb-1">منصة التداول (اختياري)</label>
                   <select
                     value={adminAddForm.broker}
                     onChange={(e) => setAdminAddForm(p => ({ ...p, broker: e.target.value }))}
@@ -10401,16 +10460,16 @@ export default function App() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[11px] text-amber-300 font-semibold mb-1">
-                    رقم حساب البروكر (ID / كلمة مرور العضو)
+                  <label className="block text-[11px] text-slate-300 font-semibold mb-1">
+                    رقم حساب البروكر (اختياري — إن وجد)
                   </label>
                   <input
                     type="text"
                     dir="ltr"
                     value={adminAddForm.brokerAccountId}
                     onChange={(e) => setAdminAddForm(p => ({ ...p, brokerAccountId: e.target.value }))}
-                    placeholder="مثال: 98451230"
-                    className="w-full px-3 py-2 bg-[#0B0F17] border border-amber-500/40 rounded-lg text-white font-mono-num"
+                    placeholder="اختياري (مثال: 98451230)"
+                    className="w-full px-3 py-2 bg-[#0B0F17] border border-slate-800 rounded-lg text-white font-mono-num"
                   />
                 </div>
               </div>

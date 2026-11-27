@@ -226,9 +226,14 @@ function mergeBotConfig(serverCfg: any): TelegramBotConfig {
 interface TelegramBotManagerProps {
   adminToken?: string;
   isAdmin?: boolean;
+  onSubscriberSynced?: () => void;
 }
 
-export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminToken, isAdmin = true }) => {
+export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({
+  adminToken,
+  isAdmin = true,
+  onSubscriberSynced
+}) => {
   const canAdminManageKeys = Boolean(adminToken) && isAdmin !== false;
   const defaultKeyExpiryStr = () => {
     const d = new Date();
@@ -460,6 +465,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
       if (res.ok && data?.ok) {
         const savedUser = data.user || targetUser;
         setUsers(prev => prev.map(u => (u.id === targetUser.id ? savedUser : u)));
+        if (onSubscriberSynced) onSubscriberSynced();
         showToast(
           savedUser.robotApiKey && shouldGenKey
             ? `✅ تم حفظ التعديلات وتوليد مفتاح الروبوت (${savedUser.robotApiKey}) بنجاح!`
@@ -493,6 +499,7 @@ export const TelegramBotManager: React.FC<TelegramBotManagerProps> = ({ adminTok
       const data = await res.json();
       if (res.ok && data.ok && data.user) {
         setUsers(prev => [data.user, ...prev]);
+        if (onSubscriberSynced) onSubscriberSynced();
         setIsAddModalOpen(false);
         setNewMember({
           name: '',

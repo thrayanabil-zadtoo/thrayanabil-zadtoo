@@ -56,6 +56,7 @@ export interface QuotexRobotSettings {
 
 interface QuotexRobotAdminPageProps {
   adminToken?: string;
+  ensureExpressAdminToken?: () => Promise<string>;
   robotSettings: QuotexRobotSettings;
   setRobotSettings: React.Dispatch<React.SetStateAction<QuotexRobotSettings>>;
   subscribers?: VipSubscriber[];
@@ -70,6 +71,7 @@ interface QuotexRobotAdminPageProps {
 
 export default function QuotexRobotAdminPage({
   adminToken,
+  ensureExpressAdminToken,
   robotSettings,
   setRobotSettings,
   subscribers = [],
@@ -581,14 +583,21 @@ export default function QuotexRobotAdminPage({
     if (!newKeyMemberName.trim()) return;
     setIsCreatingKey(true);
     let createdSub: VipSubscriber | null = null;
+    let savedToServer = false;
+    let savedToCloud = false;
     try {
-      if (adminToken) {
+      const activeTok = adminToken || (ensureExpressAdminToken ? await ensureExpressAdminToken() : '');
+      if (activeTok) {
         const res = await fetch('/api/quotex-robot/create-key', {
           method: 'POST',
-          headers: getAuthHeaders(),
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${activeTok}`
+          },
           body: JSON.stringify({
             name: newKeyMemberName.trim(),
-            brokerAccountId: newKeyQuotexId.trim() || 'QX-TRADER',
+            brokerAccountId: newKeyQuotexId.trim(),
             expiryDate: newKeyExpiryDate,
             tradeStake: newKeyStake,
             defaultMode: newKeyMode
@@ -599,6 +608,7 @@ export default function QuotexRobotAdminPage({
           const data = await res.json();
           if (data.ok && data.subscriber) {
             createdSub = data.subscriber;
+            savedToServer = true;
           }
         }
       }
@@ -607,12 +617,12 @@ export default function QuotexRobotAdminPage({
     if (!createdSub && canWriteFirestoreAsAdmin()) {
       const newKey = generateMemberApiKeyStr();
       createdSub = {
-        id: `sub_${Date.now()}`,
+        id: `sub-${Date.now()}`,
         name: newKeyMemberName.trim(),
         email: '',
         phone: '',
-        broker: 'Quotex (كوتيكس)',
-        brokerAccountId: newKeyQuotexId.trim() || 'QX-TRADER',
+        broker: newKeyQuotexId.trim() ? 'Quotex (كوتيكس)' : 'بدون منصة محددة',
+        brokerAccountId: newKeyQuotexId.trim(),
         subscriptionType: 'paid_plan',
         planDuration: '1_month',
         status: 'ACTIVE',
@@ -626,10 +636,11 @@ export default function QuotexRobotAdminPage({
       };
     }
 
-    if (createdSub) {
-      if (canWriteFirestoreAsAdmin()) {
-        await saveSubscriberToFirestore(createdSub).catch(() => false);
-      }
+    if (createdSub && canWriteFirestoreAsAdmin()) {
+      savedToCloud = await saveSubscriberToFirestore(createdSub).catch(() => false);
+    }
+
+    if (createdSub && (savedToServer || savedToCloud)) {
       setSubscribers(prev => [createdSub!, ...prev.filter(s => s.id !== createdSub!.id)]);
       const activeKey = createdSub.robotApiKey || '';
       if (activeKey) setSelectedTestApiKey(activeKey);
@@ -638,13 +649,13 @@ export default function QuotexRobotAdminPage({
       setNewKeyQuotexId('');
       setMemberUpdateToast({
         type: 'success',
-        message: `✅ تم إنشاء مفتاح العضو (${createdSub.name}) ومزامنته مع السحابة: ${activeKey}`
+        message: `✅ تم إنشاء مفتاح العضو (${createdSub.name}) وحفظه في قاعدة البيانات: ${activeKey}`
       });
       setTimeout(() => setMemberUpdateToast(null), 5000);
     } else {
       setMemberUpdateToast({
         type: 'error',
-        message: '❌ تعذر إنشاء المفتاح — تأكد من تسجيل الدخول بحساب المشرف عبر Google'
+        message: '❌ تعذر حفظ المفتاح في قاعدة البيانات — تأكد من تسجيل الدخول بحساب المشرف'
       });
     }
     setIsCreatingKey(false);
@@ -663,11 +674,18 @@ export default function QuotexRobotAdminPage({
   ) => {
     if (!isAdmin) return;
     let updatedSub: VipSubscriber | null = null;
+    let savedToServer = false;
+    let savedToCloud = false;
     try {
-      if (adminToken) {
+      const activeTok = adminToken || (ensureExpressAdminToken ? await ensureExpressAdminToken() : '');
+      if (activeTok) {
         const res = await fetch(`/api/subscribers/${subId}`, {
           method: 'PATCH',
-          headers: getAuthHeaders(),
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${activeTok}`
+          },
           body: JSON.stringify(payload)
         });
         const ct = res.headers.get('content-type') || '';
@@ -675,6 +693,7 @@ export default function QuotexRobotAdminPage({
           const data = await res.json();
           if (data.ok && data.subscriber) {
             updatedSub = data.subscriber;
+            savedToServer = true;
           }
         }
       }
@@ -697,14 +716,15 @@ export default function QuotexRobotAdminPage({
       }
     }
 
-    if (updatedSub) {
-      if (canWriteFirestoreAsAdmin()) {
-        await saveSubscriberToFirestore(updatedSub).catch(() => false);
-      }
+    if (updatedSub && canWriteFirestoreAsAdmin()) {
+      savedToCloud = await saveSubscriberToFirestore(updatedSub).catch(() => false);
+    }
+
+    if (updatedSub && (savedToServer || savedToCloud)) {
       setSubscribers(prev => prev.map(s => (s.id === subId ? updatedSub! : s)));
       setMemberUpdateToast({
         type: 'success',
-        message: `✅ تم حفظ تحديثات (${updatedSub.name}) وتاريخ الصلاحية (${updatedSub.robotExpiryDate || updatedSub.expiryDate || '-'}) في السحابة بنجاح.`
+        message: `✅ تم حفظ تحديثات (${updatedSub.name}) وتاريخ الصلاحية (${updatedSub.robotExpiryDate || updatedSub.expiryDate || '-'}) في قاعدة البيانات بنجاح.`
       });
       setTimeout(() => setMemberUpdateToast(null), 4000);
     } else {
@@ -852,11 +872,18 @@ export default function QuotexRobotAdminPage({
     setScriptError(null);
     const expFuture = '2099-12-25';
     let createdSub: VipSubscriber | null = null;
+    let savedToServer = false;
+    let savedToCloud = false;
     try {
-      if (adminToken) {
+      const activeTok = adminToken || (ensureExpressAdminToken ? await ensureExpressAdminToken() : '');
+      if (activeTok) {
         const res = await fetch('/api/quotex-robot/create-key', {
           method: 'POST',
-          headers: getAuthHeaders(),
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${activeTok}`
+          },
           body: JSON.stringify({
             name: 'المشرف — الروبوت العائم',
             brokerAccountId: `QX-ADMIN-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -868,14 +895,17 @@ export default function QuotexRobotAdminPage({
         const ct = res.headers.get('content-type') || '';
         if (res.ok && ct.includes('application/json')) {
           const data = await res.json();
-          if (data?.ok && data.subscriber) createdSub = data.subscriber;
+          if (data?.ok && data.subscriber) {
+            createdSub = data.subscriber;
+            savedToServer = true;
+          }
         }
       }
     } catch (_err) {}
 
     if (!createdSub && canWriteFirestoreAsAdmin()) {
       createdSub = {
-        id: `sub_${Date.now()}`,
+        id: `sub-${Date.now()}`,
         name: 'المشرف — الروبوت العائم',
         email: '',
         phone: '',
@@ -894,10 +924,11 @@ export default function QuotexRobotAdminPage({
       };
     }
 
-    if (createdSub) {
-      if (canWriteFirestoreAsAdmin()) {
-        await saveSubscriberToFirestore(createdSub).catch(() => false);
-      }
+    if (createdSub && canWriteFirestoreAsAdmin()) {
+      savedToCloud = await saveSubscriberToFirestore(createdSub).catch(() => false);
+    }
+
+    if (createdSub && (savedToServer || savedToCloud)) {
       const newKey = createdSub.robotApiKey || '';
       setSubscribers(prev => [createdSub!, ...prev.filter(s => s.id !== createdSub!.id)]);
       if (newKey) {
