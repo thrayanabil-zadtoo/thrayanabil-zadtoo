@@ -355,6 +355,10 @@ export default function App() {
     } catch (_e) {}
     return '';
   });
+  const adminTokenRef = React.useRef<string>('');
+  useEffect(() => {
+    adminTokenRef.current = adminToken;
+  }, [adminToken]);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(false);
   const [adminNeedsSetup, setAdminNeedsSetup] = useState<boolean>(false);
   const [isFirebaseAdmin, setIsFirebaseAdmin] = useState<boolean>(false);
@@ -384,7 +388,7 @@ export default function App() {
   const [isLoggingIn, setIsLoggingIn] = useState<boolean>(false);
 
   const getAdminHeaders = (tokenOverride?: string, includeJson = true): Record<string, string> => {
-    const tok = tokenOverride ?? adminToken;
+    const tok = tokenOverride ?? adminTokenRef.current;
     const headers: Record<string, string> = {};
     if (includeJson) headers['Content-Type'] = 'application/json';
     if (tok) headers['Authorization'] = `Bearer ${tok}`;
@@ -398,6 +402,8 @@ export default function App() {
       localStorage.removeItem('zad_admin_auth');
     } catch (_e) {}
     fetch('/api/admin/logout', { method: 'POST', credentials: 'include' }).catch(() => {});
+    adminTokenRef.current = '';
+    hasSyncedCloudToServerRef.current = false;
     setAdminToken('');
     setIsAdminAuthenticated(false);
     setIsFirebaseAdmin(false);
@@ -406,7 +412,7 @@ export default function App() {
   };
 
   const ensureExpressAdminToken = async (forceRefresh = false): Promise<string> => {
-    if (!forceRefresh && adminToken) return adminToken;
+    if (!forceRefresh && adminTokenRef.current) return adminTokenRef.current;
     const idToken = await getCurrentFirebaseIdToken();
     if (!idToken) return '';
     try {
@@ -420,6 +426,7 @@ export default function App() {
       if (res.ok && ct.includes('application/json')) {
         const data = await res.json().catch(() => ({}));
         if (data?.ok && data.token) {
+          adminTokenRef.current = data.token;
           setAdminToken(data.token);
           setIsAdminAuthenticated(true);
           return data.token;
@@ -431,9 +438,10 @@ export default function App() {
 
   const deletedSubscriberIdsRef = React.useRef<Set<string>>(new Set());
   const isSyncingCloudToServerRef = React.useRef<boolean>(false);
+  const hasSyncedCloudToServerRef = React.useRef<boolean>(false);
 
   const syncCloudSubscribersToServer = async (tokOverride?: string): Promise<boolean> => {
-    const activeTok = tokOverride || adminToken || (await ensureExpressAdminToken());
+    const activeTok = tokOverride || adminTokenRef.current || (await ensureExpressAdminToken());
     if (!activeTok || !canWriteFirestoreAsAdmin()) return false;
     if (isSyncingCloudToServerRef.current) return false;
     isSyncingCloudToServerRef.current = true;
@@ -459,9 +467,13 @@ export default function App() {
             const serverIds = new Set(data.subscribers.map((s: any) => s?.id).filter(Boolean));
             const cloudExtra = validCloudSubs.filter(s => !serverIds.has(s.id));
             setSubscribers([...data.subscribers, ...cloudExtra]);
+            hasSyncedCloudToServerRef.current = true;
             return true;
           }
         }
+      } else {
+        hasSyncedCloudToServerRef.current = true;
+        return true;
       }
     } catch (_e) {}
     finally {
@@ -477,13 +489,15 @@ export default function App() {
         ensureExpressAdminToken().then((tok) => {
           if (tok) syncCloudSubscribersToServer(tok);
         });
+      } else {
+        hasSyncedCloudToServerRef.current = false;
       }
     });
   }, []);
 
   const checkAdminAuthStatus = async (tokOverride?: string) => {
     try {
-      const tok = tokOverride ?? adminToken;
+      const tok = tokOverride ?? adminTokenRef.current;
       const res = await fetch('/api/admin/status', {
         credentials: 'include',
         headers: tok ? { Authorization: `Bearer ${tok}` } : undefined
@@ -493,9 +507,17 @@ export default function App() {
         const data = await res.json();
         setAdminNeedsSetup(Boolean(data.needsSetup));
         if (data.authenticated === true && data.token) {
+          adminTokenRef.current = data.token;
           setAdminToken(data.token);
           setIsAdminAuthenticated(true);
         } else if (data.authenticated === false) {
+          if (canWriteFirestoreAsAdmin()) {
+            const refreshed = await ensureExpressAdminToken(true);
+            if (refreshed) return;
+          } else if (adminTokenRef.current && adminTokenRef.current !== tok) {
+            return;
+          }
+          adminTokenRef.current = '';
           setAdminToken('');
           setIsAdminAuthenticated(false);
           if (!canWriteFirestoreAsAdmin()) {
@@ -920,7 +942,7 @@ export default function App() {
   };
 
   const fetchSignals = async (tokenOverride?: string) => {
-    const activeToken = tokenOverride ?? adminToken;
+    const activeToken = tokenOverride ?? adminTokenRef.current;
     try {
       const res = await fetch('/api/signals', {
         credentials: 'include',
@@ -935,7 +957,8 @@ export default function App() {
       if (data.isAdmin === false) {
         if (canWriteFirestoreAsAdmin()) {
           ensureExpressAdminToken(true).catch(() => '');
-        } else if (activeToken) {
+        } else if (activeToken && activeToken === adminTokenRef.current) {
+          adminTokenRef.current = '';
           setAdminToken('');
           setIsAdminAuthenticated(false);
         }
@@ -947,7 +970,7 @@ export default function App() {
         setLiveMarket(data.liveMarket);
       }
       if (Array.isArray(data.subscribers)) {
-        let shouldSyncExtrasToServer = false;
+        let shouldSyncCloudToServer = false;
         setSubscribers(prev => {
           if (data.isAdmin) {
             const serverSubs = (data.subscribers as VipSubscriber[]).filter(
@@ -957,16 +980,21 @@ export default function App() {
             const localUnsynced = prev.filter(
               s => s && s.id && !serverIds.has(s.id) && !deletedSubscriberIdsRef.current.has(s.id)
             );
-            if (localUnsynced.length > 0) {
-              shouldSyncExtrasToServer = true;
+            if (!hasSyncedCloudToServerRef.current || serverSubs.length === 0 || localUnsynced.length > 0) {
+              shouldSyncCloudToServer = true;
             }
             return [...localUnsynced, ...serverSubs];
           }
           if (canWriteFirestoreAsAdmin()) return prev;
           return prev.filter(s => s.id === currentMemberId);
         });
-        if (data.isAdmin && shouldSyncExtrasToServer && canWriteFirestoreAsAdmin()) {
-          syncCloudSubscribersToServer(activeToken).catch(() => false);
+        if (data.isAdmin && shouldSyncCloudToServer && canWriteFirestoreAsAdmin()) {
+          hasSyncedCloudToServerRef.current = true;
+          syncCloudSubscribersToServer(activeToken).then((ok) => {
+            if (!ok) hasSyncedCloudToServerRef.current = false;
+          }).catch(() => {
+            hasSyncedCloudToServerRef.current = false;
+          });
         }
       }
       if (data.quickNotes) {
@@ -1720,7 +1748,7 @@ export default function App() {
       deletedSubscriberIdsRef.current.delete(createdSub.id);
       setSubscribers(prev => [createdSub!, ...prev.filter(s => s.id !== createdSub!.id)]);
       if (savedToCloud && !savedToServer) {
-        ensureExpressAdminToken().then(tok => {
+        ensureExpressAdminToken(true).then(tok => {
           if (tok) syncCloudSubscribersToServer(tok);
         });
       }
@@ -6832,6 +6860,7 @@ export default function App() {
             <QuotexRobotAdminPage
               adminToken={adminToken}
               ensureExpressAdminToken={ensureExpressAdminToken}
+              onSyncCloudToServer={syncCloudSubscribersToServer}
               robotSettings={robotSettings}
               setRobotSettings={setRobotSettings}
               subscribers={subscribers}

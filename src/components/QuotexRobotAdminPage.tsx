@@ -57,6 +57,7 @@ export interface QuotexRobotSettings {
 interface QuotexRobotAdminPageProps {
   adminToken?: string;
   ensureExpressAdminToken?: (forceRefresh?: boolean) => Promise<string>;
+  onSyncCloudToServer?: (tokOverride?: string) => Promise<boolean>;
   robotSettings: QuotexRobotSettings;
   setRobotSettings: React.Dispatch<React.SetStateAction<QuotexRobotSettings>>;
   subscribers?: VipSubscriber[];
@@ -72,6 +73,7 @@ interface QuotexRobotAdminPageProps {
 export default function QuotexRobotAdminPage({
   adminToken,
   ensureExpressAdminToken,
+  onSyncCloudToServer,
   robotSettings,
   setRobotSettings,
   subscribers = [],
@@ -115,7 +117,7 @@ export default function QuotexRobotAdminPage({
   const [widgetMode, setWidgetMode] = useState<'AUTO' | 'MANUAL'>(robotSettings.defaultMode || 'MANUAL');
   const [widgetStakeUsd, setWidgetStakeUsd] = useState<number>(robotSettings.defaultStakeUsd || 5);
   const [widgetSoundOn, setWidgetSoundOn] = useState<boolean>(robotSettings.soundAlertsEnabled ?? true);
-  const [selectedTestApiKey, setSelectedTestApiKey] = useState<string>('QX-ZAD-TRIAL-8801');
+  const [selectedTestApiKey, setSelectedTestApiKey] = useState<string>('');
   const [apiFeedResponse, setApiFeedResponse] = useState<any>(null);
   const [isTestingApi, setIsTestingApi] = useState<boolean>(false);
 
@@ -422,6 +424,7 @@ export default function QuotexRobotAdminPage({
   };
 
   const lastAlertedSignalIdRef = useRef<string | null>(null);
+  const [serverConnectionMode, setServerConnectionMode] = useState<'checking' | 'express_live' | 'static_only'>('checking');
 
   // Fetch Live API Feed for the selected registered member API Key (Backend Express API strictly)
   const fetchLiveRobotApiFeed = async (keyToTest?: string, silent = false) => {
@@ -435,11 +438,13 @@ export default function QuotexRobotAdminPage({
       const ct = res.headers.get('content-type') || '';
       if (ct.includes('application/json')) {
         const data = await res.json();
+        setServerConnectionMode('express_live');
         setApiFeedResponse(data);
         return;
       }
+      setServerConnectionMode('static_only');
     } catch (_e) {
-      // Fallback below when Express API unreachable
+      setServerConnectionMode('static_only');
     } finally {
       if (!silent) setIsTestingApi(false);
     }
@@ -672,12 +677,16 @@ export default function QuotexRobotAdminPage({
       setSubscribers(prev => [createdSub!, ...prev.filter(s => s.id !== createdSub!.id)]);
       const activeKey = createdSub.robotApiKey || '';
       if (activeKey) setSelectedTestApiKey(activeKey);
-      if (createdSub.robotApiKey) setScriptApiKey(createdSub.robotApiKey);
+      if (savedToCloud && !savedToServer && onSyncCloudToServer) {
+        (ensureExpressAdminToken ? ensureExpressAdminToken(true) : Promise.resolve(adminToken || ''))
+          .then(tok => (tok ? onSyncCloudToServer(tok) : false))
+          .catch(() => false);
+      }
       setNewKeyMemberName('');
       setNewKeyQuotexId('');
       setMemberUpdateToast({
         type: 'success',
-        message: `✅ تم إنشاء مفتاح العضو (${createdSub.name}) وحفظه في قاعدة البيانات: ${activeKey}`
+        message: `✅ تم إنشاء مفتاح العضو (${createdSub.name}) وحفظه في قاعدة البيانات: ${activeKey} — أرسل هذا المفتاح للعضو ليدخله داخل الروبوت (🔑 ID)`
       });
       setTimeout(() => setMemberUpdateToast(null), 5000);
     } else {
@@ -800,20 +809,26 @@ export default function QuotexRobotAdminPage({
     setTimeout(() => setCopiedId(null), 2000);
   };
 
+  const PUBLISHED_CLOUD_ORIGIN = 'https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app';
+  const WORKSPACE_DEV_ORIGIN = 'https://ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app';
+  const STATIC_SITE_ORIGIN = 'https://fx.zadtoo.com';
+
   // Preserve active .run.app / local Express backend origin; map static Firebase domains to https://fx.zadtoo.com
   const toPublicOrigin = (url: string) => {
     const cleaned = String(url || '').trim().replace(/\/+$/, '');
-    if (!cleaned) return 'https://ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app';
+    if (!cleaned) return PUBLISHED_CLOUD_ORIGIN;
     if (/(?:zadtoo\.com|\.web\.app|\.firebaseapp\.com)(?:$|[:/])/i.test(cleaned)) {
-      return 'https://fx.zadtoo.com';
+      return STATIC_SITE_ORIGIN;
     }
     return cleaned;
   };
-  const appOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://fx.zadtoo.com';
+  const appOrigin = typeof window !== 'undefined' ? window.location.origin : STATIC_SITE_ORIGIN;
   const publicRobotOrigin = toPublicOrigin(appOrigin);
 
-  // Admin-Only Floating Quotex Robot v5.2 Tampermonkey Script Generator State
-  const [scriptServerOrigin, setScriptServerOrigin] = useState<string>(() => publicRobotOrigin);
+  // Admin-Only Floating Quotex Robot v5.4 Tampermonkey Script Generator State (empty of member keys by default)
+  const [scriptServerOrigin, setScriptServerOrigin] = useState<string>(() =>
+    publicRobotOrigin === STATIC_SITE_ORIGIN ? PUBLISHED_CLOUD_ORIGIN : publicRobotOrigin
+  );
   const [scriptApiKey, setScriptApiKey] = useState<string>('');
   const [generatedScript, setGeneratedScript] = useState<string>('');
   const [scriptMeta, setScriptMeta] = useState<{
@@ -832,16 +847,21 @@ export default function QuotexRobotAdminPage({
   );
 
   useEffect(() => {
-    if (!scriptApiKey && activeMemberKeys.length > 0) {
-      setScriptApiKey(activeMemberKeys[0].robotApiKey || '');
+    if (scriptApiKey && !activeMemberKeys.some(s => s.robotApiKey === scriptApiKey)) {
+      setScriptApiKey('');
     }
-  }, [activeMemberKeys, scriptApiKey]);
+    if (activeMemberKeys.length > 0) {
+      if (!selectedTestApiKey || !activeMemberKeys.some(s => s.robotApiKey === selectedTestApiKey)) {
+        setSelectedTestApiKey(activeMemberKeys[0].robotApiKey || '');
+      }
+    }
+  }, [activeMemberKeys, scriptApiKey, selectedTestApiKey]);
 
   const fetchAdminFloatingScript = async (overrideKey?: string, overrideOrigin?: string) => {
     if (!isAdmin) return;
     setIsLoadingScript(true);
     setScriptError(null);
-    const targetKey = (overrideKey ?? scriptApiKey).trim() || (activeMemberKeys[0]?.robotApiKey || '');
+    const targetKey = (overrideKey !== undefined ? overrideKey : scriptApiKey).trim();
     const targetOrigin = toPublicOrigin(overrideOrigin ?? scriptServerOrigin ?? publicRobotOrigin);
 
     try {
@@ -863,9 +883,6 @@ export default function QuotexRobotAdminPage({
             serverOrigin: data.serverOrigin,
             embeddedApiKey: data.embeddedApiKey
           });
-          if (!targetKey && data.embeddedApiKey) {
-            setScriptApiKey(data.embeddedApiKey);
-          }
           setIsLoadingScript(false);
           return;
         }
@@ -877,9 +894,9 @@ export default function QuotexRobotAdminPage({
     const fallbackOrigins = [
       targetOrigin,
       typeof window !== 'undefined' ? window.location.origin : '',
-      'https://ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
-      'https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
-      'https://fx.zadtoo.com'
+      PUBLISHED_CLOUD_ORIGIN,
+      WORKSPACE_DEV_ORIGIN,
+      STATIC_SITE_ORIGIN
     ].filter((u, idx, arr) => Boolean(u) && arr.indexOf(u) === idx);
 
     const clientScript = buildFloatingQuotexRobotScript({
@@ -895,7 +912,7 @@ export default function QuotexRobotAdminPage({
     });
     setGeneratedScript(clientScript);
     setScriptMeta({
-      version: 'v5.2.1 (متعدد المسارات + جسر المتصفح)',
+      version: 'v5.4 (رادار مسح ضوئي + جسر المتصفح)',
       serverOrigin: targetOrigin,
       embeddedApiKey: targetKey || 'غير مضمّن'
     });
@@ -904,10 +921,10 @@ export default function QuotexRobotAdminPage({
   };
 
   useEffect(() => {
-    if (isAdmin && !generatedScript) {
-      fetchAdminFloatingScript();
+    if (isAdmin) {
+      fetchAdminFloatingScript(scriptApiKey, scriptServerOrigin);
     }
-  }, [isAdmin, adminToken, activeMemberKeys.length]);
+  }, [isAdmin, adminToken, activeMemberKeys.length, scriptApiKey]);
 
   const handleCreateAndEmbedAdminKey = async () => {
     if (!isAdmin) return;
@@ -983,8 +1000,12 @@ export default function QuotexRobotAdminPage({
       setSubscribers(prev => [createdSub!, ...prev.filter(s => s.id !== createdSub!.id)]);
       if (newKey) {
         setSelectedTestApiKey(newKey);
-        setScriptApiKey(newKey);
-        await fetchAdminFloatingScript(newKey, scriptServerOrigin);
+        fetchLiveRobotApiFeed(newKey, false);
+        setMemberUpdateToast({
+          type: 'success',
+          message: `✅ تم إنشاء مفتاح المشرف وحفظه في قاعدة البيانات: ${newKey} — أدخله داخل الروبوت العائم عبر زر (🔑 ID).`
+        });
+        setTimeout(() => setMemberUpdateToast(null), 6000);
       }
     } else {
       setScriptError('تعذر إنشاء مفتاح المشرف — سجل الدخول بحساب Google أولاً');
@@ -2434,16 +2455,27 @@ export default function QuotexRobotAdminPage({
               </pre>
             </div>
 
-            <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5 text-[11px] text-emerald-200">
-              <div className="font-bold flex items-center gap-1.5 text-emerald-300">
-                <span>🟢 متصل مباشرة بـ fx.zadtoo.com والسحابة (الإصدار v5.0):</span>
+            {serverConnectionMode === 'static_only' ? (
+              <div className="p-3 bg-amber-500/10 border border-amber-500/40 rounded-xl space-y-1.5 text-[11px] text-amber-200">
+                <div className="font-bold flex items-center gap-1.5 text-amber-300">
+                  <span>⚠️ أنت تتصفح الآن استضافة الواجهة الثابتة (<code dir="ltr">fx.zadtoo.com</code>) بدون خادم خلفي:</span>
+                </div>
+                <p className="text-[10.5px] text-slate-300 leading-relaxed">
+                  موقع <code dir="ltr" className="text-sky-300">fx.zadtoo.com</code> مستضاف على Firebase Hosting الثابتة فقط؛ لذلك <strong className="text-white">محرك الإشارات التلقائي وبوتات التليجرام وفحص مفاتيح الروبوت (<code dir="ltr">/api/quotex-robot/feed</code>)</strong> تعمل من الخادم الكامل (<code dir="ltr">ais-pre</code> بعد النشر أو رابط بيئة العمل أثناء التطوير).
+                </p>
               </div>
-              <ul className="list-disc list-inside space-y-1 text-slate-300">
-                <li><strong className="text-white">اتصال سحابي مباشر ومجاني:</strong> يعمل الروبوت مباشرة عبر <code className="font-mono-num text-sky-300">fx.zadtoo.com</code> وسحابة Firestore الفورية دون الحاجة لاشتراك مدفوع أو تفعيل جلسة.</li>
-                <li><strong className="text-amber-300">زر إدخال وتعديل المفتاح (🔑 ID):</strong> يكتفي العضو بإدخال مفتاح العضو فقط داخل الروبوت العائم بينما يظل الربط السحابي مضمّناً تلقائياً.</li>
-                <li><strong className="text-emerald-300">مرور الصفقة + تداول آلي/يدوي + قرآن واختبار الأزرار:</strong> يعرض مراحل الإشارة والعد التنازلي أثناء الصفقة (60 ثانية) مع أزرار التثبيت اليدوي والشراء/البيع.</li>
-              </ul>
-            </div>
+            ) : (
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5 text-[11px] text-emerald-200">
+                <div className="font-bold flex items-center gap-1.5 text-emerald-300">
+                  <span>🟢 سيرفر الإشارات والروبوت نشط ومتصل مباشرة بقاعدة البيانات (الإصدار v5.4):</span>
+                </div>
+                <ul className="list-disc list-inside space-y-1 text-slate-300">
+                  <li><strong className="text-white">التحقق الحقيقي من الخادم:</strong> يستجيب المسار <code dir="ltr" className="font-mono-num text-sky-300">/api/quotex-robot/feed</code> بصيغة JSON فورية ويتحقق من صلاحية المفتاح في قاعدة البيانات.</li>
+                  <li><strong className="text-amber-300">سكربت فارغ + زر إدخال المفتاح (🔑 ID):</strong> يثبت العضو السكربت فارغاً في Tampermonkey ثم يضع مفتاحه داخل الروبوت العائم ليتحقق فوراً من القاعدة.</li>
+                  <li><strong className="text-emerald-300">الرادار الضوئي + تنفيذ آلي/يدوي على المنصة:</strong> يفتح الصفقات فقط داخل منصات التداول بعد فحص الصلاحية.</li>
+                </ul>
+              </div>
+            )}
 
             {/* ADMIN-ONLY FLOATING QUOTEX ROBOT SCRIPT GENERATOR */}
             {isAdmin ? (
@@ -2479,7 +2511,7 @@ export default function QuotexRobotAdminPage({
                 {activeMemberKeys.length === 0 && (
                   <div className="p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/40 text-[10.5px] text-amber-200 space-y-2">
                     <div>
-                      ⚠️ <strong>تنبيه مهم:</strong> لا يوجد أي مفتاح عضو فعال حالياً في النظام، ولذلك لن يستقبل الروبوت العائم على كيوتكس الإشارات حتى تُنشئ مفتاحاً وتُضمّنه في الكود.
+                      ⚠️ <strong>تنبيه مهم:</strong> لا يوجد أي مفتاح عضو فعال حالياً في النظام. يتم تثبيت السكربت فارغاً بدون مفتاح، وسيحتاج العضو إلى إدخال مفتاح فعّال داخل نافذة الروبوت (🔑 ID) لاستقبال الإشارات.
                     </div>
                     <button
                       type="button"
@@ -2488,7 +2520,7 @@ export default function QuotexRobotAdminPage({
                       className="px-3 py-1.5 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold rounded-lg text-[11px] cursor-pointer flex items-center gap-1.5"
                     >
                       <Key className="w-3.5 h-3.5" />
-                      <span>{isQuickCreatingAdminKey ? 'جاري إنشاء المفتاح...' : '🔑 إنشاء مفتاح مشرف فعال وتضمينه في الكود الآن'}</span>
+                      <span>{isQuickCreatingAdminKey ? 'جاري إنشاء المفتاح...' : '🔑 إنشاء مفتاح مشرف فعال الآن'}</span>
                     </button>
                   </div>
                 )}
@@ -2496,7 +2528,7 @@ export default function QuotexRobotAdminPage({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <div>
                     <label className="block text-[10px] font-bold text-slate-300 mb-1">
-                      مفتاح العضو المضمّن داخل الكود:
+                      مفتاح العضو المضمّن داخل الكود (الافتراضي فارغ ليُدخله العضو):
                     </label>
                     <select
                       value={scriptApiKey}
@@ -2533,26 +2565,41 @@ export default function QuotexRobotAdminPage({
                       <button
                         type="button"
                         onClick={() => {
-                          setScriptServerOrigin(publicRobotOrigin);
-                          fetchAdminFloatingScript(scriptApiKey, publicRobotOrigin);
+                          setScriptServerOrigin(PUBLISHED_CLOUD_ORIGIN);
+                          fetchAdminFloatingScript(scriptApiKey, PUBLISHED_CLOUD_ORIGIN);
                         }}
                         className={`px-2 py-0.5 rounded text-[9.5px] font-bold cursor-pointer border ${
-                          scriptServerOrigin === publicRobotOrigin
+                          scriptServerOrigin === PUBLISHED_CLOUD_ORIGIN
                             ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
                             : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
                         }`}
                       >
-                        🟢 السيرفر الحي (API)
+                        🚀 السيرفر المنشور (النهائي)
                       </button>
+                      {publicRobotOrigin !== PUBLISHED_CLOUD_ORIGIN && publicRobotOrigin !== STATIC_SITE_ORIGIN && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setScriptServerOrigin(publicRobotOrigin);
+                            fetchAdminFloatingScript(scriptApiKey, publicRobotOrigin);
+                          }}
+                          className={`px-2 py-0.5 rounded text-[9.5px] font-bold cursor-pointer border ${
+                            scriptServerOrigin === publicRobotOrigin
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/50'
+                              : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                          }`}
+                        >
+                          🛠️ رابط بيئة العمل الحالية
+                        </button>
+                      )}
                       <button
                         type="button"
                         onClick={() => {
-                          const fxOrigin = 'https://fx.zadtoo.com';
-                          setScriptServerOrigin(fxOrigin);
-                          fetchAdminFloatingScript(scriptApiKey, fxOrigin);
+                          setScriptServerOrigin(STATIC_SITE_ORIGIN);
+                          fetchAdminFloatingScript(scriptApiKey, STATIC_SITE_ORIGIN);
                         }}
                         className={`px-2 py-0.5 rounded text-[9.5px] font-bold cursor-pointer border ${
-                          scriptServerOrigin === 'https://fx.zadtoo.com'
+                          scriptServerOrigin === STATIC_SITE_ORIGIN
                             ? 'bg-sky-500/20 text-sky-300 border-sky-500/50'
                             : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
                         }`}
@@ -2564,7 +2611,7 @@ export default function QuotexRobotAdminPage({
                 </div>
 
                 <div className="p-2.5 rounded-lg bg-sky-950/40 border border-sky-500/35 text-[10px] text-sky-200 leading-relaxed">
-                  💡 <strong>توضيح حول <code dir="ltr">fx.zadtoo.com</code> والسيرفر السحابي:</strong> دومين <code dir="ltr" className="text-emerald-300">fx.zadtoo.com</code> يستضيف الواجهة السحابية الثابتة، بينما خادم الإشارات الحي (<code dir="ltr">/api/quotex-robot/feed</code>) يعمل على سيرفر التطبيق السحابي (<code dir="ltr">ais-dev</code> / <code dir="ltr">ais-pre</code>). السكربت <strong>v5.4</strong> يضمّن كافة المسارات الاحتياطية معاً تلقائياً حتى لو اخترت <code dir="ltr">fx.zadtoo.com</code>.
+                  💡 <strong>توضيح مهم حول مصدر الإشارات وربط الروبوت:</strong> دومين <code dir="ltr" className="text-emerald-300">fx.zadtoo.com</code> مرفوع على استضافة ثابتة فقط (بدون Node.js)، أما محرك الإشارات وبوتات التليجرام وقاعدة مفاتيح الروبوت فتعمل من السيرفر الكامل (<code dir="ltr">ais-pre</code> بعد النشر أو <code dir="ltr">ais-dev</code> أثناء الاختبار في بيئة العمل). السكربت <strong>v5.4</strong> يحاول تلقائياً الاتصال بالسيرفر المنشور ثم بيئة العمل ثم الدومين الرسمي حتى لا يتوقف اتصال الروبوت.
                 </div>
 
                 <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/40 text-[10.5px] text-emerald-200 leading-relaxed">
@@ -2643,7 +2690,7 @@ export default function QuotexRobotAdminPage({
                 <div className="p-2.5 bg-slate-900/80 border border-slate-800 rounded-lg text-[10px] text-slate-300 space-y-1">
                   <div className="font-bold text-sky-300">📌 طرق التشغيل المرنة (Tampermonkey أو Console في أي موقع):</div>
                   <ol className="list-decimal list-inside space-y-0.5 text-slate-400">
-                    <li>اختر مفتاح العضو من القائمة أعلاه ثم حمّل ملف <strong>(.user.js)</strong> لإضافته إلى Tampermonkey (يعمل تلقائياً على جميع المواقع والمنصات <code>*://*/*</code>).</li>
+                    <li>حمّل ملف <strong>(.user.js)</strong> أو انسخ الكود فارغاً دون مفتاح افتراضي وأضفه إلى <strong>Tampermonkey</strong> (يعمل على جميع المواقع <code>*://*/*</code>)، ثم يُدخل العضو مفتاحه من زر <strong>🔑 ID</strong> داخل نافذة الروبوت.</li>
                     <li>أو انسخ الكود مباشرة والصقه في أي موقع أو في <strong>DevTools Console</strong> — سيتصل بالسيرفر ويعرض الإشارات فوراً دون قيود نطاقات.</li>
                     <li>لن يضغط الروبوت على أي صفقة إلا عند فتح منصة التداول واكتشاف أزرار الشراء والبيع (CALL / PUT).</li>
                   </ol>

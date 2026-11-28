@@ -760,9 +760,9 @@ const defaultSettings: AppSettings = {
 };
 
 const defaultAutoPilot: AutoPilotConfig = {
-  enabled: false,
+  enabled: true,
   engineStartedAt: Date.now(),
-  warmupMinutes: 10,
+  warmupMinutes: 0,
   freeBotDailyTargetReached: false,
   freeBotCelebrationSentDate: '',
   freeBotStoppedForToday: false,
@@ -783,9 +783,9 @@ const defaultAutoPilot: AutoPilotConfig = {
   freeWinImageUrl: '',
   freeWinGale1ImageUrl: '',
   freeLossImageUrl: '',
-  vipEnabled: false,
+  vipEnabled: true,
   vipBotToken: '',
-  vipChatId: '',
+  vipChatId: DEFAULT_VIP_CHAT_ID,
   vipBotConsecutiveLosses: 0,
   vipBotCooldownUntil: 0,
   vipWinIcon: '👑✅ ربح VIP',
@@ -991,7 +991,7 @@ const MORNING_START_MIN = 10 * 60 + 30; // 10:30 AM Cairo
 const MORNING_ACTIVE_MIN = 10 * 60 + 38; // 10:38 AM (8-min warmup)
 const MORNING_END_MIN = 13 * 60; // 01:00 PM (13:00) Cairo
 const EVENING_START_MIN = 16 * 60 + 30; // 04:30 PM (16:30) Cairo
-const EVENING_ACTIVE_MIN = 16 * 60 + 40; // 04:40 PM (10-min warmup)
+const EVENING_ACTIVE_MIN = 16 * 60 + 30; // 04:30 PM (immediate broadcast at session start)
 const EVENING_END_MIN = 19 * 60; // 07:00 PM (19:00) Cairo
 
 function isCairoInMorningSession(dateObj: Date = new Date()): boolean {
@@ -1728,7 +1728,7 @@ let robotSettings: QuotexRobotSettings = { ...defaultRobotSettings };
 let liveBroadcastSession: LiveBroadcastSessionConfig = {
   enabled: true,
   startHourEgypt: 16, // 04:30 PM Cairo (16:30 - 19:00)
-  preScanMinutes: 10, // 10 minutes pre-scan (16:30 - 16:40)
+  preScanMinutes: 0, // Active immediately from 04:30 PM (16:30) Cairo
   minWinRateTarget: 60, // 60%
   maxWinRateTarget: 75, // 75%
   stopConsecutiveLosses: 3, // 3 consecutive losses
@@ -2017,10 +2017,24 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       !incomingQxLink || incomingQxLink.includes('lid=ZadNBFX')
         ? 'https://broker-qx.pro/?lid=2303934'
         : incomingQxLink;
+    const isLegacyDisabledUnconfigured =
+      parsed.autopilot.vipEnabled === false &&
+      !(parsed.autopilot.vipBotToken && parsed.autopilot.vipBotToken.trim()) &&
+      !(parsed.autopilot.vipChatId && parsed.autopilot.vipChatId.trim());
     autoPilot = {
       ...defaultAutoPilot,
       ...autoPilot,
       ...parsed.autopilot,
+      enabled: isLegacyDisabledUnconfigured
+        ? true
+        : typeof parsed.autopilot.enabled === 'boolean'
+        ? parsed.autopilot.enabled
+        : true,
+      vipEnabled: isLegacyDisabledUnconfigured
+        ? true
+        : typeof parsed.autopilot.vipEnabled === 'boolean'
+        ? parsed.autopilot.vipEnabled
+        : true,
       freeBotDailyTargetReached:
         typeof parsed.autopilot.freeBotDailyTargetReached === 'boolean'
           ? parsed.autopilot.freeBotDailyTargetReached
@@ -2041,7 +2055,7 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       freeWinGale1ImageUrl: parsed.autopilot.freeWinGale1ImageUrl !== undefined ? parsed.autopilot.freeWinGale1ImageUrl : (autoPilot.freeWinGale1ImageUrl || ''),
       freeLossImageUrl: parsed.autopilot.freeLossImageUrl !== undefined ? parsed.autopilot.freeLossImageUrl : (autoPilot.freeLossImageUrl || ''),
       vipBotToken: (parsed.autopilot.vipBotToken && parsed.autopilot.vipBotToken.trim()) || autoPilot.vipBotToken || '',
-      vipChatId: (parsed.autopilot.vipChatId && parsed.autopilot.vipChatId.trim()) || autoPilot.vipChatId || '',
+      vipChatId: (parsed.autopilot.vipChatId && parsed.autopilot.vipChatId.trim()) || autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID,
       vipWinIcon: parsed.autopilot.vipWinIcon || autoPilot.vipWinIcon || '👑✅ ربح VIP',
       vipWinGale1Icon: parsed.autopilot.vipWinGale1Icon || autoPilot.vipWinGale1Icon || '👑✅ ربح مضاعفة واحدة',
       vipLossIcon: parsed.autopilot.vipLossIcon || autoPilot.vipLossIcon || '❌',
@@ -2089,11 +2103,14 @@ function applyParsedState(parsed: Partial<PersistedState>) {
       if (isNaN(d.getTime()) || getCurrentEgyptDateString(d) !== todayEgyptHydrate) return false;
       return isCairoInMorningSession(d);
     }).length;
-    if (getCairoMinutesOfDay() < MORNING_END_MIN && morningCompletedHydrate === 0) {
+    if (
+      getCairoMinutesOfDay() < MORNING_END_MIN &&
+      morningCompletedHydrate === 0 &&
+      autoPilot.freeBot12ReportSentDate !== todayEgyptHydrate
+    ) {
       autoPilot.freeBotDailyTargetReached = false;
       autoPilot.freeBotStoppedForToday = false;
       if (autoPilot.freeBotCelebrationSentDate === todayEgyptHydrate) autoPilot.freeBotCelebrationSentDate = '';
-      if (autoPilot.freeBot12ReportSentDate === todayEgyptHydrate) autoPilot.freeBot12ReportSentDate = '';
       if (autoPilot.vipMorningReportSentDate === todayEgyptHydrate) autoPilot.vipMorningReportSentDate = '';
     }
   }
@@ -5975,8 +5992,8 @@ async function updateTelegramSignalResult(
 
     let anySuccess = false;
 
-    const freeToken = (botToken || autoPilot.botToken || '').trim();
-    const freeChat = (chatId || autoPilot.chatId || '').trim();
+    const freeToken = (botToken || autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
+    const freeChat = (chatId || autoPilot.chatId || DEFAULT_FREE_CHAT_ID).trim();
     const vipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
     const vipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
 
@@ -6632,8 +6649,8 @@ async function dispatchVipMomentumPauseSignal(
 
   const activeVipToken = (autoPilot.vipBotToken || DEFAULT_VIP_BOT_TOKEN).trim();
   const activeVipChat = (autoPilot.vipChatId || DEFAULT_VIP_CHAT_ID).trim();
-  const freeToken = (autoPilot.botToken || '').trim();
-  const freeChat = (autoPilot.chatId || '').trim();
+  const freeToken = (autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
+  const freeChat = (autoPilot.chatId || DEFAULT_FREE_CHAT_ID).trim();
 
   const todayEgyptNow = getCurrentEgyptDateString(new Date());
   const isMorning = isCairoInMorningSession();
@@ -6825,7 +6842,9 @@ async function dispatchVipMomentumPauseSignal(
   // Evaluate trade outcome after candle finishes (68 seconds)
   const msUntilCandleClose = Math.max(65000, targetEntryDate.getTime() + 68000 - Date.now());
   setTimeout(async () => {
-    await loadStateFromCloudAndDisk();
+    if (!isCloudStateLoaded) {
+      await loadStateFromCloudAndDisk();
+    }
     const target = signalsStore.find(s => s.id === newSignal.id);
     if (!target || target.status !== 'PENDING' || target.resultSent) return;
 
@@ -6905,7 +6924,30 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
     const isMorning = cairoMins >= MORNING_ACTIVE_MIN && cairoMins < MORNING_END_MIN - 3;
     const isEveningLive = cairoMins >= EVENING_ACTIVE_MIN && cairoMins < EVENING_END_MIN - 3;
 
-    // Background 6-pair scanning during preparation warmup (10:30 - 10:38 / 16:30 - 16:40) without issuing any signal
+    const todayEgypt = getCurrentEgyptDateString(new Date());
+
+    // Morning Public Channel stopping check: ONLY stop after 01:00 PM closing report (no early win-rate cap!)
+    if (cairoMins >= MORNING_START_MIN && cairoMins < MORNING_END_MIN) {
+      if (
+        autoPilot.freeBotStoppedForToday === true ||
+        autoPilot.freeBot12ReportSentDate === todayEgypt
+      ) {
+        return; // Morning Public session completed and report already sent
+      }
+    }
+
+    // Evening Private VIP stopping check: halt all scans/signals once 60%+ / closing report sent
+    if (cairoMins >= EVENING_START_MIN && cairoMins < EVENING_END_MIN) {
+      if (
+        liveBroadcastSession.closingReportSentDate === todayEgypt ||
+        autoPilot.vipClosingReportSentDate === todayEgypt ||
+        getEveningLiveSessionStatus().isSessionFinished
+      ) {
+        return;
+      }
+    }
+
+    // Background 6-pair scanning during preparation warmup without issuing any signal
     const isInPreparationWindow =
       (cairoMins >= MORNING_START_MIN && cairoMins < MORNING_ACTIVE_MIN) ||
       (cairoMins >= EVENING_START_MIN && cairoMins < EVENING_ACTIVE_MIN);
@@ -6918,8 +6960,6 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
     }
 
     if (!isMorning && !isEveningLive) return;
-
-    const todayEgypt = getCurrentEgyptDateString(new Date());
 
     // Morning Public Channel stopping check: ONLY stop after 01:00 PM closing report (no early win-rate cap!)
     if (isMorning) {
@@ -6955,24 +6995,27 @@ async function checkVipMomentumPauseBreakoutLoop(): Promise<void> {
     const now = new Date();
     const sec = now.getSeconds();
 
-    // Pre-warm Yahoo HTTP connections and market cache at :43-:46 so dispatch at :49-:53 executes in < 1s
-    if (sec >= 43 && sec <= 46) {
+    // Pre-warm Yahoo HTTP connections and market cache at :41-:44 so dispatch at :48-:53 executes cleanly before :56
+    if (sec >= 41 && sec <= 44) {
       if (Date.now() - lastPreWarmScanAtMs > 18_000) {
         lastPreWarmScanAtMs = Date.now();
-        await loadStateFromCloudAndDisk();
+        if (!isCloudStateLoaded) {
+          await loadStateFromCloudAndDisk();
+        }
         await scanRealGlobalForexMarket(false);
       }
       return;
     }
 
-    // Strict 7-to-11 second Synchronized Pre-Open Window (:49 to :53 seconds):
-    // Guarantees BOTH Telegram and Floating Robot receive the signal WELL BEFORE :00.00 on the same minute!
-    if (sec < 49 || sec > 53) return;
+    // Strict Synchronized Pre-Open Window (:48 to :53 seconds):
+    // Gives Yahoo scan enough room to finish by :50-:55 so BOTH Telegram and Floating Robot receive the signal BEFORE :00.00!
+    if (sec < 48 || sec > 53) return;
 
-    // Ensure fresh state from Cloud Firestore without overflowing into :57+
-    await loadStateFromCloudAndDisk();
+    if (!isCloudStateLoaded) {
+      await loadStateFromCloudAndDisk();
+    }
     const secAfterLoad = new Date().getSeconds();
-    if (secAfterLoad < 49 || secAfterLoad > 55) return;
+    if (secAfterLoad < 48 || secAfterLoad > 55) return;
 
     // Prevent duplicate firing in the exact same minute
     const currentMinuteKey = `${now.getUTCFullYear()}-${now.getUTCMonth()}-${now.getUTCDate()}-${now.getUTCHours()}:${now.getUTCMinutes()}`;
@@ -7308,10 +7351,13 @@ async function sendLiveBroadcastClosingReport(_reason?: string): Promise<void> {
   }
 
   // Send closing report strictly to VIP Private Channel ONLY
+  const eveningLockKey = `evening_closing_${todayEgypt}`;
+  let sentOk = false;
   if (vipToken && vipChat) {
     try {
       const tgRes = await sendTelegramMessage(vipToken, vipChat, msg);
       if (tgRes.ok) {
+        sentOk = true;
         liveBroadcastSession.closingReportSentDate = todayEgypt;
         autoPilot.vipClosingReportSentDate = todayEgypt;
         liveBroadcastSession.status = _reason === 'target_reached' ? 'STOPPED_TARGET_REACHED' : 'STOPPED_SESSION_COMPLETED';
@@ -7321,7 +7367,11 @@ async function sendLiveBroadcastClosingReport(_reason?: string): Promise<void> {
       }
     } catch (_e) {}
   }
-  await saveState();
+  if (!sentOk) {
+    await releaseTelegramDailyNoticeLock(eveningLockKey);
+  } else {
+    await saveState();
+  }
 }
 
 /**
@@ -8108,8 +8158,8 @@ async function checkAndSendMorningOpeningGreeting(): Promise<boolean> {
     return false;
   }
 
-  const freeToken = (autoPilot.botToken || '').trim();
-  const freeChat = (autoPilot.chatId || '').trim();
+  const freeToken = (autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
+  const freeChat = (autoPilot.chatId || DEFAULT_FREE_CHAT_ID).trim();
 
   const greetingText = [
     `☀️ صباح الخير، يوم جميل بإذن الله 🌹✨`,
@@ -8168,7 +8218,8 @@ async function checkAndSendMorningSessionClosingReport(forceClose = false): Prom
     return false;
   }
 
-  if (!(await claimTelegramDailyNoticeLock(`morning_closing_${todayEgypt}`))) {
+  const morningLockKey = `morning_closing_${todayEgypt}`;
+  if (!(await claimTelegramDailyNoticeLock(morningLockKey))) {
     autoPilot.freeBotCelebrationSentDate = todayEgypt;
     autoPilot.freeBot12ReportSentDate = todayEgypt;
     autoPilot.freeBotDailyTargetReached = true;
@@ -8177,8 +8228,8 @@ async function checkAndSendMorningSessionClosingReport(forceClose = false): Prom
   }
 
   const status = getFreeBotTargetStatus();
-  const freeToken = (autoPilot.botToken || '').trim();
-  const freeChat = (autoPilot.chatId || '').trim();
+  const freeToken = (autoPilot.botToken || DEFAULT_FREE_BOT_TOKEN).trim();
+  const freeChat = (autoPilot.chatId || DEFAULT_FREE_CHAT_ID).trim();
 
   const wins = status.todayWins;
   const losses = status.todayLosses;
@@ -8229,10 +8280,12 @@ async function checkAndSendMorningSessionClosingReport(forceClose = false): Prom
         `${appSettings.channelSignature || '💡 نركز على الفرص القوية فقط — التزم بإدارة رأس المال'}`
       ].join('\n');
 
+  let sentOk = false;
   if (freeToken && freeChat) {
     try {
       const res = await sendTelegramMessage(freeToken, freeChat, reportText);
       if (res.ok) {
+        sentOk = true;
         autoPilot.freeBotCelebrationSentDate = todayEgypt;
         autoPilot.freeBot12ReportSentDate = todayEgypt;
         autoPilot.freeBotDailyTargetReached = true;
@@ -8240,6 +8293,14 @@ async function checkAndSendMorningSessionClosingReport(forceClose = false): Prom
         console.log(`[Morning Report ✅] Sent 01:00 PM Public/Free Channel closing report (${todayEgypt}).`);
       }
     } catch (_e) {}
+  }
+
+  if (!sentOk) {
+    await releaseTelegramDailyNoticeLock(morningLockKey);
+    if (currentCairoMins >= MORNING_END_MIN) {
+      autoPilot.freeBotStoppedForToday = true;
+    }
+    return false;
   }
 
   await saveState();
@@ -8978,28 +9039,36 @@ async function startServer() {
         added++;
       } else {
         let changed = false;
-        if (cleanKey && !existing.robotApiKey) {
+        if (cleanKey && existing.robotApiKey !== cleanKey) {
           existing.robotApiKey = cleanKey;
           changed = true;
         }
-        if (cleanExp && !existing.robotExpiryDate) {
-          existing.robotExpiryDate = cleanExp;
-          if (!existing.expiryDate) existing.expiryDate = cleanExp;
+        if (raw.status && (raw.status === 'ACTIVE' || raw.status === 'PENDING' || raw.status === 'BANNED') && existing.status !== raw.status) {
+          existing.status = raw.status;
           changed = true;
         }
-        if (raw.email && !existing.email) {
+        if (cleanExp && existing.robotExpiryDate !== cleanExp) {
+          existing.robotExpiryDate = cleanExp;
+          existing.expiryDate = String(raw.expiryDate || cleanExp).trim();
+          changed = true;
+        }
+        if (raw.email && existing.email !== String(raw.email).trim().slice(0, 150)) {
           existing.email = String(raw.email).trim().slice(0, 150);
           changed = true;
         }
-        if (raw.phone && !existing.phone) {
+        if (raw.phone && existing.phone !== String(raw.phone).trim().slice(0, 50)) {
           existing.phone = String(raw.phone).trim().slice(0, 50);
           changed = true;
         }
-        if (raw.telegramUsername && !existing.telegramUsername) {
+        if (raw.telegramUsername && existing.telegramUsername !== String(raw.telegramUsername).trim().slice(0, 100)) {
           existing.telegramUsername = String(raw.telegramUsername).trim().slice(0, 100);
           changed = true;
         }
-        if (raw.robotEnabled !== undefined && existing.robotEnabled === undefined) {
+        if (raw.brokerAccountId !== undefined && String(raw.brokerAccountId).trim() && existing.brokerAccountId !== String(raw.brokerAccountId).trim().slice(0, 80)) {
+          existing.brokerAccountId = String(raw.brokerAccountId).trim().slice(0, 80);
+          changed = true;
+        }
+        if (raw.robotEnabled !== undefined && Boolean(raw.robotEnabled) !== existing.robotEnabled) {
           existing.robotEnabled = Boolean(raw.robotEnabled);
           changed = true;
         }
@@ -9442,14 +9511,13 @@ async function startServer() {
       serverOrigin,
       envOrigin,
       requestOrigin,
-      'https://ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
       'https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
+      'https://ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
       'https://fx.zadtoo.com'
     ].filter((u, idx, arr) => Boolean(u) && /^https?:\/\//i.test(u) && arr.indexOf(u) === idx);
 
     const requestedKey = String(req.query.apiKey || '').replace(/[^A-Za-z0-9_-]/g, '').trim();
-    const firstActiveSub = subscribersStore.find(s => s.status === 'ACTIVE' && s.robotEnabled !== false && s.robotApiKey);
-    const embeddedApiKey = requestedKey || firstActiveSub?.robotApiKey || '';
+    const embeddedApiKey = requestedKey;
 
     const script = buildFloatingQuotexRobotScript({
       serverOrigin,
@@ -9493,11 +9561,11 @@ async function startServer() {
     }
 
     // Strict Registered ACTIVE Member Verification ONLY (No demo/master test keys allowed)
-    const cleanKeyUpper = apiKey.replace(/\s+/g, '').toUpperCase();
+    const cleanKeyUpper = apiKey.replace(/[\s\u200B-\u200F\u202A-\u202E\uFEFF]+/g, '').toUpperCase();
     const member = subscribersStore.find(
       s =>
-        (s.robotApiKey || '').replace(/\s+/g, '').toUpperCase() === cleanKeyUpper ||
-        (s.brokerAccountId && s.brokerAccountId.replace(/\s+/g, '').toUpperCase() === cleanKeyUpper)
+        (s.robotApiKey || '').replace(/[\s\u200B-\u200F\u202A-\u202E\uFEFF]+/g, '').toUpperCase() === cleanKeyUpper ||
+        (s.brokerAccountId && s.brokerAccountId.replace(/[\s\u200B-\u200F\u202A-\u202E\uFEFF]+/g, '').toUpperCase() === cleanKeyUpper)
     );
 
     if (!member) {
@@ -9709,22 +9777,41 @@ async function startServer() {
     });
   });
 
-  // Dynamic Userscript serving endpoint (strictly sanitized origin & member key)
+  // Dynamic Userscript serving endpoint (always stays synced with buildFloatingQuotexRobotScript)
   app.get(['/api/quotex-robot/zad-broker-robot.user.js', '/zad-broker-robot.user.js'], (req, res) => {
     const host = req.get('host') || 'fx.zadtoo.com';
     const proto = host.includes('localhost') || host.includes('127.0.0.1') ? 'http' : 'https';
-    const origin = `${proto}://${host}`;
-    const safeOrigin = isApprovedBrokerOrAppOrigin(origin) ? origin : 'https://fx.zadtoo.com';
+    const envOrigin = String(process.env.APP_URL || '').trim().replace(/\/+$/, '');
+    const requestOrigin = `${proto}://${host}`.replace(/\/+$/, '');
+    const preferredOrigin = envOrigin || requestOrigin;
+    const safeOrigin = isApprovedBrokerOrAppOrigin(preferredOrigin)
+      ? preferredOrigin
+      : 'https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app';
     const safeApiKey = String(req.query.apiKey || '').replace(/[^A-Za-z0-9_-]/g, '').trim();
+    const fallbackOrigins = [
+      safeOrigin,
+      envOrigin,
+      requestOrigin,
+      'https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
+      'https://ais-dev-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app',
+      'https://fx.zadtoo.com'
+    ].filter((u, idx, arr) => Boolean(u) && /^https?:\/\//i.test(u) && arr.indexOf(u) === idx);
+
+    const script = buildFloatingQuotexRobotScript({
+      serverOrigin: safeOrigin,
+      fallbackOrigins,
+      apiKey: safeApiKey,
+      defaultStake: robotSettings.defaultStakeUsd || 5,
+      defaultMode: robotSettings.defaultMode || 'MANUAL',
+      soundDefault: robotSettings.soundAlertsEnabled !== false,
+      autoPairDefault: robotSettings.autoSelectPair !== false,
+      autoM1Default: robotSettings.autoSetExpiryM1 !== false,
+      strategyDefault: 'VIP_WITH_MPB'
+    });
+
     res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-    const filePath = path.join(process.cwd(), 'public', 'zad-broker-robot.user.js');
-    if (fs.existsSync(filePath)) {
-      let content = fs.readFileSync(filePath, 'utf-8');
-      content = content.replace(/\$\{appOrigin\}/g, safeOrigin).replace(/\$\{activeKey\}/g, safeApiKey);
-      return res.send(content);
-    }
-    res.status(404).send('Userscript file not found');
+    res.send(script);
   });
 
   // Dedicated Golden Reference Baseline Userscript endpoint
@@ -9954,14 +10041,14 @@ async function startServer() {
 
   app.post('/api/quotex-robot/report-trade', async (req, res) => {
     const { apiKey, outcome } = req.body || {};
-    const cleanKey = String(apiKey || '').trim().toUpperCase();
+    const cleanKey = String(apiKey || '').replace(/[\s\u200B-\u200F\u202A-\u202E\uFEFF]+/g, '').toUpperCase();
     if (!cleanKey) {
       return res.status(401).json({ ok: false, error: 'مفتاح العضو مطلوب' });
     }
     const member = subscribersStore.find(
       s =>
-        (s.robotApiKey || '').trim().toUpperCase() === cleanKey ||
-        (s.brokerAccountId && s.brokerAccountId.trim().toUpperCase() === cleanKey)
+        (s.robotApiKey || '').replace(/[\s\u200B-\u200F\u202A-\u202E\uFEFF]+/g, '').toUpperCase() === cleanKey ||
+        (s.brokerAccountId && s.brokerAccountId.replace(/[\s\u200B-\u200F\u202A-\u202E\uFEFF]+/g, '').toUpperCase() === cleanKey)
     );
     const todayStr = getCurrentEgyptDateString(new Date());
     const expDate = member ? (member.robotExpiryDate || member.expiryDate || '').trim() : '';
