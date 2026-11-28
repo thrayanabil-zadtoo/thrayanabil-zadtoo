@@ -90,6 +90,7 @@ import {
   saveCloudSubscribers,
   saveSubscriberToFirestore,
   deleteSubscriberFromFirestore,
+  syncSubscribersToRobotLicenses,
   loadSignalsFromFirestore,
   saveSignalToFirestore,
   deleteSignalFromFirestore,
@@ -366,6 +367,7 @@ export default function App() {
   const [isGoogleLoggingIn, setIsGoogleLoggingIn] = useState<boolean>(false);
   const effectiveIsAdmin = isAdminAuthenticated || isFirebaseAdmin;
   const lastFirestoreMirrorRef = React.useRef<number>(0);
+  const lastRobotFeedMirrorRef = React.useRef<{ sigKey: string; ts: number }>({ sigKey: '', ts: 0 });
   const [activeView, setActiveView] = useState<'visitor' | 'admin' | 'stats' | 'robot'>('visitor');
   const [zadtooTab, setZadtooTab] = useState<'home' | 'signals' | 'news' | 'autotrade' | 'memberships' | 'admin' | 'telegram_bot'>('home');
   const [aboutContactType, setAboutContactType] = useState<'about' | 'contact' | null>(null);
@@ -588,7 +590,10 @@ export default function App() {
   const subscribersRef = React.useRef<VipSubscriber[]>([]);
   useEffect(() => {
     subscribersRef.current = subscribers;
-  }, [subscribers]);
+    if (isFirebaseAdmin && subscribers.length > 0) {
+      syncSubscribersToRobotLicenses(subscribers).catch(() => {});
+    }
+  }, [subscribers, isFirebaseAdmin]);
   const [quickNotes, setQuickNotes] = useState<QuickNote[]>([]);
   const [dailyStats, setDailyStats] = useState<DailyStatRecord[]>([]);
   // Admin Statistics Page (A4 Weekly / Monthly & Archive) state
@@ -1089,6 +1094,22 @@ export default function App() {
         }));
       }
 
+      // Mirror live active signal & session state to Firestore robot_feed/live on signal change or every 30s
+      if (canWriteFirestoreAsAdmin() && Array.isArray(data.signals)) {
+        const topSig = data.signals[0];
+        const sigKey = topSig ? `${topSig.id}:${topSig.status}:${topSig.targetEntryTimestamp || 0}` : 'NONE';
+        if (
+          sigKey !== lastRobotFeedMirrorRef.current.sigKey ||
+          Date.now() - lastRobotFeedMirrorRef.current.ts > 30000
+        ) {
+          lastRobotFeedMirrorRef.current = { sigKey, ts: Date.now() };
+          syncRobotPublicFeedToFirestore(data.signals, {
+            marketOpen: Boolean(data.autopilot?.marketOpenStatus ?? true),
+            workingHoursText: '04:30 م - 07:00 م بتوقيت القاهرة'
+          }).catch(() => {});
+        }
+      }
+
       // Mirror live server state into Firestore periodically when signed in as Firebase Admin
       if (canWriteFirestoreAsAdmin() && Date.now() - lastFirestoreMirrorRef.current > 25000) {
         lastFirestoreMirrorRef.current = Date.now();
@@ -1112,9 +1133,10 @@ export default function App() {
 
   useEffect(() => {
     fetchSignals();
-    const timer = setInterval(() => fetchSignals(), 10000);
+    const pollMs = effectiveIsAdmin ? 4000 : 10000;
+    const timer = setInterval(() => fetchSignals(), pollMs);
     return () => clearInterval(timer);
-  }, [adminToken, isFirebaseAdmin]);
+  }, [adminToken, isFirebaseAdmin, isAdminAuthenticated]);
 
   // Force refresh live market radar
   const handleRefreshMarketRadar = async () => {

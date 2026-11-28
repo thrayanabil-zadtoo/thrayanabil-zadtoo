@@ -11,6 +11,10 @@ service cloud.firestore {
       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidLicenseHash(hash) {
+      return hash is string && hash.size() == 64 && hash.matches('^[a-f0-9]{64}$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -50,6 +54,19 @@ service cloud.firestore {
              data.updatedAt is string && data.updatedAt.size() > 0 && data.updatedAt.size() <= 64 &&
              (!('payload' in data) || (data.payload is string && data.payload.size() <= 500000)) &&
              (!('signal' in data) || data.signal == null || (data.signal is map && data.signal.keys().size() <= 32));
+    }
+
+    function isValidRobotLicense(data) {
+      return data.keys().hasAll(['active', 'status', 'expiryDate', 'defaultMode', 'tradeStake', 'updatedAt']) &&
+             data.keys().hasOnly(['active', 'status', 'expiryDate', 'defaultMode', 'tradeStake', 'memberLabel', 'updatedAt']) &&
+             data.active is bool &&
+             data.status is string && data.status in ['ACTIVE', 'PENDING', 'BANNED'] &&
+             data.expiryDate is string && data.expiryDate.size() <= 16 &&
+             (data.expiryDate == '' || data.expiryDate.matches('^\\d{4}-\\d{2}-\\d{2}$')) &&
+             data.defaultMode is string && data.defaultMode in ['AUTO', 'MANUAL'] &&
+             data.tradeStake is number && data.tradeStake >= 1 && data.tradeStake <= 10000 &&
+             (!('memberLabel' in data) || (data.memberLabel is string && data.memberLabel.size() <= 120)) &&
+             data.updatedAt is string && data.updatedAt.size() > 0 && data.updatedAt.size() <= 64;
     }
 
     function isValidAdminDoc(data) {
@@ -96,6 +113,16 @@ service cloud.firestore {
       allow update: if isValidId(docId) && docId == 'live' && isAdmin() && isValidRobotFeed(incoming()) &&
                        incoming().diff(existing()).affectedKeys().hasOnly(['updatedAt', 'payload', 'signal']);
       allow delete: if isValidId(docId) && docId == 'live' && isAdmin();
+    }
+
+    // Hashed non-PII robot license verification (single-doc get by 64-hex SHA-256 hash only; list disabled)
+    match /robot_licenses/{licenseHash} {
+      allow get: if isValidLicenseHash(licenseHash);
+      allow list: if false;
+      allow create: if isValidLicenseHash(licenseHash) && isAdmin() && isValidRobotLicense(incoming());
+      allow update: if isValidLicenseHash(licenseHash) && isAdmin() && isValidRobotLicense(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['active', 'status', 'expiryDate', 'defaultMode', 'tradeStake', 'memberLabel', 'updatedAt']);
+      allow delete: if isValidLicenseHash(licenseHash) && isAdmin();
     }
   }
 }

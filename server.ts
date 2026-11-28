@@ -9534,7 +9534,7 @@ async function startServer() {
     res.json({
       ok: true,
       script,
-      version: 'v5.4',
+      version: 'v5.5',
       serverOrigin,
       fallbackOrigins,
       embeddedApiKey: embeddedApiKey || 'غير مضمّن'

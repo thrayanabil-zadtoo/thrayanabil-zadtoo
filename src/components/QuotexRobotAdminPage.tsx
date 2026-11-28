@@ -434,10 +434,11 @@ export default function QuotexRobotAdminPage({
   const lastAlertedSignalIdRef = useRef<string | null>(null);
   const [serverConnectionMode, setServerConnectionMode] = useState<'checking' | 'express_live' | 'static_only'>('checking');
 
-  // Fetch Live API Feed for the selected registered member API Key (Backend Express API strictly)
+  // Fetch Live API Feed for the selected registered member API Key (Express API + Cloud Firestore verification)
   const fetchLiveRobotApiFeed = async (keyToTest?: string, silent = false) => {
     const activeKey = (keyToTest ?? selectedTestApiKey).trim();
     if (!silent) setIsTestingApi(true);
+    let expressData: any = null;
     try {
       const res = await fetch(`/api/quotex-robot/feed?apiKey=${encodeURIComponent(activeKey)}`, {
         credentials: 'include',
@@ -447,18 +448,29 @@ export default function QuotexRobotAdminPage({
       if (ct.includes('application/json')) {
         const data = await res.json();
         setServerConnectionMode('express_live');
-        setApiFeedResponse(data);
-        return;
+        if (data?.authorized === true) {
+          setApiFeedResponse(data);
+          if (!silent) setIsTestingApi(false);
+          return;
+        }
+        expressData = data;
+      } else {
+        setServerConnectionMode('static_only');
       }
-      setServerConnectionMode('static_only');
     } catch (_e) {
       setServerConnectionMode('static_only');
-    } finally {
-      if (!silent) setIsTestingApi(false);
     }
 
     const fsFeed = await fetchRobotFeedFromFirestore(activeKey);
-    setApiFeedResponse(fsFeed);
+    if (fsFeed?.authorized === true) {
+      setApiFeedResponse(fsFeed);
+      if (onSyncCloudToServer && canWriteFirestoreAsAdmin()) {
+        onSyncCloudToServer().catch(() => false);
+      }
+    } else {
+      setApiFeedResponse(expressData || fsFeed);
+    }
+    if (!silent) setIsTestingApi(false);
   };
 
   useEffect(() => {
@@ -926,7 +938,7 @@ export default function QuotexRobotAdminPage({
     });
     setGeneratedScript(clientScript);
     setScriptMeta({
-      version: 'v5.4 (رادار مسح ضوئي + جسر المتصفح)',
+      version: 'v5.5 (اتصال سحابي مباشر + رادار)',
       serverOrigin: targetOrigin,
       embeddedApiKey: targetKey || 'غير مضمّن'
     });
@@ -2470,21 +2482,21 @@ export default function QuotexRobotAdminPage({
             </div>
 
             {serverConnectionMode === 'static_only' ? (
-              <div className="p-3 bg-amber-500/10 border border-amber-500/40 rounded-xl space-y-1.5 text-[11px] text-amber-200">
-                <div className="font-bold flex items-center gap-1.5 text-amber-300">
-                  <span>⚠️ أنت تتصفح الآن استضافة الواجهة الثابتة (<code dir="ltr">fx.zadtoo.com</code>) بدون خادم خلفي:</span>
+              <div className="p-3 bg-emerald-500/10 border border-emerald-500/35 rounded-xl space-y-1.5 text-[11px] text-emerald-200">
+                <div className="font-bold flex items-center gap-1.5 text-emerald-300">
+                  <span>🟢 متصل مباشرة بقاعدة البيانات السحابية (fx.zadtoo.com + Firestore):</span>
                 </div>
                 <p className="text-[10.5px] text-slate-300 leading-relaxed">
-                  موقع <code dir="ltr" className="text-sky-300">fx.zadtoo.com</code> مستضاف على Firebase Hosting الثابتة فقط؛ لذلك <strong className="text-white">محرك الإشارات التلقائي وبوتات التليجرام وفحص مفاتيح الروبوت (<code dir="ltr">/api/quotex-robot/feed</code>)</strong> تعمل من الخادم الكامل (<code dir="ltr">ais-pre</code> بعد النشر أو رابط بيئة العمل أثناء التطوير).
+                  يتم التحقق من مفاتيح الأعضاء وبث الإشارات مباشرة عبر قاعدة البيانات السحابية (v5.5) بدون الحاجة لبقاء أي نافذة أخرى مفتوحة.
                 </p>
               </div>
             ) : (
               <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl space-y-1.5 text-[11px] text-emerald-200">
                 <div className="font-bold flex items-center gap-1.5 text-emerald-300">
-                  <span>🟢 سيرفر الإشارات والروبوت نشط ومتصل مباشرة بقاعدة البيانات (الإصدار v5.4):</span>
+                  <span>🟢 سيرفر الإشارات والروبوت نشط ومتصل مباشرة بقاعدة البيانات (الإصدار v5.5):</span>
                 </div>
                 <ul className="list-disc list-inside space-y-1 text-slate-300">
-                  <li><strong className="text-white">التحقق الحقيقي من الخادم:</strong> يستجيب المسار <code dir="ltr" className="font-mono-num text-sky-300">/api/quotex-robot/feed</code> بصيغة JSON فورية ويتحقق من صلاحية المفتاح في قاعدة البيانات.</li>
+                  <li><strong className="text-white">اتصال تلقائي مزدوج:</strong> يتصل الروبوت بالسيرفر المباشر أو السحابة الدائمة تلقائياً دون تعارض أو تعليق.</li>
                   <li><strong className="text-amber-300">سكربت فارغ + زر إدخال المفتاح (🔑 ID):</strong> يثبت العضو السكربت فارغاً في Tampermonkey ثم يضع مفتاحه داخل الروبوت العائم ليتحقق فوراً من القاعدة.</li>
                   <li><strong className="text-emerald-300">الرادار الضوئي + تنفيذ آلي/يدوي على المنصة:</strong> يفتح الصفقات فقط داخل منصات التداول بعد فحص الصلاحية.</li>
                 </ul>
@@ -2501,7 +2513,7 @@ export default function QuotexRobotAdminPage({
                     </span>
                     <div>
                       <h4 className="text-xs font-extrabold text-emerald-300 flex flex-wrap items-center gap-1.5">
-                        <span>نسخ وتثبيت كود الروبوت العائم للمشرف (v5.4 — رادار مسح ضوئي)</span>
+                        <span>نسخ وتثبيت كود الروبوت العائم للمشرف (v5.5 — اتصال مباشر)</span>
                         <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-200 border border-emerald-500/40 text-[9px] font-bold">
                           متاح للمشرف فقط 🔒
                         </span>
@@ -2625,7 +2637,7 @@ export default function QuotexRobotAdminPage({
                 </div>
 
                 <div className="p-2.5 rounded-lg bg-sky-950/40 border border-sky-500/35 text-[10px] text-sky-200 leading-relaxed">
-                  💡 <strong>توضيح مهم حول مصدر الإشارات وربط الروبوت:</strong> دومين <code dir="ltr" className="text-emerald-300">fx.zadtoo.com</code> مرفوع على استضافة ثابتة فقط (بدون Node.js)، أما محرك الإشارات وبوتات التليجرام وقاعدة مفاتيح الروبوت فتعمل من السيرفر الكامل (<code dir="ltr">ais-pre</code> بعد النشر أو <code dir="ltr">ais-dev</code> أثناء الاختبار في بيئة العمل). السكربت <strong>v5.4</strong> يحاول تلقائياً الاتصال بالسيرفر المنشور ثم بيئة العمل ثم الدومين الرسمي حتى لا يتوقف اتصال الروبوت.
+                  💡 <strong>ربط تلقائي ومبسط (v5.5):</strong> يتصل الروبوت تلقائياً بقاعدة البيانات السحابية المباشرة وبخادم الإشارات دون الحاجة لفتح تبويب إضافي في المتصفح.
                 </div>
 
                 <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/40 text-[10.5px] text-emerald-200 leading-relaxed">
@@ -2670,7 +2682,7 @@ export default function QuotexRobotAdminPage({
                     <span>
                       {copiedId === 'admin-robot-script'
                         ? '✅ تم نسخ الكود بنجاح!'
-                        : '📋 نسخ كود الروبوت v5.4'}
+                        : '📋 نسخ كود الروبوت v5.5'}
                     </span>
                   </button>
 
@@ -2791,10 +2803,10 @@ export default function QuotexRobotAdminPage({
         {/* Dual Storage Status Strip (Express Live DB + Permanent Cloud Firestore) */}
         <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-[#0B0F17] border border-slate-800 text-[11px]">
           <div className="flex flex-wrap items-center gap-3">
-            <span className={`font-bold ${serverConnectionMode === 'express_live' ? 'text-emerald-300' : 'text-amber-300'}`}>
+            <span className={`font-bold ${serverConnectionMode === 'express_live' ? 'text-emerald-300' : 'text-sky-300'}`}>
               {serverConnectionMode === 'express_live'
-                ? '🟢 السيرفر الحي (قاعدة الروبوت): متصل'
-                : '⚠️ السيرفر الحي: تتصفح استضافة ثابتة'}
+                ? '🟢 السيرفر الحي: متصل'
+                : '🟢 الاتصال السحابي: متصل مباشر (fx.zadtoo.com)'}
             </span>
             <span className="text-slate-600">|</span>
             <span className={`font-bold ${isFirebaseAdmin ? 'text-emerald-300' : 'text-rose-300'}`}>

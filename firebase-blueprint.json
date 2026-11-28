@@ -40,6 +40,48 @@
       },
       "required": ["updatedAt"]
     },
+    "RobotLicense": {
+      "title": "RobotLicense",
+      "description": "SHA-256 hashed non-PII robot license verification status document.",
+      "type": "object",
+      "properties": {
+        "active": {
+          "type": "boolean",
+          "description": "Whether the robot license is enabled and active"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["ACTIVE", "PENDING", "BANNED"],
+          "description": "Subscription approval state"
+        },
+        "expiryDate": {
+          "type": "string",
+          "maxLength": 16,
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Subscription expiry date in YYYY-MM-DD format"
+        },
+        "defaultMode": {
+          "type": "string",
+          "enum": ["AUTO", "MANUAL"],
+          "description": "Default execution mode for the robot"
+        },
+        "tradeStake": {
+          "type": "number",
+          "description": "Default trade stake in USD"
+        },
+        "memberLabel": {
+          "type": "string",
+          "maxLength": 120,
+          "description": "Non-PII display label shown inside the robot HUD after key verification"
+        },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "ISO timestamp of last license sync"
+        }
+      },
+      "required": ["active", "status", "expiryDate", "defaultMode", "tradeStake", "updatedAt"]
+    },
     "ConnectionTest": {
       "title": "ConnectionTest",
       "description": "Read-only health check document for verifying Firestore connectivity.",
@@ -79,6 +121,10 @@
     "/robot_feed/{docId}": {
       "schema": "RobotFeed",
       "description": "Live Quotex robot signal stream document (live)"
+    },
+    "/robot_licenses/{licenseHash}": {
+      "schema": "RobotLicense",
+      "description": "SHA-256 hashed non-PII robot license verification documents (single-doc get by 64-hex hash only; list disabled)"
     },
     "/test/{docId}": {
       "schema": "ConnectionTest",

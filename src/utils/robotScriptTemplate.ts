@@ -1,3 +1,5 @@
+import firebaseConfig from '../../firebase-applet-config.json';
+
 export interface RobotScriptBuildOptions {
   serverOrigin?: string;
   fallbackOrigins?: string[];
@@ -17,7 +19,7 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
       .replace(/\/+$/, '')
       .replace(/['"\\]/g, '');
 
-  const safeOrigin = cleanOrigin(opts.serverOrigin || '') || 'https://ais-pre-vplsbzvt35dzg6l6qdryd4-317188159968.europe-west2.run.app';
+  const safeOrigin = cleanOrigin(opts.serverOrigin || '') || 'https://fx.zadtoo.com';
   const defaultFallbacks = [
     safeOrigin,
     ...(Array.isArray(opts.fallbackOrigins) ? opts.fallbackOrigins : []),
@@ -35,12 +37,14 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
   const autoPairDefault = opts.autoPairDefault !== false;
   const autoM1Default = opts.autoM1Default !== false;
   const strategyDefault = 'VIP_WITH_MPB';
+  const fsRestBase = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId || '(default)'}/documents`;
+  const fsWebKey = String(firebaseConfig.apiKey || '').replace(/['"\\]/g, '');
 
   return `// ==UserScript==
-// @name         ZAD FX Floating Quotex Robot v5.4 (Universal / Any Site)
+// @name         ZAD FX Floating Quotex Robot v5.5 (Direct Cloud Connection)
 // @namespace    https://fx.zadtoo.com
-// @version      5.4
-// @description  روبوت ZAD FX العائم المتصل بالسيرفر — رادار مسح ضوئي، يعمل على جميع المواقع والمنصات
+// @version      5.5
+// @description  روبوت ZAD FX العائم المتصل مباشرة بقاعدة البيانات السحابية — رادار مسح ضوئي، يعمل على جميع المواقع والمنصات
 // @author       ZAD FX
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
@@ -70,6 +74,8 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
 
   const SERVER_URL = '${safeOrigin}';
   const CANDIDATE_ORIGINS = ${JSON.stringify(defaultFallbacks)};
+  const FIRESTORE_REST_BASE = '${fsRestBase}';
+  const FIREBASE_WEB_KEY = '${fsWebKey}';
   const DEFAULT_MEMBER_KEY = '${escapedApiKey}';
   const DEFAULT_MODE = '${defaultMode}';
   const DEFAULT_STAKE = ${defaultStake};
@@ -165,55 +171,76 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
   // ZAD FX Hub Bridge: when running via Tampermonkey inside an open ZAD FX tab,
   // it silently polls same-origin /api/quotex-robot/feed and relays it via GM storage to other tabs.
   if (isWebPlatformHub && hasGmTransport) {
+    const bridgeCooldown = new Map();
     const bridgeSync = async () => {
       const k = cleanRobotKey(readStore('apiKey', normalizedDefaultKey));
       if (!k) return;
-      try {
-        const res = await fetch(window.location.origin + '/api/quotex-robot/feed?apiKey=' + encodeURIComponent(k), {
-          cache: 'no-store'
-        });
-        const ct = res.headers.get('content-type') || '';
-        if (ct.includes('application/json')) {
-          const data = await res.json().catch(() => null);
-          if (data && typeof data.authorized === 'boolean' && typeof GM_setValue === 'function') {
-            GM_setValue('zad_robot_live_payload_v5', JSON.stringify({ origin: window.location.origin, ts: Date.now(), key: k, data }));
-            return;
+      const nowMs = Date.now();
+      if ((bridgeCooldown.get(window.location.origin) || 0) <= nowMs) {
+        try {
+          const res = await fetch(window.location.origin + '/api/quotex-robot/feed?apiKey=' + encodeURIComponent(k), {
+            cache: 'no-store'
+          });
+          const ct = res.headers.get('content-type') || '';
+          if (ct.includes('application/json')) {
+            const data = await res.json().catch(() => null);
+            if (data && data.authorized === true && typeof GM_setValue === 'function') {
+              GM_setValue('zad_robot_live_payload_v5', JSON.stringify({ origin: window.location.origin, ts: Date.now(), key: k, data }));
+              return;
+            }
+          } else {
+            bridgeCooldown.set(window.location.origin, Date.now() + 60000);
           }
+        } catch (_) {
+          bridgeCooldown.set(window.location.origin, Date.now() + 30000);
         }
-      } catch (_) {}
+      }
+
+      const fsData = await fetchDirectFromFirestore(k).catch(() => null);
+      if (fsData && fsData.authorized === true && typeof GM_setValue === 'function') {
+        GM_setValue('zad_robot_live_payload_v5', JSON.stringify({ origin: 'fx.zadtoo.com (Cloud)', ts: Date.now(), key: k, data: fsData }));
+        return;
+      }
 
       if (typeof GM_xmlhttpRequest === 'function') {
         for (const origin of CANDIDATE_ORIGINS) {
-          if (!origin || origin === window.location.origin) continue;
+          if (!origin || origin === window.location.origin || (bridgeCooldown.get(origin) || 0) > Date.now()) continue;
           const ok = await new Promise((resolve) => {
             GM_xmlhttpRequest({
               method: 'GET',
               url: origin + '/api/quotex-robot/feed?apiKey=' + encodeURIComponent(k),
               headers: { Accept: 'application/json' },
               anonymous: false,
-              timeout: 5000,
+              timeout: 4500,
               onload: (r) => {
                 const txt = String(r.responseText || '').trim();
-                if (!txt || txt.startsWith('<')) return resolve(false);
+                if (!txt || txt.startsWith('<')) {
+                  bridgeCooldown.set(origin, Date.now() + 60000);
+                  return resolve(false);
+                }
                 try {
                   const data = JSON.parse(txt);
-                  if (data && typeof data.authorized === 'boolean' && typeof GM_setValue === 'function') {
+                  if (data && data.authorized === true && typeof GM_setValue === 'function') {
                     GM_setValue('zad_robot_live_payload_v5', JSON.stringify({ origin, ts: Date.now(), key: k, data }));
                     return resolve(true);
                   }
                 } catch (_) {}
                 resolve(false);
               },
-              onerror: () => resolve(false),
-              ontimeout: () => resolve(false)
+              onerror: () => { bridgeCooldown.set(origin, Date.now() + 30000); resolve(false); },
+              ontimeout: () => { bridgeCooldown.set(origin, Date.now() + 30000); resolve(false); }
             });
           });
-          if (ok) break;
+          if (ok) return;
         }
+      }
+
+      if (fsData && typeof fsData.authorized === 'boolean' && typeof GM_setValue === 'function') {
+        GM_setValue('zad_robot_live_payload_v5', JSON.stringify({ origin: 'fx.zadtoo.com (Cloud)', ts: Date.now(), key: k, data: fsData }));
       }
     };
     bridgeSync();
-    setInterval(bridgeSync, 1500);
+    setInterval(bridgeSync, 2000);
     if (typeof GM_addValueChangeListener === 'function') {
       try {
         GM_addValueChangeListener('apiKey', () => { bridgeSync(); });
@@ -339,7 +366,230 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
     });
   }
 
-  // Server-only license & signal verification (Option A — no member keys exposed in Firestore)
+  // Direct Google Cloud Firestore verification fallback (works everywhere with zero server proxy issues)
+  const originCooldownUntil = new Map();
+
+  function sha256PureJs(ascii) {
+    const rightRotate = (value, amount) => (value >>> amount) | (value << (32 - amount));
+    const maxWord = Math.pow(2, 32);
+    const words = [];
+    const asciiBitLength = ascii.length * 8;
+    const hash = [];
+    const k = [];
+    let primeCounter = 0;
+    const isComposite = {};
+    for (let candidate = 2; primeCounter < 64; candidate++) {
+      if (!isComposite[candidate]) {
+        for (let i = 0; i < 313; i += candidate) isComposite[i] = candidate;
+        hash[primeCounter] = (Math.pow(candidate, 0.5) * maxWord) | 0;
+        k[primeCounter++] = (Math.pow(candidate, 1 / 3) * maxWord) | 0;
+      }
+    }
+    ascii += '\\x80';
+    while ((ascii.length % 64) - 56) ascii += '\\x00';
+    for (let i = 0; i < ascii.length; i++) {
+      const j = ascii.charCodeAt(i);
+      words[i >> 2] |= j << (((3 - i) % 4) * 8);
+    }
+    words[words.length] = (asciiBitLength / maxWord) | 0;
+    words[words.length] = asciiBitLength;
+    for (let j = 0; j < words.length; ) {
+      const w = words.slice(j, (j += 16));
+      const oldHash = hash.slice(0);
+      for (let i = 0; i < 64; i++) {
+        const w15 = w[i - 15];
+        const w2 = w[i - 2];
+        const a = hash[0];
+        const e = hash[4];
+        const temp1 =
+          hash[7] +
+          (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25)) +
+          ((e & hash[5]) ^ (~e & hash[6])) +
+          k[i] +
+          (w[i] =
+            i < 16
+              ? w[i]
+              : (w[i - 16] +
+                  (rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3)) +
+                  w[i - 7] +
+                  (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10))) |
+                0);
+        const temp2 =
+          (rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22)) +
+          ((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2]));
+        hash.unshift((temp1 + temp2) | 0);
+        hash[4] = (hash[4] + temp1) | 0;
+        hash.pop();
+      }
+      for (let i = 0; i < 8; i++) hash[i] = (hash[i] + oldHash[i]) | 0;
+    }
+    let result = '';
+    for (let i = 0; i < 8; i++) {
+      for (let j = 3; j + 1; j--) {
+        const b = (hash[i] >> (j * 8)) & 255;
+        result += (b < 16 ? '0' : '') + b.toString(16);
+      }
+    }
+    return result;
+  }
+
+  async function sha256KeyHex(keyVal) {
+    const clean = cleanRobotKey(keyVal);
+    if (!clean) return '';
+    try {
+      if (window.crypto && window.crypto.subtle) {
+        const buf = new TextEncoder().encode(clean);
+        const dig = await window.crypto.subtle.digest('SHA-256', buf);
+        return Array.from(new Uint8Array(dig)).map(b => b.toString(16).padStart(2, '0')).join('');
+      }
+    } catch (_) {}
+    const utf8 = unescape(encodeURIComponent(clean));
+    return sha256PureJs(utf8);
+  }
+
+  function decodeFsVal(val) {
+    if (!val || typeof val !== 'object') return undefined;
+    if ('nullValue' in val) return null;
+    if ('booleanValue' in val) return Boolean(val.booleanValue);
+    if ('integerValue' in val) return Number(val.integerValue);
+    if ('doubleValue' in val) return Number(val.doubleValue);
+    if ('stringValue' in val) return String(val.stringValue);
+    if ('timestampValue' in val) return String(val.timestampValue);
+    if ('arrayValue' in val) {
+      const arr = Array.isArray(val.arrayValue?.values) ? val.arrayValue.values : [];
+      return arr.map(decodeFsVal);
+    }
+    if ('mapValue' in val) {
+      const f = val.mapValue?.fields || {};
+      const o = {};
+      for (const k of Object.keys(f)) o[k] = decodeFsVal(f[k]);
+      return o;
+    }
+    return undefined;
+  }
+
+  function decodeFsDoc(json) {
+    if (!json || !json.fields) return null;
+    const o = {};
+    for (const k of Object.keys(json.fields)) o[k] = decodeFsVal(json.fields[k]);
+    return o;
+  }
+
+  function getCairoSched() {
+    const now = new Date();
+    const dUtc = now.getUTCDay();
+    const hUtc = now.getUTCHours();
+    const marketOpen = !(dUtc === 6 || (dUtc === 5 && hUtc >= 21) || (dUtc === 0 && hUtc < 21));
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Africa/Cairo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).formatToParts(now);
+    const m = {};
+    for (const p of parts) {
+      if (p.type !== 'literal') m[p.type] = p.value;
+    }
+    const todayStr = \`\${m.year}-\${m.month}-\${m.day}\`;
+    const mins = (Number(m.hour) % 24) * 60 + Number(m.minute);
+    const inEveningVipWindow = mins >= 16 * 60 + 30 && mins < 19 * 60;
+    return { todayStr, marketOpen, inEveningVipWindow };
+  }
+
+  async function fetchDirectFromFirestore(keyStr) {
+    if (!FIRESTORE_REST_BASE || !FIREBASE_WEB_KEY) return null;
+    const keyHash = await sha256KeyHex(keyStr);
+    if (!keyHash) return null;
+
+    const licUrl = \`\${FIRESTORE_REST_BASE}/robot_licenses/\${keyHash}?key=\${encodeURIComponent(FIREBASE_WEB_KEY)}\`;
+    const feedUrl = \`\${FIRESTORE_REST_BASE}/robot_feed/live?key=\${encodeURIComponent(FIREBASE_WEB_KEY)}\`;
+
+    const [licResp, feedResp] = await Promise.all([
+      requestJson(licUrl, 'GET'),
+      requestJson(feedUrl, 'GET')
+    ]);
+
+    if (licResp.status === 0 && feedResp.status === 0) {
+      return null;
+    }
+    if (licResp.status === 404 || (!licResp.ok && licResp.status === 403)) {
+      return {
+        ok: false,
+        authorized: false,
+        error: 'مفتاح الروبوت أو رقم حساب البروكر غير مسجل أو غير مصادق عليه من المشرف.'
+      };
+    }
+
+    const licDoc = licResp.ok ? decodeFsDoc(licResp.data) : null;
+    if (!licDoc) return null;
+
+    const sched = getCairoSched();
+    if (licDoc.status === 'PENDING') {
+      return { ok: false, authorized: false, error: 'حسابك قيد المراجعة وبانتظار مصادقة المشرف وتحديد خطتك وصلاحيتها.' };
+    }
+    if (licDoc.status === 'BANNED' || licDoc.active === false) {
+      return { ok: false, authorized: false, error: 'تم إيقاف صلاحية الروبوت لهذا الحساب من قِبل المشرف.' };
+    }
+    const expDate = String(licDoc.expiryDate || '').trim();
+    if (!expDate || !/^\\d{4}-\\d{2}-\\d{2}$/.test(expDate)) {
+      return { ok: false, authorized: false, error: 'لم يحدد المشرف مدة صلاحية الخطة لهذا الحساب بعد.' };
+    }
+    if (expDate < sched.todayStr) {
+      return { ok: false, authorized: false, error: \`انتهت مدة صلاحية خطتك بتاريخ (\${expDate}). يرجى مراجعة المشرف لتجديد الاشتراك.\` };
+    }
+
+    const diffMs = new Date(\`\${expDate}T23:59:59Z\`).getTime() - Date.now();
+    const daysLeft = Math.max(0, Math.ceil(diffMs / 86400000));
+
+    const feedDoc = feedResp.ok ? decodeFsDoc(feedResp.data) : null;
+    let feedMeta = {};
+    if (feedDoc && typeof feedDoc.payload === 'string') {
+      try { feedMeta = JSON.parse(feedDoc.payload) || {}; } catch (_) {}
+    }
+
+    const rawSig = feedMeta.activeSignal || feedDoc?.signal || null;
+    let activeSignal = null;
+    if (rawSig && rawSig.id && sched.marketOpen) {
+      const nowSec = Math.floor(Date.now() / 1000);
+      const targetSec = Number(rawSig.targetEntryTimestamp || 0);
+      const ageSec = rawSig.createdAt ? Math.floor((Date.now() - new Date(rawSig.createdAt).getTime()) / 1000) : 0;
+      const isFreshPending = rawSig.status === 'PENDING' && ageSec <= 180 && (!targetSec || (targetSec - nowSec >= -65 && targetSec - nowSec <= 180));
+      const isRecentResult = (rawSig.status === 'WIN' || rawSig.status === 'LOSS') && targetSec > 0 && nowSec - (targetSec + 60) >= 0 && nowSec - (targetSec + 60) <= 15;
+      if (isFreshPending || isRecentResult) {
+        activeSignal = Object.assign({}, rawSig, { secondsUntilEntry: targetSec ? Math.round(targetSec - nowSec) : 0 });
+      }
+    }
+
+    const feedAgeMs = feedDoc?.updatedAt ? (Date.now() - new Date(feedDoc.updatedAt).getTime()) : Infinity;
+    const useFeedSess = feedAgeMs < 120000 && typeof feedMeta.isTradingHours === 'boolean';
+    const isTradingHours = useFeedSess ? Boolean(feedMeta.isTradingHours) : sched.inEveningVipWindow;
+    const isLockedOutsideHours = useFeedSess ? Boolean(feedMeta.isLockedOutsideHours) : !sched.inEveningVipWindow;
+
+    return {
+      ok: true,
+      authorized: true,
+      source: 'cloud_firestore',
+      serverEpochMs: Date.now(),
+      marketOpen: sched.marketOpen,
+      isTradingHours,
+      isLockedOutsideHours,
+      lockReason: useFeedSess ? (feedMeta.lockReason || '') : (!sched.inEveningVipWindow ? 'جلسة VIP والروبوت تعمل يومياً من 04:30 عصراً حتى 07:00 مساءً بتوقيت القاهرة.' : ''),
+      isWarmup: useFeedSess ? Boolean(feedMeta.isWarmup) : false,
+      tradingHoursMessage: useFeedSess ? (feedMeta.tradingHoursMessage || '') : (sched.inEveningVipWindow ? 'ساعات التداول نشطة' : 'الروبوت بانتظار موعد الجلسة المسائية 04:30 م بتوقيت القاهرة'),
+      member: {
+        name: licDoc.memberLabel || 'عضو ZAD FX',
+        status: licDoc.status,
+        expiryDate: expDate,
+        daysLeft,
+        defaultMode: licDoc.defaultMode || 'AUTO',
+        tradeStakeUsd: Number(licDoc.tradeStake) || 5
+      },
+      activeSignal
+    };
+  }
 
   function buildUniqueSelector(el) {
     if (!el || el === document.body) return '';
@@ -615,16 +865,10 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
     if (!apiKey) {
       signalHtml = '<div style="padding:10px;background:#09121d;border:1px solid #6366f1;border-radius:10px;text-align:center;color:#c7d2fe;font-size:10.5px;">🔑 اضغط زر <b>🔑 ID</b> وأدخل مفتاح العضو (API Key) للبدء</div>';
     } else if (!feed && lastConnError) {
-      const hubActivateUrl = /zadtoo\\.com$/i.test(SERVER_URL)
-        ? (CANDIDATE_ORIGINS.find(u => /\\.run\\.app$/i.test(u)) || SERVER_URL)
-        : SERVER_URL;
       signalHtml = \`
         <div style="padding:9px;background:#450a0a;border:1px solid #ef4444;border-radius:10px;text-align:center;color:#fecaca;font-size:10px;line-height:1.5;">
           <div>❌ \${esc(lastConnError)}</div>
-          \${connErrorMode === 'NEEDS_HUB_TAB'
-            ? \`<a href="\${hubActivateUrl}" target="_blank" rel="noopener noreferrer" style="display:inline-block;margin-top:6px;padding:5px 10px;background:#10b981;color:#020617;border-radius:6px;font-weight:800;font-size:9.5px;text-decoration:none;">🔗 افتح السيرفر مرة واحدة لتنشيط الاتصال</a>
-               <div style="margin-top:4px;color:#fde68a;font-size:8.5px;">أبقِ تبويب الموقع مفتوحاً في نفس المتصفح ليتم الربط الفوري تلقائياً.</div>\`
-            : \`<div style="margin-top:4px;color:#fde68a;font-size:9px;">تحقق من الاتصال بالإنترنت أو اضغط 🔑 ID للتأكد من مفتاح العضو.</div>\`}
+          <div style="margin-top:4px;color:#fde68a;font-size:9px;">تحقق من اتصال الإنترنت أو اضغط 🔑 ID للتأكد من مفتاح العضو.</div>
         </div>\`;
     } else if (!feed) {
       signalHtml = \`<div style="padding:10px;background:#09121d;border:1px solid #334155;border-radius:10px;text-align:center;color:#94a3b8;font-size:10.5px;">\${isCheckingKey ? '🔍 جاري التحقق من صلاحية المفتاح في قاعدة البيانات...' : '📡 جاري الاتصال والمزامنة مع السيرفر...'}</div>\`;
@@ -752,7 +996,7 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
         <div style="display:flex;align-items:center;gap:5px;min-width:0;">
           <span style="width:7px;height:7px;border-radius:999px;background:\${isAuth ? '#10b981' : (lastConnError ? '#ef4444' : '#f59e0b')};flex-shrink:0;box-shadow:0 0 6px \${isAuth ? '#10b981' : '#f59e0b'};"></span>
           <strong style="font-size:11px;color:#fff;white-space:nowrap;">روبوت ZAD FX</strong>
-          <span style="padding:1px 4px;border-radius:4px;background:#78350f;border:1px solid #b45309;color:#fde68a;font-size:8.5px;font-weight:800;">v5.4</span>
+          <span style="padding:1px 4px;border-radius:4px;background:#78350f;border:1px solid #b45309;color:#fde68a;font-size:8.5px;font-weight:800;">v5.5</span>
           <span style="padding:1px 4px;border-radius:4px;background:#0c4a6e;border:1px solid #0369a1;color:#7dd3fc;font-size:8.5px;font-weight:700;">عام + المنصات</span>
         </div>
         <div style="display:flex;align-items:center;gap:3px;flex-shrink:0;">
@@ -861,7 +1105,16 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
     if (bMin) bMin.onclick = () => { minimized = !minimized; writeStore('minimized', minimized); renderHud(); };
     const bClose = root.querySelector('#zad-btn-close');
     if (bClose) bClose.onclick = () => { hidden = true; root.style.display = 'none'; restorePill.style.display = 'block'; };
+    const kInpField = root.querySelector('#zad-inp-key');
     const bSaveKey = root.querySelector('#zad-btn-savekey');
+    if (kInpField && bSaveKey) {
+      kInpField.onkeydown = (ev) => {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          bSaveKey.click();
+        }
+      };
+    }
     if (bSaveKey) {
       bSaveKey.onclick = () => {
         const kInp = root.querySelector('#zad-inp-key');
@@ -933,62 +1186,85 @@ export function buildFloatingQuotexRobotScript(opts: RobotScriptBuildOptions): s
       return;
     }
 
-    const orderedOrigins = [
-      activeServerOrigin,
-      ...CANDIDATE_ORIGINS.filter(o => o !== activeServerOrigin)
-    ].filter(Boolean);
-
     let resolvedData = null;
     let resolvedOrigin = activeServerOrigin;
     let lastErrorSeen = '';
-    let sawHtmlRedirect = false;
 
-    for (const origin of orderedOrigins) {
-      const feedUrl = \`\${origin}/api/quotex-robot/feed?apiKey=\${encodeURIComponent(apiKey)}\`;
-      const resp = await requestJson(feedUrl, 'GET');
-      if (resp && resp.data && typeof resp.data.authorized === 'boolean') {
-        resolvedData = resp.data;
-        resolvedOrigin = origin;
-        break;
+    // 1. Fast path: check cross-tab Express/Cloud bridge ONLY if it holds an authorized session within 8s
+    try {
+      if (typeof GM_getValue === 'function') {
+        const bridgeRaw = GM_getValue('zad_robot_live_payload_v5', '');
+        if (bridgeRaw) {
+          const parsedBridge = JSON.parse(bridgeRaw);
+          const bridgeKeyMatch = !parsedBridge?.key || cleanRobotKey(parsedBridge.key) === cleanRobotKey(apiKey);
+          if (
+            parsedBridge &&
+            parsedBridge.data &&
+            parsedBridge.data.authorized === true &&
+            bridgeKeyMatch &&
+            Date.now() - (parsedBridge.ts || 0) < 8000
+          ) {
+            resolvedData = parsedBridge.data;
+            resolvedOrigin = parsedBridge.origin || activeServerOrigin;
+          }
+        }
       }
-      if (resp && resp.isHtmlRedirect) {
-        sawHtmlRedirect = true;
+    } catch (_) {}
+
+    // 2. Direct Google Cloud Firestore verification FIRST (zero proxy walls, instant across all sites)
+    let fsRejectData = null;
+    if (!resolvedData) {
+      const fsData = await fetchDirectFromFirestore(apiKey).catch(() => null);
+      if (fsData && fsData.authorized === true) {
+        resolvedData = fsData;
+        resolvedOrigin = 'fx.zadtoo.com (Cloud)';
+      } else if (fsData && typeof fsData.authorized === 'boolean') {
+        fsRejectData = fsData;
       }
-      if (resp && resp.error && resp.error !== 'HTML_REDIRECT') {
-        lastErrorSeen = resp.error;
+    }
+
+    // 3. Fallback: try non-cooldown Express backend origins (e.g., when key exists only on local Express)
+    let expressRejectData = null;
+    if (!resolvedData) {
+      const nowMs = Date.now();
+      const orderedOrigins = [
+        activeServerOrigin,
+        ...CANDIDATE_ORIGINS.filter(o => o !== activeServerOrigin)
+      ].filter(o => o && o !== 'fx.zadtoo.com (Cloud)' && (originCooldownUntil.get(o) || 0) <= nowMs);
+
+      for (const origin of orderedOrigins) {
+        const feedUrl = \`\${origin}/api/quotex-robot/feed?apiKey=\${encodeURIComponent(apiKey)}\`;
+        const resp = await requestJson(feedUrl, 'GET');
+        if (resp && resp.data && resp.data.authorized === true) {
+          resolvedData = resp.data;
+          resolvedOrigin = origin;
+          break;
+        }
+        if (resp && resp.data && typeof resp.data.authorized === 'boolean') {
+          expressRejectData = resp.data;
+          continue;
+        }
+        if (resp && resp.isHtmlRedirect) {
+          originCooldownUntil.set(origin, Date.now() + 45000);
+        } else if (resp && resp.error && resp.error !== 'HTML_REDIRECT') {
+          lastErrorSeen = resp.error;
+          originCooldownUntil.set(origin, Date.now() + 15000);
+        }
       }
+    }
+
+    if (!resolvedData) {
+      resolvedData = fsRejectData || expressRejectData;
+      if (fsRejectData) resolvedOrigin = 'fx.zadtoo.com (Cloud)';
     }
 
     if (resolvedData) {
       isCheckingKey = false;
       applyFeedPayload(resolvedData, resolvedOrigin);
     } else {
-      // Fallback: check GM cross-tab bridge payload if open ZAD FX tab wrote it within last 12 seconds
-      let usedBridge = false;
-      try {
-        if (typeof GM_getValue === 'function') {
-          const bridgeRaw = GM_getValue('zad_robot_live_payload_v5', '');
-          if (bridgeRaw) {
-            const parsedBridge = JSON.parse(bridgeRaw);
-            const bridgeKeyMatch = !parsedBridge?.key || cleanRobotKey(parsedBridge.key) === cleanRobotKey(apiKey);
-            if (parsedBridge && parsedBridge.data && bridgeKeyMatch && Date.now() - (parsedBridge.ts || 0) < 12000) {
-              isCheckingKey = false;
-              applyFeedPayload(parsedBridge.data, parsedBridge.origin || activeServerOrigin);
-              usedBridge = true;
-            }
-          }
-        }
-      } catch (_) {}
-      if (!usedBridge) {
-        isCheckingKey = false;
-        if (sawHtmlRedirect && !lastErrorSeen) {
-          connErrorMode = 'NEEDS_HUB_TAB';
-          lastConnError = 'السيرفر ينتظر تنشيط الجلسة في نفس المتصفح';
-        } else {
-          connErrorMode = 'NET';
-          lastConnError = lastErrorSeen || 'تعذر الاتصال بالسيرفر للتحقق من الصلاحية';
-        }
-      }
+      isCheckingKey = false;
+      connErrorMode = 'NET';
+      lastConnError = lastErrorSeen || 'تعذر الاتصال بالسيرفر أو السحابة للتحقق من الصلاحية';
     }
 
     const activeEl = document.activeElement;
