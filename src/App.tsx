@@ -87,6 +87,7 @@ import {
   loadCloudContactLinks,
   loadCloudRobotSettings,
   loadSubscribersFromFirestore,
+  saveCloudSubscribers,
   saveSubscriberToFirestore,
   deleteSubscriberFromFirestore,
   loadSignalsFromFirestore,
@@ -466,7 +467,12 @@ export default function App() {
           if (data?.ok && Array.isArray(data.subscribers)) {
             const serverIds = new Set(data.subscribers.map((s: any) => s?.id).filter(Boolean));
             const cloudExtra = validCloudSubs.filter(s => !serverIds.has(s.id));
-            setSubscribers([...data.subscribers, ...cloudExtra]);
+            const mergedList = [...data.subscribers, ...cloudExtra];
+            setSubscribers(mergedList);
+            const cloudIds = new Set(validCloudSubs.map(s => s.id));
+            if (mergedList.some((s: any) => s?.id && !cloudIds.has(s.id))) {
+              saveCloudSubscribers(mergedList).catch(() => false);
+            }
             hasSyncedCloudToServerRef.current = true;
             return true;
           }
@@ -2039,7 +2045,7 @@ export default function App() {
     const target = subscribers.find(s => s.id === id);
     deletedSubscriberIdsRef.current.add(id);
     try {
-      const activeTok = adminToken || (canWriteFirestoreAsAdmin() ? await ensureExpressAdminToken() : '');
+      const activeTok = adminTokenRef.current || (canWriteFirestoreAsAdmin() ? await ensureExpressAdminToken() : '');
       let delRes = await fetch(`/api/subscribers/${id}`, {
         method: 'DELETE',
         credentials: 'include',
@@ -6870,6 +6876,9 @@ export default function App() {
               onTriggerSignalNow={handleTriggerAutoNow}
               onNavigateView={setActiveView}
               isAdmin={effectiveIsAdmin}
+              isFirebaseAdmin={isFirebaseAdmin}
+              onDeleteSubscriber={handleDeleteSubscriber}
+              onGoogleAdminLogin={handleGoogleAdminLogin}
               onOpenLoginModal={() => {
                 checkAdminAuthStatus();
                 setShowLoginModal(true);

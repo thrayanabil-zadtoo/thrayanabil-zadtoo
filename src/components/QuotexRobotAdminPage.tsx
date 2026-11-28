@@ -67,6 +67,9 @@ interface QuotexRobotAdminPageProps {
   onTriggerSignalNow: (preferredPair?: string) => void;
   onNavigateView: (view: 'visitor' | 'admin' | 'stats' | 'robot') => void;
   isAdmin?: boolean;
+  isFirebaseAdmin?: boolean;
+  onDeleteSubscriber?: (subId: string) => Promise<void> | void;
+  onGoogleAdminLogin?: () => void;
   onOpenLoginModal?: () => void;
 }
 
@@ -83,6 +86,9 @@ export default function QuotexRobotAdminPage({
   onTriggerSignalNow,
   onNavigateView,
   isAdmin = true,
+  isFirebaseAdmin = false,
+  onDeleteSubscriber,
+  onGoogleAdminLogin,
   onOpenLoginModal
 }: QuotexRobotAdminPageProps) {
   const safeSubscribers = subscribers || [];
@@ -224,6 +230,8 @@ export default function QuotexRobotAdminPage({
   const [newKeyMode, setNewKeyMode] = useState<'AUTO' | 'MANUAL'>('AUTO');
   const [isCreatingKey, setIsCreatingKey] = useState(false);
   const [searchMemberQuery, setSearchMemberQuery] = useState('');
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [isSyncingCloudManual, setIsSyncingCloudManual] = useState(false);
 
   // Momentum Pause Breakout Strategy & Radar State
   const [isTriggeringMomentumPause, setIsTriggeringMomentumPause] = useState(false);
@@ -684,11 +692,17 @@ export default function QuotexRobotAdminPage({
       }
       setNewKeyMemberName('');
       setNewKeyQuotexId('');
+      const whereSaved =
+        savedToServer && savedToCloud
+          ? 'في قاعدة بيانات السيرفر والسحابة الدائمة (Firestore) بنجاح'
+          : savedToServer
+          ? 'في قاعدة السيرفر الحالية (سجّل الدخول بحساب Google لحفظ نسخة سحابية دائمة)'
+          : 'في السحابة الدائمة (Firestore) — افتح السيرفر الحي للمزامنة التلقائية';
       setMemberUpdateToast({
         type: 'success',
-        message: `✅ تم إنشاء مفتاح العضو (${createdSub.name}) وحفظه في قاعدة البيانات: ${activeKey} — أرسل هذا المفتاح للعضو ليدخله داخل الروبوت (🔑 ID)`
+        message: `✅ تم إنشاء مفتاح العضو (${createdSub.name}) وحفظه ${whereSaved}: ${activeKey}`
       });
-      setTimeout(() => setMemberUpdateToast(null), 5000);
+      setTimeout(() => setMemberUpdateToast(null), 6000);
     } else {
       setMemberUpdateToast({
         type: 'error',
@@ -2741,7 +2755,29 @@ export default function QuotexRobotAdminPage({
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {onSyncCloudToServer && isFirebaseAdmin && (
+              <button
+                type="button"
+                disabled={isSyncingCloudManual}
+                onClick={async () => {
+                  setIsSyncingCloudManual(true);
+                  const ok = await onSyncCloudToServer().catch(() => false);
+                  setMemberUpdateToast({
+                    type: ok ? 'success' : 'error',
+                    message: ok
+                      ? '✅ تمت مزامنة جميع الأعضاء والمفاتيح بين السحابة الدائمة والسيرفر الحي بنجاح.'
+                      : '⚠️ تعذرت المزامنة المباشرة مع السيرفر الحي — تأكد من فتح رابط السيرفر الكامل.'
+                  });
+                  setTimeout(() => setMemberUpdateToast(null), 4000);
+                  setIsSyncingCloudManual(false);
+                }}
+                className="px-3 py-2 text-xs font-bold bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 rounded-xl cursor-pointer flex items-center gap-1.5"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncingCloudManual ? 'animate-spin' : ''}`} />
+                <span>مزامنة السحابة ↔ السيرفر</span>
+              </button>
+            )}
             <input
               type="text"
               value={searchMemberQuery}
@@ -2750,6 +2786,32 @@ export default function QuotexRobotAdminPage({
               className="px-3.5 py-2 text-xs bg-[#0B0F17] border border-slate-800 rounded-xl text-white focus:outline-none focus:border-emerald-400 w-64"
             />
           </div>
+        </div>
+
+        {/* Dual Storage Status Strip (Express Live DB + Permanent Cloud Firestore) */}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 rounded-xl bg-[#0B0F17] border border-slate-800 text-[11px]">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className={`font-bold ${serverConnectionMode === 'express_live' ? 'text-emerald-300' : 'text-amber-300'}`}>
+              {serverConnectionMode === 'express_live'
+                ? '🟢 السيرفر الحي (قاعدة الروبوت): متصل'
+                : '⚠️ السيرفر الحي: تتصفح استضافة ثابتة'}
+            </span>
+            <span className="text-slate-600">|</span>
+            <span className={`font-bold ${isFirebaseAdmin ? 'text-emerald-300' : 'text-rose-300'}`}>
+              {isFirebaseAdmin
+                ? '🟢 السحابة الدائمة (Firestore): محفوظ تلقائياً'
+                : '🔴 السحابة الدائمة (Firestore): غير مرتبطة بحساب Google'}
+            </span>
+          </div>
+          {!isFirebaseAdmin && onGoogleAdminLogin && (
+            <button
+              type="button"
+              onClick={onGoogleAdminLogin}
+              className="px-3 py-1 bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold rounded-lg text-[10.5px] cursor-pointer"
+            >
+              🔐 تسجيل دخول Google لتفعيل الحفظ السحابي الدائم
+            </button>
+          )}
         </div>
 
         {/* Quick Form to Issue a New Member Robot API Key & Expiry Date */}
@@ -3024,6 +3086,44 @@ export default function QuotexRobotAdminPage({
                           >
                             {keyStr ? 'تغيير المفتاح' : '🔑 توليد مفتاح'}
                           </button>
+
+                          {onDeleteSubscriber && (
+                            confirmDeleteId === sub.id ? (
+                              <div className="inline-flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    await onDeleteSubscriber(sub.id);
+                                    setConfirmDeleteId(null);
+                                    setMemberUpdateToast({
+                                      type: 'success',
+                                      message: `🗑️ تم حذف العضو (${sub.name}) من قاعدة البيانات بنجاح.`
+                                    });
+                                    setTimeout(() => setMemberUpdateToast(null), 3500);
+                                  }}
+                                  className="px-2 py-1 bg-rose-600 hover:bg-rose-500 text-white font-bold rounded-lg text-[10.5px] cursor-pointer"
+                                >
+                                  تأكيد الحذف؟
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteId(null)}
+                                  className="px-1.5 py-1 bg-slate-800 text-slate-300 rounded-lg text-[10.5px] cursor-pointer"
+                                >
+                                  إلغاء
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteId(sub.id)}
+                                className="p-1.5 bg-rose-500/15 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded-lg cursor-pointer"
+                                title="حذف العضو نهائياً"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )
+                          )}
                         </div>
                       </td>
                     </tr>
